@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="sk">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Poznámkovník</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header>
+        <h1>Poznámkovník</h1>
+        <p>Uložte si svoje myšlienky a úlohy.</p>
+      </header>
+
+      <form id="note-form" class="note-form">
+        <input id="note-title" type="text" placeholder="Názov poznámky" maxlength="60" required />
+        <textarea id="note-content" placeholder="Napíšte poznámku..." rows="5" required></textarea>
+        <button type="submit">Pridať poznámku</button>
+      </form>
+
+      <section id="notes-list" class="notes-list"></section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
