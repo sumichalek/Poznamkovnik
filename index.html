@@ -1,27 +1,152 @@
 <!DOCTYPE html>
-<html lang="sk">
+<html lang="sk" data-app-version="0.1.1">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Poznámkovník</title>
-    <link rel="stylesheet" href="style.css" />
+    <script>
+      document.documentElement.dataset.theme = localStorage.getItem('knowledge-theme') || 'focus';
+    </script>
+    <link rel="stylesheet" href="style.css?v=0.1.1" />
   </head>
   <body>
-    <main class="app">
-      <header>
-        <h1>Poznámkovník</h1>
-        <p>Uložte si svoje myšlienky a úlohy.</p>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="topbar-primary">
+          <div class="brand">
+            <span class="brand-mark">P</span>
+            <div>
+              <h1>Poznámkovník</h1>
+              <p>Osobná pracovná plocha</p>
+            </div>
+          </div>
+          <button id="libraries-button" class="nav-button" type="button" aria-controls="libraries-panel">Knižnice</button>
+        </div>
+
+        <div class="topbar-actions">
+          <label class="theme-switch" title="Svetlá / tmavá téma">
+            <span>Svetlá</span>
+            <input id="theme-toggle" type="checkbox" aria-label="Prepnúť svetlú alebo tmavú tému" />
+            <span class="switch-track" aria-hidden="true"></span>
+            <span>Tmavá</span>
+          </label>
+          <button id="settings-button" class="icon-button" type="button" aria-label="Nastavenia" title="Nastavenia">
+            &#9881;
+          </button>
+        </div>
       </header>
 
-      <form id="note-form" class="note-form">
-        <input id="note-title" type="text" placeholder="Názov poznámky" maxlength="60" required />
-        <textarea id="note-content" placeholder="Napíšte poznámku..." rows="5" required></textarea>
-        <button type="submit">Pridať poznámku</button>
-      </form>
+      <aside id="libraries-panel" class="libraries-panel" aria-label="Knižnice">
+        <div class="libraries-panel-inner">
+          <header class="libraries-panel-head">
+            <div>
+              <p class="eyebrow">Panel</p>
+              <h2>Knižnice</h2>
+            </div>
+            <button id="library-create-button" class="panel-icon-button" type="button" aria-label="Vytvoriť knižnicu" title="Vytvoriť knižnicu">+</button>
+          </header>
 
-      <section id="notes-list" class="notes-list"></section>
-    </main>
+          <form id="library-form" class="library-form" hidden>
+            <input id="library-name" type="text" placeholder="Názov knižnice" maxlength="80" required />
+            <div class="library-form-actions">
+              <button id="library-save-button" class="panel-icon-button primary" type="submit" aria-label="Uložiť knižnicu" title="Uložiť knižnicu">✓</button>
+              <button id="library-cancel-button" class="panel-icon-button" type="button" aria-label="Zrušiť" title="Zrušiť">×</button>
+            </div>
+          </form>
 
-    <script src="app.js"></script>
+          <div id="libraries-list" class="libraries-list" aria-live="polite"></div>
+        </div>
+      </aside>
+
+      <aside id="library-detail-panel" class="library-detail-panel" aria-label="Detail knižnice" aria-hidden="true">
+        <div class="library-detail-panel-inner">
+          <header class="library-detail-header">
+            <div class="library-path-strip" aria-label="Cesta v knižnici">
+              <button id="folder-home-button" class="panel-icon-button" type="button" aria-label="Prejsť na koreň knižnice" title="Koreň knižnice">⌂</button>
+              <button id="folder-up-button" class="panel-icon-button" type="button" aria-label="Prejsť o úroveň vyššie" title="O úroveň vyššie">↑</button>
+              <div class="library-path-text">
+                <p class="eyebrow">Cesta</p>
+                <h2 id="library-detail-title">Koreň</h2>
+              </div>
+            </div>
+            <div class="library-detail-toolbar" aria-label="Tvorba prvkov knižnice">
+              <button id="create-folder-button" class="library-tool-button" type="button" aria-label="Vytvoriť priečinok" title="Vytvoriť priečinok">
+                <span class="tool-icon folder-icon" aria-hidden="true"></span>
+              </button>
+              <button id="create-note-button" class="library-tool-button" type="button" aria-label="Vytvoriť poznámku" title="Vytvoriť poznámku">
+                <span class="tool-icon note-icon" aria-hidden="true"></span>
+              </button>
+              <button id="create-article-button" class="library-tool-button" type="button" aria-label="Vytvoriť článok" title="Vytvoriť článok">
+                <span class="tool-icon article-icon" aria-hidden="true"></span>
+              </button>
+            </div>
+          </header>
+
+          <section id="library-browser" class="library-browser" aria-label="Obsah knižnice">
+            <div id="library-items-list" class="library-items-list" aria-live="polite"></div>
+          </section>
+
+          <section id="library-editor" class="library-editor" aria-label="Editor prvku" hidden>
+            <header class="library-editor-head">
+              <div class="library-editor-topline">
+                <button id="library-editor-back" class="panel-icon-button" type="button" aria-label="Späť na obsah knižnice" title="Späť na obsah knižnice">←</button>
+                <input id="library-editor-title" class="library-editor-title" type="text" maxlength="120" aria-label="Názov prvku" />
+                <button id="library-editor-delete" class="panel-icon-button danger" type="button" aria-label="Zmazať prvok" title="Zmazať prvok">×</button>
+              </div>
+              <div class="library-editor-formatbar" aria-label="Formátovanie textu">
+                <button class="editor-format-button" type="button" data-format-command="bold" aria-label="Tučné" title="Tučné"><strong>B</strong></button>
+                <button class="editor-format-button" type="button" data-format-command="italic" aria-label="Kurzíva" title="Kurzíva"><em>I</em></button>
+                <button class="editor-format-button" type="button" data-format-command="underline" aria-label="Podčiarknuť" title="Podčiarknuť"><span>U</span></button>
+                <button class="editor-format-button" type="button" data-format-command="insertUnorderedList" aria-label="Zoznam" title="Zoznam">•</button>
+              </div>
+            </header>
+            <div id="library-editor-body" class="library-editor-body" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Píšte poznámku..."></div>
+          </section>
+        </div>
+      </aside>
+
+      <main class="workspace" aria-label="Pracovná plocha">
+        <section class="blank-slate">
+          <p class="eyebrow">Čistý základ</p>
+          <h2 id="workspace-title">Pôjdeme pomaly.</h2>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="settings-dialog" class="settings-dialog">
+      <div class="settings-panel">
+        <header>
+          <h2>Nastavenia</h2>
+          <button id="settings-close" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť">
+            &times;
+          </button>
+        </header>
+        <label>
+          Farebná téma
+          <select id="theme-select">
+            <option value="focus">Sústredenie</option>
+            <option value="paper">Papier</option>
+            <option value="dark">Tmavá</option>
+            <option value="contrast">Kontrastná</option>
+          </select>
+        </label>
+        <section class="shortcuts-list" aria-label="Klávesové skratky">
+          <h3>Skratky</h3>
+          <dl>
+            <div>
+              <dt><kbd>Ctrl</kbd> + <kbd>K</kbd></dt>
+              <dd>Otvoriť panel knižníc</dd>
+            </div>
+            <div>
+              <dt><kbd>Esc</kbd></dt>
+              <dd>Zatvárať otvorené panely</dd>
+            </div>
+          </dl>
+        </section>
+        <p id="app-version" class="app-version">Verzia 0.1.1</p>
+      </div>
+    </dialog>
+
+    <script src="app.js?v=0.1.1"></script>
   </body>
 </html>
