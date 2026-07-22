@@ -20,6 +20,10 @@ import {
   setArticleEditorContent
 } from './article-editor.js';
 import { refreshEditorResizeHandle } from './editor-resize.js';
+import { openSourcesPanel, refreshElementSourceLinks } from './sources.js';
+import { apiRequest } from './api.js';
+
+window.addEventListener('sources-changed', () => renderLibraryDetailPanel());
 
 export function currentFolderId() {
   return state.activeFolderPath.at(-1) || '';
@@ -328,6 +332,33 @@ function renderLibraryItems() {
   });
 }
 
+async function renderLibrarySourceLinks(libraryId) {
+  dom.librarySourceLinks.hidden = true;
+  dom.librarySourceLinks.replaceChildren();
+  if (state.activeFolderPath.length) return;
+  try {
+    const result = await apiRequest(`/libraries/${encodeURIComponent(libraryId)}/sources`);
+    if (state.activeDetailLibraryId !== libraryId || state.activeFolderPath.length || !result.sources.length) return;
+    const heading = document.createElement('h3');
+    heading.textContent = 'Zdroje v knižnici';
+    const list = document.createElement('div');
+    list.className = 'library-source-list';
+    result.sources.forEach((source) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'library-source-link';
+      button.textContent = source.note ? `${source.title} — ${source.note}` : source.title;
+      button.title = 'Otvoriť zdroj';
+      button.addEventListener('click', () => void openSourcesPanel({ sourceId: source.id }));
+      list.append(button);
+    });
+    dom.librarySourceLinks.append(heading, list);
+    dom.librarySourceLinks.hidden = false;
+  } catch {
+    dom.librarySourceLinks.hidden = true;
+  }
+}
+
 export function closeLibraryElementEditor({ render = true } = {}) {
   state.activeLibraryElementId = '';
   state.editorLayout = 'closed';
@@ -336,6 +367,7 @@ export function closeLibraryElementEditor({ render = true } = {}) {
   syncEditorDock();
   dom.libraryEditorTitle.value = '';
   clearArticleEditor();
+  void refreshElementSourceLinks();
   if (render) renderLibraryDetailPanel();
 }
 
@@ -357,6 +389,7 @@ export function renderLibraryDetailPanel() {
     updateLibraryPathControls();
   }
   renderLibraryItems();
+  void renderLibrarySourceLinks(library.id);
 }
 
 export function createLibraryElement(type) {
@@ -408,6 +441,7 @@ export function openLibraryElement(elementId, { focusTitle = false } = {}) {
   updateEditorDockAxis();
   syncEditorDock();
   renderLibraryDetailPanel();
+  void refreshElementSourceLinks();
   updateTopbarVisibility();
   if (focusTitle) {
     dom.libraryEditorTitle.focus();

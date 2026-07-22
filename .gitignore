@@ -4,3 +4,10 @@ node_modules/
 __pycache__/
 data/
 .local/
+.env
+.env.*
+!.env.example
+*.log
+npm-debug.log*
+coverage/
+.pytest_cache/

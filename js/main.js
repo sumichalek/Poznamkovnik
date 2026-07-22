@@ -12,7 +12,7 @@ import {
 } from './article-editor.js';
 import { initializeEditorResizing } from './editor-resize.js';
 import { dom } from './dom.js';
-import { initializeLogin, isAuthenticated } from './login.js';
+import { initializeLogin, isAuthenticated, logout } from './login.js';
 import { state } from './state.js';
 import {
   cancelFolderRename,
@@ -43,7 +43,8 @@ import {
   showLibraryForm,
   upsertLibrary
 } from './library-panels.js';
-import { applyTheme, loadLibraries, loadLibraryElements } from './storage.js';
+import { applyTheme, disableWorkspaceSync, flushWorkspaceSync, hydrateWorkspace, loadLibraries, loadLibraryElements } from './storage.js';
+import { closeSourcesPanel, initializeSources, isSourcesPanelOpen, refreshElementSourceLinks } from './sources.js';
 import { hideTopbarImmediately, updateTopbarVisibility } from './topbar.js';
 
 document.addEventListener('pointermove', (event) => {
@@ -125,9 +126,25 @@ dom.libraryEditorTitle.addEventListener('keydown', (event) => {
 });
 dom.libraryEditorBody.addEventListener('input', () => updateActiveElementFromEditor());
 
-function openCitationDialog() {
+async function openCitationDialog() {
   if (!state.activeLibraryElementId) return;
   dom.citationForm.reset();
+  dom.citationSavedSource.replaceChildren();
+  const customOption = document.createElement('option');
+  customOption.value = '';
+  customOption.textContent = 'Vlastný zápis';
+  dom.citationSavedSource.append(customOption);
+  try {
+    const result = await apiRequest('/sources');
+    result.sources.forEach((source) => {
+      const option = document.createElement('option');
+      option.value = source.id;
+      option.textContent = source.title;
+      dom.citationSavedSource.append(option);
+    });
+  } catch {
+    // Vlastný citačný zápis funguje aj bez dostupného katalógu zdrojov.
+  }
   dom.citationDialog.showModal();
   dom.citationSourceInput.focus();
 }
@@ -145,7 +162,7 @@ dom.editorFormatButtons.forEach((button) => {
     const action = button.dataset.editorAction;
     if (!action) return;
     if (action === 'citation') {
-      openCitationDialog();
+      void openCitationDialog();
       return;
     }
     if (action === 'math-inline' || action === 'math-block') {
@@ -175,15 +192,44 @@ dom.editorFileInput.addEventListener('change', async () => {
   delete dom.editorFileInput.dataset.insertKind;
 });
 dom.citationCancelButton.addEventListener('click', () => dom.citationDialog.close());
+dom.citationSavedSource.addEventListener('change', () => {
+  const option = dom.citationSavedSource.selectedOptions[0];
+  if (option?.value && !dom.citationSourceInput.value.trim()) dom.citationSourceInput.value = option.textContent || '';
+});
 dom.citationForm.addEventListener('submit', (event) => {
   event.preventDefault();
+  const sourceId = dom.citationSavedSource.value;
+  const source = dom.citationSourceInput.value.trim();
+  const locator = dom.citationLocatorInput.value.trim();
+  const elementId = state.activeLibraryElementId;
   const inserted = runArticleEditorAction('citation', {
-    source: dom.citationSourceInput.value,
-    locator: dom.citationLocatorInput.value
+    source,
+    locator,
+    sourceId
   });
   if (inserted) {
     updateActiveElementFromEditor();
     dom.citationDialog.close();
+    if (sourceId) {
+      void (async () => {
+        try {
+          await flushWorkspaceSync();
+          await apiRequest(`/sources/${encodeURIComponent(sourceId)}/element-links`, {
+            method: 'POST',
+            body: {
+              id: crypto.randomUUID(),
+              elementId,
+              relationType: 'citation',
+              locator,
+              label: source
+            }
+          });
+          await refreshElementSourceLinks();
+        } catch {
+          // Textová citácia ostáva v článku aj keď prepojenie na server dočasne zlyhá.
+        }
+      })();
+    }
   }
 });
 dom.citationDialog.addEventListener('click', (event) => {
@@ -203,22 +249,30 @@ dom.mathDialog.addEventListener('close', resetMathDialog);
 document.addEventListener('pointerdown', (event) => {
   if (!isAuthenticated()) return;
   if (dom.settingsDialog.open || dom.citationDialog.open || dom.mathDialog.open) return;
-  if (!state.librariesPanelPinned && !state.libraryDetailPanelPinned) return;
+  if (!state.librariesPanelPinned && !state.libraryDetailPanelPinned && !isSourcesPanelOpen()) return;
   if (
     dom.topbar.contains(event.target) ||
     dom.librariesPanel.contains(event.target) ||
     dom.libraryDetailPanel.contains(event.target) ||
-    dom.libraryEditorDock.contains(event.target)
+    dom.libraryEditorDock.contains(event.target) ||
+    dom.sourcesPanel.contains(event.target)
   ) {
     return;
   }
-  closeLibrariesPanel({ force: true });
+  if (state.librariesPanelPinned || state.libraryDetailPanelPinned) closeLibrariesPanel({ force: true });
+  if (isSourcesPanelOpen()) closeSourcesPanel();
 });
 
 document.addEventListener('keydown', (event) => {
   if (!isAuthenticated()) return;
   if (event.key === 'Escape') {
     if (dom.settingsDialog.open || dom.citationDialog.open || dom.mathDialog.open) return;
+
+    if (isSourcesPanelOpen()) {
+      event.preventDefault();
+      closeSourcesPanel();
+      return;
+    }
 
     if (exitEditorFullscreen()) {
       event.preventDefault();
@@ -268,6 +322,11 @@ dom.settingsClose.addEventListener('click', () => {
   dom.settingsDialog.close();
   updateTopbarVisibility();
 });
+dom.logoutButton.addEventListener('click', async () => {
+  disableWorkspaceSync();
+  dom.settingsDialog.close();
+  await logout();
+});
 dom.themeSelect.addEventListener('change', () => applyTheme(dom.themeSelect.value));
 dom.settingsDialog.addEventListener('click', (event) => {
   if (event.target === dom.settingsDialog) dom.settingsDialog.close();
@@ -282,6 +341,7 @@ document.documentElement.dataset.appVersion = APP_VERSION;
 if (dom.appVersion) dom.appVersion.textContent = `Verzia ${APP_VERSION}`;
 initializeArticleEditor({ onUpdate: () => updateActiveElementFromEditor() });
 initializeEditorResizing();
+initializeSources();
 applyTheme(localStorage.getItem(storageKeys.theme) || 'focus');
 loadLibraries();
 loadLibraryElements();
@@ -290,7 +350,9 @@ renderLibraries();
 dom.librariesButton.setAttribute('aria-expanded', 'false');
 updateTopbarVisibility();
 initializeLogin({
-  onAuthenticated: () => {
+  onAuthenticated: async (user) => {
+    await hydrateWorkspace(user);
+    renderLibraries();
     state.pointerNearTop = true;
     updateTopbarVisibility();
   }

@@ -39,6 +39,10 @@ const Citation = Node.create({
       label: {
         default: '',
         parseHTML: (element) => element.getAttribute('data-label') || ''
+      },
+      sourceId: {
+        default: '',
+        parseHTML: (element) => element.getAttribute('data-source-id') || ''
       }
     };
   },
@@ -53,6 +57,7 @@ const Citation = Node.create({
         class: 'article-citation',
         'data-citation': '',
         'data-source': node.attrs.source,
+        'data-source-id': node.attrs.sourceId,
         'data-locator': node.attrs.locator,
         'data-label': label,
         contenteditable: 'false',
@@ -337,11 +342,12 @@ export function runArticleEditorAction(action, value = {}) {
     case 'citation': {
       const source = String(value.source || '').trim();
       const locator = String(value.locator || '').trim();
+      const sourceId = String(value.sourceId || '').trim();
       if (!source) return false;
       return chain
         .insertContent({
           type: 'citation',
-          attrs: { source, locator, label: citationLabel(source, locator) }
+          attrs: { source, sourceId, locator, label: citationLabel(source, locator) }
         })
         .insertContent(' ')
         .run();

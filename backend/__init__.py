@@ -1,0 +1,1 @@
+"""Serverové jadro Poznámkovníka."""

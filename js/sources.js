@@ -1,0 +1,385 @@
+import { apiRequest, uploadSourceFile } from './api.js';
+import { dom } from './dom.js';
+import { state } from './state.js';
+import { flushWorkspaceSync } from './storage.js';
+
+const kindLabels = {
+  source: 'Zdroj',
+  article: 'Článok',
+  book: 'Kniha',
+  web: 'Web',
+  dataset: 'Dáta',
+  attachment: 'Príloha'
+};
+
+const relationLabels = {
+  reference: 'Odkaz',
+  citation: 'Citácia',
+  attachment: 'Príloha',
+  evidence: 'Dôkaz',
+  counterargument: 'Protinázor',
+  derived: 'Vychádza zo zdroja'
+};
+
+let sources = [];
+let selectedSource = null;
+let searchTimer = 0;
+
+function notifySourcesChanged() {
+  window.dispatchEvent(new Event('sources-changed'));
+}
+
+function activeElementTitle() {
+  for (const items of Object.values(state.libraryElements)) {
+    const item = items.find((entry) => entry.id === state.activeLibraryElementId);
+    if (item) return item.title || (item.type === 'article' ? 'Nový článok' : 'Nová poznámka');
+  }
+  return '';
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} kB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function setPanelOpen(open) {
+  dom.sourcesPanel.classList.toggle('is-open', open);
+  dom.sourcesPanel.setAttribute('aria-hidden', String(!open));
+  dom.sourcesButton.setAttribute('aria-expanded', String(open));
+}
+
+export function isSourcesPanelOpen() {
+  return dom.sourcesPanel.classList.contains('is-open');
+}
+
+export function closeSourcesPanel() {
+  setPanelOpen(false);
+}
+
+export async function openSourcesPanel({ sourceId = '' } = {}) {
+  setPanelOpen(true);
+  await loadSources();
+  if (sourceId) await selectSource(sourceId);
+}
+
+async function loadSources() {
+  const query = dom.sourceSearch.value.trim();
+  const result = await apiRequest(`/sources?q=${encodeURIComponent(query)}`);
+  sources = result.sources;
+  renderSourceList();
+}
+
+function renderSourceList() {
+  dom.sourcesList.replaceChildren();
+  if (!sources.length) {
+    const empty = document.createElement('p');
+    empty.className = 'sources-empty';
+    empty.textContent = dom.sourceSearch.value.trim() ? 'Nenašli sa žiadne zdroje.' : 'Zatiaľ žiadne zdroje.';
+    dom.sourcesList.append(empty);
+    return;
+  }
+  sources.forEach((source) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'source-list-item';
+    button.classList.toggle('is-active', source.id === selectedSource?.id);
+    button.addEventListener('click', () => void selectSource(source.id));
+
+    const title = document.createElement('span');
+    title.className = 'source-list-title';
+    title.textContent = source.title;
+    const meta = document.createElement('span');
+    meta.className = 'source-list-meta';
+    const usage = [source.fileCount ? `${source.fileCount} súb.` : '', source.libraryCount ? `${source.libraryCount} kn.` : '']
+      .filter(Boolean)
+      .join(' · ');
+    meta.textContent = [kindLabels[source.kind] || 'Zdroj', usage].filter(Boolean).join(' · ');
+    button.append(title, meta);
+    dom.sourcesList.append(button);
+  });
+}
+
+async function selectSource(sourceId) {
+  const result = await apiRequest(`/sources/${encodeURIComponent(sourceId)}`);
+  selectedSource = result.source;
+  renderSourceList();
+  renderSourceDetail();
+}
+
+function startNewSource() {
+  selectedSource = null;
+  dom.sourceForm.reset();
+  dom.sourceKind.value = 'source';
+  dom.sourceFormTitle.textContent = 'Nový zdroj';
+  dom.sourceDeleteButton.hidden = true;
+  dom.sourceDetailEmpty.hidden = true;
+  dom.sourceForm.hidden = false;
+  hideSourceSections();
+  dom.sourceTitle.focus();
+  renderSourceList();
+}
+
+function hideSourceSections() {
+  dom.sourceFilesSection.hidden = true;
+  dom.sourceLibrarySection.hidden = true;
+  dom.sourceElementSection.hidden = true;
+}
+
+function renderSourceDetail() {
+  if (!selectedSource) {
+    dom.sourceDetailEmpty.hidden = false;
+    dom.sourceForm.hidden = true;
+    hideSourceSections();
+    return;
+  }
+  const metadata = selectedSource.metadata || {};
+  dom.sourceDetailEmpty.hidden = true;
+  dom.sourceForm.hidden = false;
+  dom.sourceFormTitle.textContent = selectedSource.title;
+  dom.sourceDeleteButton.hidden = false;
+  dom.sourceTitle.value = selectedSource.title;
+  dom.sourceKind.value = selectedSource.kind in kindLabels ? selectedSource.kind : 'source';
+  dom.sourceYear.value = metadata.year || '';
+  dom.sourceAuthor.value = metadata.author || '';
+  dom.sourceUrl.value = metadata.url || '';
+  dom.sourceDescription.value = selectedSource.description || '';
+  dom.sourceFilesSection.hidden = false;
+  dom.sourceLibrarySection.hidden = false;
+  dom.sourceElementSection.hidden = false;
+  renderFiles();
+  renderLibraries();
+  renderElements();
+}
+
+function renderFiles() {
+  dom.sourceFilesList.replaceChildren();
+  if (!selectedSource.files?.length) {
+    const empty = document.createElement('p');
+    empty.className = 'source-usage-empty';
+    empty.textContent = 'Bez priložených súborov.';
+    dom.sourceFilesList.append(empty);
+    return;
+  }
+  selectedSource.files.forEach((file) => {
+    const row = document.createElement('div');
+    row.className = 'source-file-row';
+    const name = document.createElement('a');
+    name.href = `/api/files/${encodeURIComponent(file.id)}`;
+    name.target = '_blank';
+    name.rel = 'noopener';
+    name.textContent = file.originalName;
+    const meta = document.createElement('span');
+    meta.textContent = `${file.mimeType} · ${formatFileSize(file.sizeBytes)}`;
+    const download = document.createElement('a');
+    download.className = 'source-file-download';
+    download.href = `/api/files/${encodeURIComponent(file.id)}?download=1`;
+    download.download = file.originalName;
+    download.textContent = '↓';
+    download.title = `Stiahnuť ${file.originalName}`;
+    download.setAttribute('aria-label', `Stiahnuť ${file.originalName}`);
+    const copy = document.createElement('div');
+    copy.className = 'source-file-copy';
+    copy.append(name, meta);
+    row.append(copy, download);
+    dom.sourceFilesList.append(row);
+  });
+}
+
+function renderLibraries() {
+  const linkedIds = new Set((selectedSource?.libraries || []).map((library) => library.id));
+  dom.sourceLibrarySelect.replaceChildren();
+  state.libraries
+    .filter((library) => !linkedIds.has(library.id))
+    .forEach((library) => {
+      const option = document.createElement('option');
+      option.value = library.id;
+      option.textContent = library.name;
+      option.selected = library.id === state.activeLibraryId;
+      dom.sourceLibrarySelect.append(option);
+    });
+  dom.sourceLibraryLinkButton.disabled = !dom.sourceLibrarySelect.options.length;
+
+  dom.sourceLibrariesList.replaceChildren();
+  if (!selectedSource.libraries?.length) {
+    const empty = document.createElement('p');
+    empty.className = 'source-usage-empty';
+    empty.textContent = 'Nie je vložený v žiadnej knižnici.';
+    dom.sourceLibrariesList.append(empty);
+    return;
+  }
+  selectedSource.libraries.forEach((library) => {
+    const row = document.createElement('div');
+    row.className = 'source-usage-row';
+    const label = document.createElement('span');
+    label.textContent = library.note ? `${library.name} — ${library.note}` : library.name;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'source-unlink-button';
+    remove.textContent = '×';
+    remove.title = `Odobrať z knižnice ${library.name}`;
+    remove.setAttribute('aria-label', `Odobrať z knižnice ${library.name}`);
+    remove.addEventListener('click', async () => {
+      const result = await apiRequest(`/sources/${selectedSource.id}/libraries/${library.id}`, { method: 'DELETE' });
+      selectedSource = result.source;
+      renderSourceDetail();
+      await loadSources();
+      notifySourcesChanged();
+    });
+    row.append(label, remove);
+    dom.sourceLibrariesList.append(row);
+  });
+}
+
+function renderElements() {
+  const activeTitle = activeElementTitle();
+  dom.sourceElementLinkButton.disabled = !state.activeLibraryElementId;
+  dom.sourceElementLinkButton.textContent = activeTitle ? `Pripojiť k: ${activeTitle}` : 'Otvor prvok na pripojenie';
+  dom.sourceElementsList.replaceChildren();
+  if (!selectedSource.elements?.length) {
+    const empty = document.createElement('p');
+    empty.className = 'source-usage-empty';
+    empty.textContent = 'Zatiaľ nie je pripojený k žiadnemu článku ani poznámke.';
+    dom.sourceElementsList.append(empty);
+    return;
+  }
+  selectedSource.elements.forEach((element) => {
+    const row = document.createElement('div');
+    row.className = 'source-usage-row';
+    const label = document.createElement('span');
+    const locator = element.locator ? ` · ${element.locator}` : '';
+    label.textContent = `${element.libraryName} / ${element.title} · ${relationLabels[element.relationType] || element.relationType}${locator}`;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'source-unlink-button';
+    remove.textContent = '×';
+    remove.title = `Odpojiť od ${element.title}`;
+    remove.setAttribute('aria-label', `Odpojiť od ${element.title}`);
+    remove.addEventListener('click', async () => {
+      const result = await apiRequest(`/sources/${selectedSource.id}/element-links/${element.linkId}`, { method: 'DELETE' });
+      selectedSource = result.source;
+      renderSourceDetail();
+      await refreshElementSourceLinks();
+      await loadSources();
+    });
+    row.append(label, remove);
+    dom.sourceElementsList.append(row);
+  });
+}
+
+export async function refreshElementSourceLinks() {
+  const elementId = state.activeLibraryElementId;
+  if (!elementId) {
+    dom.editorSourceLinks.hidden = true;
+    dom.editorSourceLinks.replaceChildren();
+    return;
+  }
+  try {
+    const result = await apiRequest(`/elements/${encodeURIComponent(elementId)}/sources`);
+    dom.editorSourceLinks.replaceChildren();
+    if (!result.sources.length) {
+      dom.editorSourceLinks.hidden = true;
+      return;
+    }
+    const label = document.createElement('span');
+    label.className = 'editor-source-label';
+    label.textContent = 'Zdroje';
+    dom.editorSourceLinks.append(label);
+    result.sources.forEach((source) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'editor-source-chip';
+      button.textContent = source.locator ? `${source.title} · ${source.locator}` : source.title;
+      button.title = 'Otvoriť detail zdroja';
+      button.addEventListener('click', () => void openSourcesPanel({ sourceId: source.id }));
+      dom.editorSourceLinks.append(button);
+    });
+    dom.editorSourceLinks.hidden = false;
+  } catch {
+    dom.editorSourceLinks.hidden = true;
+  }
+}
+
+export function initializeSources() {
+  dom.sourcesButton.addEventListener('click', () => {
+    if (isSourcesPanelOpen()) closeSourcesPanel();
+    else void openSourcesPanel();
+  });
+  dom.sourcesCloseButton.addEventListener('click', closeSourcesPanel);
+  dom.sourceCreateButton.addEventListener('click', startNewSource);
+  dom.sourceSearch.addEventListener('input', () => {
+    window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(() => void loadSources(), 180);
+  });
+  dom.sourceForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const data = {
+      title: dom.sourceTitle.value,
+      kind: dom.sourceKind.value,
+      description: dom.sourceDescription.value,
+      metadata: {
+        author: dom.sourceAuthor.value.trim(),
+        year: dom.sourceYear.value.trim(),
+        url: dom.sourceUrl.value.trim()
+      }
+    };
+    const result = selectedSource
+      ? await apiRequest(`/sources/${selectedSource.id}`, { method: 'PATCH', body: data })
+      : await apiRequest('/sources', { method: 'POST', body: { ...data, id: crypto.randomUUID() } });
+    selectedSource = result.source;
+    renderSourceDetail();
+    await loadSources();
+    notifySourcesChanged();
+  });
+  dom.sourceDeleteButton.addEventListener('click', async () => {
+    if (!selectedSource || !confirm(`Zmazať zdroj "${selectedSource.title}" aj jeho súbory?`)) return;
+    await apiRequest(`/sources/${selectedSource.id}`, { method: 'DELETE' });
+    selectedSource = null;
+    renderSourceDetail();
+    await loadSources();
+    await refreshElementSourceLinks();
+    notifySourcesChanged();
+  });
+  dom.sourceUploadButton.addEventListener('click', () => dom.sourceFileInput.click());
+  dom.sourceFileInput.addEventListener('change', async () => {
+    if (!selectedSource) return;
+    const files = [...dom.sourceFileInput.files];
+    for (const file of files) {
+      const result = await uploadSourceFile(selectedSource.id, file);
+      selectedSource = result.source;
+    }
+    dom.sourceFileInput.value = '';
+    renderSourceDetail();
+    await loadSources();
+  });
+  dom.sourceLibraryLinkButton.addEventListener('click', async () => {
+    if (!selectedSource || !dom.sourceLibrarySelect.value) return;
+    await flushWorkspaceSync();
+    const result = await apiRequest(`/sources/${selectedSource.id}/libraries/${dom.sourceLibrarySelect.value}`, {
+      method: 'PUT',
+      body: {}
+    });
+    selectedSource = result.source;
+    renderSourceDetail();
+    await loadSources();
+    notifySourcesChanged();
+  });
+  dom.sourceElementLinkButton.addEventListener('click', async () => {
+    if (!selectedSource || !state.activeLibraryElementId) return;
+    await flushWorkspaceSync();
+    const result = await apiRequest(`/sources/${selectedSource.id}/element-links`, {
+      method: 'POST',
+      body: {
+        id: crypto.randomUUID(),
+        elementId: state.activeLibraryElementId,
+        relationType: dom.sourceRelationType.value,
+        locator: dom.sourceLocator.value.trim()
+      }
+    });
+    selectedSource = result.source;
+    dom.sourceLocator.value = '';
+    renderSourceDetail();
+    await refreshElementSourceLinks();
+    await loadSources();
+  });
+}

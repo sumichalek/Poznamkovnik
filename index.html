@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sk" data-app-version="0.9.3">
+<html lang="sk" data-app-version="0.10.0">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,8 +7,8 @@
     <script>
       document.documentElement.dataset.theme = localStorage.getItem('knowledge-theme') || 'focus';
     </script>
-    <link rel="stylesheet" href="style.css?v=0.9.3" />
-    <link rel="stylesheet" href="assets/app.css?v=0.9.3" />
+    <link rel="stylesheet" href="style.css?v=0.10.0" />
+    <link rel="stylesheet" href="assets/app.css?v=0.10.0" />
   </head>
   <body>
     <main id="login-screen" class="login-screen" aria-labelledby="login-title">
@@ -16,6 +16,7 @@
         <header class="login-brand">
           <h1 id="login-title">Poznámkovník</h1>
         </header>
+        <p id="login-message" class="login-message" aria-live="polite"></p>
 
         <form id="login-form" class="login-form" method="post">
           <label>
@@ -26,7 +27,7 @@
             Heslo
             <input id="login-password" type="password" name="password" autocomplete="current-password" required />
           </label>
-          <button class="login-submit-button" type="submit">Prihlásiť</button>
+          <button id="login-submit" class="login-submit-button" type="submit">Prihlásiť</button>
         </form>
       </section>
     </main>
@@ -42,6 +43,7 @@
             </div>
           </div>
           <button id="libraries-button" class="nav-button" type="button" aria-controls="libraries-panel">Knižnice</button>
+          <button id="sources-button" class="nav-button" type="button" aria-controls="sources-panel" aria-expanded="false">Zdroje</button>
         </div>
 
         <div class="topbar-actions">
@@ -69,6 +71,101 @@
           </form>
 
           <div id="libraries-list" class="libraries-list" aria-live="polite"></div>
+        </div>
+      </aside>
+
+      <aside id="sources-panel" class="sources-panel" aria-label="Zdroje" aria-hidden="true">
+        <div class="sources-panel-inner">
+          <header class="sources-panel-head">
+            <h2>Zdroje</h2>
+            <div class="sources-panel-actions">
+              <button id="source-create-button" class="panel-icon-button" type="button" aria-label="Vytvoriť zdroj" title="Vytvoriť zdroj">+</button>
+              <button id="sources-close-button" class="panel-icon-button" type="button" aria-label="Zavrieť zdroje" title="Zavrieť zdroje">&times;</button>
+            </div>
+          </header>
+          <div class="sources-layout">
+            <section class="sources-list-pane" aria-label="Zoznam zdrojov">
+              <input id="source-search" type="search" placeholder="Hľadať zdroje" aria-label="Hľadať zdroje" />
+              <div id="sources-list" class="sources-list" aria-live="polite"></div>
+            </section>
+            <section id="source-detail" class="source-detail" aria-label="Detail zdroja">
+              <p id="source-detail-empty" class="source-detail-empty">Vyber zdroj alebo vytvor nový.</p>
+              <form id="source-form" class="source-form" hidden>
+                <header>
+                  <h3 id="source-form-title">Nový zdroj</h3>
+                  <button id="source-delete-button" class="panel-icon-button danger" type="button" aria-label="Zmazať zdroj" title="Zmazať zdroj" hidden><span class="trash-icon" aria-hidden="true"><span></span></span></button>
+                </header>
+                <label>
+                  Názov
+                  <input id="source-title" type="text" maxlength="240" required />
+                </label>
+                <div class="source-form-row">
+                  <label>
+                    Typ
+                    <select id="source-kind">
+                      <option value="source">Zdroj</option>
+                      <option value="article">Článok</option>
+                      <option value="book">Kniha</option>
+                      <option value="web">Web</option>
+                      <option value="dataset">Dáta</option>
+                      <option value="attachment">Príloha</option>
+                    </select>
+                  </label>
+                  <label>
+                    Rok
+                    <input id="source-year" type="text" maxlength="12" inputmode="numeric" />
+                  </label>
+                </div>
+                <label>
+                  Autor alebo vydavateľ
+                  <input id="source-author" type="text" maxlength="240" />
+                </label>
+                <label>
+                  URL, DOI alebo ISBN
+                  <input id="source-url" type="text" maxlength="500" />
+                </label>
+                <label>
+                  Poznámka
+                  <textarea id="source-description" rows="3" maxlength="10000"></textarea>
+                </label>
+                <footer>
+                  <button id="source-save-button" class="citation-insert-button" type="submit">Uložiť zdroj</button>
+                </footer>
+              </form>
+              <section id="source-files-section" class="source-detail-section" hidden>
+                <header>
+                  <h3>Súbory</h3>
+                  <button id="source-upload-button" class="panel-icon-button" type="button" aria-label="Pridať súbory" title="Pridať súbory"><span class="attachment-icon" aria-hidden="true"></span></button>
+                </header>
+                <input id="source-file-input" type="file" hidden multiple />
+                <div id="source-files-list" class="source-files-list"></div>
+              </section>
+              <section id="source-library-section" class="source-detail-section" hidden>
+                <header><h3>V knižniciach</h3></header>
+                <div class="source-link-controls">
+                  <select id="source-library-select" aria-label="Knižnica pre zdroj"></select>
+                  <button id="source-library-link-button" class="citation-insert-button" type="button">Prepojiť</button>
+                </div>
+                <div id="source-libraries-list" class="source-usage-list"></div>
+              </section>
+              <section id="source-element-section" class="source-detail-section" hidden>
+                <header><h3>V článkoch a poznámkach</h3></header>
+                <div class="source-link-controls source-element-controls">
+                  <select id="source-relation-type" aria-label="Typ väzby">
+                    <option value="reference">Odkaz</option>
+                    <option value="citation">Citácia</option>
+                    <option value="attachment">Príloha</option>
+                    <option value="evidence">Dôkaz</option>
+                    <option value="counterargument">Protinázor</option>
+                    <option value="derived">Vychádza zo zdroja</option>
+                  </select>
+                  <input id="source-locator" type="text" maxlength="300" placeholder="Strana, kapitola..." aria-label="Miesto v zdroji" />
+                  <button id="source-element-link-button" class="citation-insert-button" type="button">Pripojiť k otvorenému prvku</button>
+                </div>
+                <div id="source-elements-list" class="source-usage-list"></div>
+              </section>
+            </section>
+          </div>
         </div>
       </aside>
 
@@ -101,10 +198,12 @@
                 <span class="tool-icon article-icon" aria-hidden="true"></span>
               </button>
             </div>
+            <div id="editor-source-links" class="editor-source-links" hidden aria-label="Zdroje otvoreného prvku"></div>
           </header>
 
           <section id="library-browser" class="library-browser" aria-label="Obsah knižnice">
             <div id="library-items-list" class="library-items-list" aria-live="polite"></div>
+            <section id="library-source-links" class="library-source-links" hidden aria-label="Zdroje v knižnici"></section>
           </section>
 
         </div>
@@ -188,7 +287,10 @@
             </div>
           </dl>
         </section>
-        <p id="app-version" class="app-version">Verzia 0.9.3</p>
+        <footer class="settings-footer">
+          <button id="logout-button" class="settings-logout-button" type="button">Odhlásiť</button>
+          <p id="app-version" class="app-version">Verzia 0.10.0</p>
+        </footer>
       </div>
     </dialog>
 
@@ -198,6 +300,12 @@
           <h2>Citácia zdroja</h2>
           <button id="citation-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť">&times;</button>
         </header>
+        <label>
+          Uložený zdroj
+          <select id="citation-saved-source">
+            <option value="">Vlastný zápis</option>
+          </select>
+        </label>
         <label>
           Zdroj
           <input id="citation-source" type="text" maxlength="160" required autocomplete="off" />
@@ -233,6 +341,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="assets/app.js?v=0.9.3"></script>
+    <script type="module" src="assets/app.js?v=0.10.0"></script>
   </body>
 </html>

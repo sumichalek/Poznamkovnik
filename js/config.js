@@ -1,4 +1,4 @@
-export const APP_VERSION = '0.9.3';
+export const APP_VERSION = '0.10.0';
 
 export const HORIZONTAL_EDITOR_MIN_WIDTH = 1120;
 export const HORIZONTAL_EDITOR_MIN_RATIO = 1.15;
@@ -8,6 +8,7 @@ export const storageKeys = {
   libraries: 'knowledge-libraries',
   activeLibrary: 'knowledge-active-library',
   libraryElements: 'knowledge-library-elements',
+  workspaceOwner: 'knowledge-workspace-owner',
   editorDockInlineSize: 'knowledge-editor-dock-inline-size',
   editorDockBlockSize: 'knowledge-editor-dock-block-size'
 };

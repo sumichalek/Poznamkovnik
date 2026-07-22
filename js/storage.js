@@ -1,6 +1,12 @@
 import { elementTypes, storageKeys, themes } from './config.js';
+import { apiRequest } from './api.js';
 import { dom } from './dom.js';
 import { state } from './state.js';
+
+let serverWorkspaceReady = false;
+let syncTimer = 0;
+let syncInProgress = false;
+let syncQueued = false;
 
 export function normalizeLibraries(value) {
   if (!Array.isArray(value)) return [];
@@ -71,7 +77,7 @@ export function loadLibraries() {
   if (!state.libraries.some((library) => library.id === state.activeLibraryId)) {
     state.activeLibraryId = state.libraries[0]?.id || '';
   }
-  saveLibraries();
+  persistWorkspaceLocally();
 }
 
 export function loadLibraryElements() {
@@ -80,22 +86,102 @@ export function loadLibraryElements() {
   } catch {
     state.libraryElements = {};
   }
-  saveLibraryElements();
+  persistWorkspaceLocally();
 }
 
 export function saveLibraries() {
   state.libraries = normalizeLibraries(state.libraries);
-  localStorage.setItem(storageKeys.libraries, JSON.stringify(state.libraries));
-  if (state.activeLibraryId) {
-    localStorage.setItem(storageKeys.activeLibrary, state.activeLibraryId);
-  } else {
-    localStorage.removeItem(storageKeys.activeLibrary);
-  }
+  persistWorkspaceLocally();
+  scheduleWorkspaceSync();
 }
 
 export function saveLibraryElements() {
   state.libraryElements = normalizeLibraryElements(state.libraryElements);
+  persistWorkspaceLocally();
+  scheduleWorkspaceSync();
+}
+
+function persistWorkspaceLocally() {
+  localStorage.setItem(storageKeys.libraries, JSON.stringify(state.libraries));
   localStorage.setItem(storageKeys.libraryElements, JSON.stringify(state.libraryElements));
+  if (state.activeLibraryId) localStorage.setItem(storageKeys.activeLibrary, state.activeLibraryId);
+  else localStorage.removeItem(storageKeys.activeLibrary);
+}
+
+function workspaceSnapshot() {
+  return {
+    libraries: normalizeLibraries(state.libraries),
+    libraryElements: normalizeLibraryElements(state.libraryElements)
+  };
+}
+
+function applyWorkspace(workspace) {
+  state.libraries = normalizeLibraries(workspace?.libraries);
+  state.libraryElements = normalizeLibraryElements(workspace?.libraryElements);
+  const locallyActive = localStorage.getItem(storageKeys.activeLibrary) || '';
+  state.activeLibraryId = state.libraries.some((library) => library.id === locallyActive)
+    ? locallyActive
+    : state.libraries[0]?.id || '';
+  persistWorkspaceLocally();
+}
+
+export async function hydrateWorkspace(user) {
+  const remoteWorkspace = await apiRequest('/workspace');
+  const localWorkspace = workspaceSnapshot();
+  const localOwner = localStorage.getItem(storageKeys.workspaceOwner);
+  const shouldMigrateLocalWorkspace =
+    remoteWorkspace.libraries.length === 0 && localWorkspace.libraries.length > 0 && (!localOwner || localOwner === user.id);
+  const workspace = shouldMigrateLocalWorkspace
+    ? await apiRequest('/workspace', { method: 'PUT', body: localWorkspace })
+    : remoteWorkspace;
+
+  applyWorkspace(workspace);
+  localStorage.setItem(storageKeys.workspaceOwner, user.id);
+  serverWorkspaceReady = true;
+  return workspace;
+}
+
+export function disableWorkspaceSync() {
+  serverWorkspaceReady = false;
+  window.clearTimeout(syncTimer);
+  syncTimer = 0;
+  syncQueued = false;
+}
+
+export async function flushWorkspaceSync() {
+  if (!serverWorkspaceReady) return;
+  window.clearTimeout(syncTimer);
+  syncTimer = 0;
+  await syncWorkspace();
+}
+
+function scheduleWorkspaceSync() {
+  if (!serverWorkspaceReady) return;
+  window.clearTimeout(syncTimer);
+  syncTimer = window.setTimeout(() => {
+    void syncWorkspace();
+  }, 350);
+}
+
+async function syncWorkspace() {
+  if (!serverWorkspaceReady) return;
+  if (syncInProgress) {
+    syncQueued = true;
+    return;
+  }
+  syncInProgress = true;
+  try {
+    const workspace = await apiRequest('/workspace', { method: 'PUT', body: workspaceSnapshot() });
+    applyWorkspace(workspace);
+  } catch {
+    // Lokálna kópia ostáva zachovaná a ďalšia zmena synchronizáciu skúsi znovu.
+  } finally {
+    syncInProgress = false;
+    if (syncQueued) {
+      syncQueued = false;
+      scheduleWorkspaceSync();
+    }
+  }
 }
 
 export function currentLibrary() {
