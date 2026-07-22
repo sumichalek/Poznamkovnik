@@ -175,38 +175,13 @@ select:focus-visible,
 }
 
 .login-brand {
-  display: flex;
-  align-items: center;
-  gap: var(--space-5);
-}
-
-.login-brand-mark {
-  width: 42px;
-  height: 42px;
-  display: grid;
-  flex: 0 0 auto;
-  place-items: center;
-  border-radius: var(--radius-lg);
-  background: var(--brand-mark);
-  color: var(--brand-mark-text);
-  font-size: 1.2rem;
-  font-weight: 800;
-}
-
-.login-brand h1,
-.login-brand p {
-  margin: 0;
+  text-align: center;
 }
 
 .login-brand h1 {
+  margin: 0;
   font-size: 1.45rem;
   line-height: 1.15;
-}
-
-.login-brand p {
-  margin-bottom: var(--space-1);
-  color: var(--text-muted);
-  font-size: 0.8rem;
 }
 
 .login-form {
@@ -230,6 +205,7 @@ select:focus-visible,
   background: var(--input-bg);
   color: var(--text);
   padding: var(--space-4) var(--space-5);
+  text-align: center;
 }
 
 .login-submit-button {

@@ -202,6 +202,7 @@ dom.mathDialog.addEventListener('close', resetMathDialog);
 
 document.addEventListener('pointerdown', (event) => {
   if (!isAuthenticated()) return;
+  if (dom.settingsDialog.open || dom.citationDialog.open || dom.mathDialog.open) return;
   if (!state.librariesPanelPinned && !state.libraryDetailPanelPinned) return;
   if (
     dom.topbar.contains(event.target) ||

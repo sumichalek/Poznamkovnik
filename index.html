@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sk" data-app-version="0.9.1">
+<html lang="sk" data-app-version="0.9.3">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,18 +7,14 @@
     <script>
       document.documentElement.dataset.theme = localStorage.getItem('knowledge-theme') || 'focus';
     </script>
-    <link rel="stylesheet" href="style.css?v=0.9.1" />
-    <link rel="stylesheet" href="assets/app.css?v=0.9.1" />
+    <link rel="stylesheet" href="style.css?v=0.9.3" />
+    <link rel="stylesheet" href="assets/app.css?v=0.9.3" />
   </head>
   <body>
     <main id="login-screen" class="login-screen" aria-labelledby="login-title">
       <section class="login-panel">
         <header class="login-brand">
-          <span class="login-brand-mark" aria-hidden="true">P</span>
-          <div>
-            <p>Osobná pracovná plocha</p>
-            <h1 id="login-title">Poznámkovník</h1>
-          </div>
+          <h1 id="login-title">Poznámkovník</h1>
         </header>
 
         <form id="login-form" class="login-form" method="post">
@@ -192,7 +188,7 @@
             </div>
           </dl>
         </section>
-        <p id="app-version" class="app-version">Verzia 0.9.1</p>
+        <p id="app-version" class="app-version">Verzia 0.9.3</p>
       </div>
     </dialog>
 
@@ -237,6 +233,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="assets/app.js?v=0.9.1"></script>
+    <script type="module" src="assets/app.js?v=0.9.3"></script>
   </body>
 </html>
