@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sk" data-app-version="0.10.1">
+<html lang="sk" data-app-version="0.11.0">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,8 +7,8 @@
     <script>
       document.documentElement.dataset.theme = localStorage.getItem('knowledge-theme') || 'focus';
     </script>
-    <link rel="stylesheet" href="style.css?v=0.10.1" />
-    <link rel="stylesheet" href="assets/app.css?v=0.10.1" />
+    <link rel="stylesheet" href="style.css?v=0.11.0" />
+    <link rel="stylesheet" href="assets/app.css?v=0.11.0" />
   </head>
   <body>
     <main id="login-screen" class="login-screen" aria-labelledby="login-title">
@@ -274,6 +274,17 @@
             <option value="contrast">Kontrastná</option>
           </select>
         </label>
+        <section class="settings-background" aria-labelledby="background-title">
+          <div>
+            <h3 id="background-title">Pozadie pracovnej plochy</h3>
+            <p id="background-status" class="background-status" aria-live="polite"></p>
+          </div>
+          <div class="background-actions">
+            <input id="background-file-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden />
+            <button id="background-upload-button" class="settings-background-button" type="button">Vybrať fotku</button>
+            <button id="background-remove-button" class="settings-background-button danger" type="button" disabled>Odstrániť</button>
+          </div>
+        </section>
         <section class="shortcuts-list" aria-label="Klávesové skratky">
           <h3>Skratky</h3>
           <dl>
@@ -289,7 +300,7 @@
         </section>
         <footer class="settings-footer">
           <button id="logout-button" class="settings-logout-button" type="button">Odhlásiť</button>
-          <p id="app-version" class="app-version">Verzia 0.10.1</p>
+          <p id="app-version" class="app-version">Verzia 0.11.0</p>
         </footer>
       </div>
     </dialog>
@@ -341,6 +352,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="assets/app.js?v=0.10.1"></script>
+    <script type="module" src="assets/app.js?v=0.11.0"></script>
   </body>
 </html>

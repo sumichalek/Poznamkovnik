@@ -11,6 +11,7 @@ import {
   updateMathPreview
 } from './article-editor.js';
 import { initializeEditorResizing } from './editor-resize.js';
+import { clearAppliedBackground, initializeBackgroundSettings, loadBackgroundPreference } from './background.js';
 import { dom } from './dom.js';
 import { initializeLogin, isAuthenticated, logout } from './login.js';
 import { state } from './state.js';
@@ -324,6 +325,7 @@ dom.settingsClose.addEventListener('click', () => {
 });
 dom.logoutButton.addEventListener('click', async () => {
   disableWorkspaceSync();
+  clearAppliedBackground();
   dom.settingsDialog.close();
   await logout();
 });
@@ -341,6 +343,7 @@ document.documentElement.dataset.appVersion = APP_VERSION;
 if (dom.appVersion) dom.appVersion.textContent = `Verzia ${APP_VERSION}`;
 initializeArticleEditor({ onUpdate: () => updateActiveElementFromEditor() });
 initializeEditorResizing();
+initializeBackgroundSettings();
 initializeSources();
 applyTheme(localStorage.getItem(storageKeys.theme) || 'focus');
 loadLibraries();
@@ -351,7 +354,7 @@ dom.librariesButton.setAttribute('aria-expanded', 'false');
 updateTopbarVisibility();
 initializeLogin({
   onAuthenticated: async (user) => {
-    await hydrateWorkspace(user);
+    await Promise.all([hydrateWorkspace(user), loadBackgroundPreference()]);
     renderLibraries();
     state.pointerNearTop = true;
     updateTopbarVisibility();

@@ -46,6 +46,14 @@ class Database:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS user_preferences (
+                    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                    background_filename TEXT NOT NULL DEFAULT '',
+                    background_mime_type TEXT NOT NULL DEFAULT '',
+                    background_version TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -128,6 +136,57 @@ class Database:
     def user_count(self) -> int:
         with self.connect() as connection:
             return int(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+
+    def background_preference(self, user_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT background_filename, background_mime_type, background_version FROM user_preferences WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        if not row or not row["background_filename"]:
+            return {"hasBackground": False, "version": ""}
+        return {
+            "hasBackground": True,
+            "filename": row["background_filename"],
+            "mimeType": row["background_mime_type"],
+            "version": row["background_version"],
+        }
+
+    def save_background_preference(
+        self, user_id: str, filename: str, mime_type: str, version: str
+    ) -> dict[str, Any]:
+        previous = self.background_preference(user_id)
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_preferences(user_id, background_filename, background_mime_type, background_version, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    background_filename = excluded.background_filename,
+                    background_mime_type = excluded.background_mime_type,
+                    background_version = excluded.background_version,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, filename, mime_type, version, now_iso()),
+            )
+        return previous
+
+    def clear_background_preference(self, user_id: str) -> dict[str, Any]:
+        previous = self.background_preference(user_id)
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_preferences(user_id, background_filename, background_mime_type, background_version, updated_at)
+                VALUES (?, '', '', '', ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    background_filename = '',
+                    background_mime_type = '',
+                    background_version = '',
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, now_iso()),
+            )
+        return previous
 
     def read_workspace(self, user_id: str) -> dict[str, Any]:
         with self.connect() as connection:

@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .auth import AuthError, AuthService, SESSION_DAYS
 from .database import Database, ValidationError
-from .files import FileStore, UploadError
+from .files import BackgroundStore, FileStore, MAX_BACKGROUND_BYTES, UploadError
 
 
 class ApiError(Exception):
@@ -31,6 +31,7 @@ class AppContext:
         self.database.initialize()
         self.auth = AuthService(self.database)
         self.files = FileStore(data_dir / "files")
+        self.backgrounds = BackgroundStore(data_dir / "backgrounds")
 
 
 class AppHandler(SimpleHTTPRequestHandler):
@@ -151,6 +152,33 @@ class AppHandler(SimpleHTTPRequestHandler):
             return {"authenticated": False}
 
         user = self._require_user()
+        if route == ["preferences"] and method == "GET":
+            return {"background": self.context.database.background_preference(user["id"])}
+        if route == ["preferences", "background"] and method == "POST":
+            uploaded = self._read_upload(MAX_BACKGROUND_BYTES + 512 * 1024)
+            background = self.context.backgrounds.store_upload(user["id"], uploaded.file)
+            try:
+                previous = self.context.database.save_background_preference(
+                    user["id"],
+                    str(background["filename"]),
+                    str(background["mimeType"]),
+                    str(background["version"]),
+                )
+            except Exception:
+                if background["created"]:
+                    self.context.backgrounds.delete(user["id"], str(background["filename"]))
+                raise
+            if previous.get("filename") and previous["filename"] != background["filename"]:
+                self.context.backgrounds.delete(user["id"], str(previous["filename"]))
+            return {"background": self.context.database.background_preference(user["id"])}
+        if route == ["preferences", "background"] and method == "DELETE":
+            previous = self.context.database.clear_background_preference(user["id"])
+            if previous.get("filename"):
+                self.context.backgrounds.delete(user["id"], str(previous["filename"]))
+            return {"background": self.context.database.background_preference(user["id"])}
+        if route == ["preferences", "background"] and method in {"GET", "HEAD"}:
+            self._send_background(user["id"], head_only=method == "HEAD")
+            return None
         if route == ["workspace"] and method == "GET":
             return self.context.database.read_workspace(user["id"])
         if route == ["workspace"] and method == "PUT":
@@ -232,8 +260,8 @@ class AppHandler(SimpleHTTPRequestHandler):
             raise ApiError(HTTPStatus.BAD_REQUEST, "JSON musí byť objekt.")
         return value
 
-    def _read_upload(self) -> cgi.FieldStorage:
-        self._content_length(101 * 1024 * 1024)
+    def _read_upload(self, maximum: int = 101 * 1024 * 1024) -> cgi.FieldStorage:
+        self._content_length(maximum)
         if self.headers.get_content_type() != "multipart/form-data":
             raise ApiError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Nahrávanie očakáva multipart formulár.")
         form = cgi.FieldStorage(
@@ -289,6 +317,25 @@ class AppHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", mime_type)
         self.send_header("Content-Length", str(path.stat().st_size))
         self.send_header("Content-Disposition", f'{disposition}; filename="{safe_name}"')
+        self.end_headers()
+        if head_only:
+            return
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                self.wfile.write(chunk)
+
+    def _send_background(self, user_id: str, *, head_only: bool = False) -> None:
+        background = self.context.database.background_preference(user_id)
+        if not background["hasBackground"]:
+            raise ApiError(HTTPStatus.NOT_FOUND, "Vlastné pozadie nie je nastavené.")
+        path = self.context.backgrounds.path_for(user_id, str(background["filename"]))
+        if not path.is_file():
+            raise ApiError(HTTPStatus.NOT_FOUND, "Súbor pozadia sa nenašiel.")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", str(background["mimeType"]))
+        self.send_header("Content-Length", str(path.stat().st_size))
+        self.send_header("Content-Disposition", "inline")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         if head_only:
             return
