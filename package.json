@@ -1,0 +1,24 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild js/main.js --bundle --format=esm --target=es2022 --minify --loader:.woff2=file --loader:.woff=file --loader:.ttf=file --outfile=assets/app.js"
+  },
+  "dependencies": {
+    "@tiptap/core": "^3.28.0",
+    "@tiptap/extension-highlight": "^3.28.0",
+    "@tiptap/extension-image": "^3.28.0",
+    "@tiptap/extension-link": "^3.28.0",
+    "@tiptap/extension-mathematics": "^3.28.0",
+    "@tiptap/extension-table": "^3.28.0",
+    "@tiptap/extension-table-cell": "^3.28.0",
+    "@tiptap/extension-table-header": "^3.28.0",
+    "@tiptap/extension-table-row": "^3.28.0",
+    "@tiptap/extension-task-item": "^3.28.0",
+    "@tiptap/extension-task-list": "^3.28.0",
+    "@tiptap/extension-underline": "^3.28.0",
+    "@tiptap/starter-kit": "^3.28.0",
+    "esbuild": "^0.28.1",
+    "katex": "^0.17.0"
+  }
+}

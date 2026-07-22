@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sk" data-app-version="0.1.1">
+<html lang="sk" data-app-version="0.9.1">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,29 +7,48 @@
     <script>
       document.documentElement.dataset.theme = localStorage.getItem('knowledge-theme') || 'focus';
     </script>
-    <link rel="stylesheet" href="style.css?v=0.1.1" />
+    <link rel="stylesheet" href="style.css?v=0.9.1" />
+    <link rel="stylesheet" href="assets/app.css?v=0.9.1" />
   </head>
   <body>
-    <div class="app-shell">
+    <main id="login-screen" class="login-screen" aria-labelledby="login-title">
+      <section class="login-panel">
+        <header class="login-brand">
+          <span class="login-brand-mark" aria-hidden="true">P</span>
+          <div>
+            <p>Osobná pracovná plocha</p>
+            <h1 id="login-title">Poznámkovník</h1>
+          </div>
+        </header>
+
+        <form id="login-form" class="login-form" method="post">
+          <label>
+            Meno používateľa
+            <input id="login-username" type="text" name="username" maxlength="80" autocomplete="username" required />
+          </label>
+          <label>
+            Heslo
+            <input id="login-password" type="password" name="password" autocomplete="current-password" required />
+          </label>
+          <button class="login-submit-button" type="submit">Prihlásiť</button>
+        </form>
+      </section>
+    </main>
+
+    <div id="app-shell" class="app-shell" hidden aria-hidden="true">
       <header class="topbar">
         <div class="topbar-primary">
           <div class="brand">
             <span class="brand-mark">P</span>
             <div>
               <h1>Poznámkovník</h1>
-              <p>Osobná pracovná plocha</p>
+              <p id="brand-subtitle">Osobná pracovná plocha</p>
             </div>
           </div>
           <button id="libraries-button" class="nav-button" type="button" aria-controls="libraries-panel">Knižnice</button>
         </div>
 
         <div class="topbar-actions">
-          <label class="theme-switch" title="Svetlá / tmavá téma">
-            <span>Svetlá</span>
-            <input id="theme-toggle" type="checkbox" aria-label="Prepnúť svetlú alebo tmavú tému" />
-            <span class="switch-track" aria-hidden="true"></span>
-            <span>Tmavá</span>
-          </label>
           <button id="settings-button" class="icon-button" type="button" aria-label="Nastavenia" title="Nastavenia">
             &#9881;
           </button>
@@ -40,7 +59,6 @@
         <div class="libraries-panel-inner">
           <header class="libraries-panel-head">
             <div>
-              <p class="eyebrow">Panel</p>
               <h2>Knižnice</h2>
             </div>
             <button id="library-create-button" class="panel-icon-button" type="button" aria-label="Vytvoriť knižnicu" title="Vytvoriť knižnicu">+</button>
@@ -62,11 +80,18 @@
         <div class="library-detail-panel-inner">
           <header class="library-detail-header">
             <div class="library-path-strip" aria-label="Cesta v knižnici">
-              <button id="folder-home-button" class="panel-icon-button" type="button" aria-label="Prejsť na koreň knižnice" title="Koreň knižnice">⌂</button>
-              <button id="folder-up-button" class="panel-icon-button" type="button" aria-label="Prejsť o úroveň vyššie" title="O úroveň vyššie">↑</button>
+              <button id="folder-home-button" class="panel-icon-button folder-nav-button" type="button" aria-label="Prejsť na koreň knižnice" title="Koreň knižnice"><span class="home-icon" aria-hidden="true"><span></span></span></button>
+              <button id="folder-up-button" class="panel-icon-button folder-nav-button" type="button" aria-label="Prejsť o úroveň vyššie" title="O úroveň vyššie"><span class="up-icon" aria-hidden="true"></span></button>
               <div class="library-path-text">
-                <p class="eyebrow">Cesta</p>
                 <h2 id="library-detail-title">Koreň</h2>
+                <form id="folder-rename-form" class="folder-rename-form" hidden>
+                  <span id="folder-rename-prefix" class="folder-rename-prefix" aria-hidden="true"></span>
+                  <input id="folder-rename-input" type="text" maxlength="120" required aria-label="Nový názov priečinka" />
+                </form>
+              </div>
+              <div class="library-path-actions">
+                <button id="folder-rename-button" class="panel-icon-button" type="button" aria-label="Premenovať priečinok" title="Premenovať priečinok" hidden>✎</button>
+                <button id="folder-delete-button" class="panel-icon-button danger" type="button" aria-label="Zmazať priečinok" title="Zmazať priečinok" hidden>×</button>
               </div>
             </div>
             <div class="library-detail-toolbar" aria-label="Tvorba prvkov knižnice">
@@ -86,24 +111,48 @@
             <div id="library-items-list" class="library-items-list" aria-live="polite"></div>
           </section>
 
-          <section id="library-editor" class="library-editor" aria-label="Editor prvku" hidden>
-            <header class="library-editor-head">
-              <div class="library-editor-topline">
-                <button id="library-editor-back" class="panel-icon-button" type="button" aria-label="Späť na obsah knižnice" title="Späť na obsah knižnice">←</button>
-                <input id="library-editor-title" class="library-editor-title" type="text" maxlength="120" aria-label="Názov prvku" />
-                <button id="library-editor-delete" class="panel-icon-button danger" type="button" aria-label="Zmazať prvok" title="Zmazať prvok">×</button>
-              </div>
-              <div class="library-editor-formatbar" aria-label="Formátovanie textu">
-                <button class="editor-format-button" type="button" data-format-command="bold" aria-label="Tučné" title="Tučné"><strong>B</strong></button>
-                <button class="editor-format-button" type="button" data-format-command="italic" aria-label="Kurzíva" title="Kurzíva"><em>I</em></button>
-                <button class="editor-format-button" type="button" data-format-command="underline" aria-label="Podčiarknuť" title="Podčiarknuť"><span>U</span></button>
-                <button class="editor-format-button" type="button" data-format-command="insertUnorderedList" aria-label="Zoznam" title="Zoznam">•</button>
-              </div>
-            </header>
-            <div id="library-editor-body" class="library-editor-body" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Píšte poznámku..."></div>
-          </section>
         </div>
       </aside>
+
+      <aside id="library-editor-dock" class="library-editor-dock" aria-label="Editor prvku" aria-hidden="true">
+        <div id="editor-resize-handle" class="editor-resize-handle" role="separator" aria-label="Zmeniť veľkosť editora" aria-orientation="horizontal" aria-hidden="true" tabindex="-1"></div>
+        <section id="library-editor" class="library-editor" data-element-type="note">
+          <header class="library-editor-head">
+            <div class="library-editor-topline">
+              <button id="library-editor-back" class="panel-icon-button editor-back-button" type="button" aria-label="Späť na obsah knižnice" title="Späť na obsah knižnice"><span class="back-icon" aria-hidden="true"></span></button>
+              <input id="library-editor-title" class="library-editor-title" type="text" maxlength="120" aria-label="Názov prvku" />
+              <div class="library-editor-actions">
+                <button id="library-editor-fullscreen" class="panel-icon-button editor-fullscreen-button" type="button" aria-label="Otvoriť editor na celej ploche" title="Celá plocha" data-mode="maximize"><span class="fullscreen-icon" aria-hidden="true"><span></span><span></span><span></span><span></span></span></button>
+                <button id="library-editor-delete" class="panel-icon-button danger editor-delete-button" type="button" aria-label="Zmazať prvok" title="Zmazať prvok"><span class="trash-icon" aria-hidden="true"><span></span></span></button>
+              </div>
+            </div>
+            <div class="library-editor-formatbar" aria-label="Formátovanie textu">
+              <button class="editor-format-button article-format-button" type="button" data-editor-action="heading-2" aria-label="Nadpis druhej úrovne" title="Nadpis druhej úrovne"><span class="heading-icon" aria-hidden="true">H<span>2</span></span></button>
+              <button class="editor-format-button article-format-button" type="button" data-editor-action="heading-3" aria-label="Nadpis tretej úrovne" title="Nadpis tretej úrovne"><span class="heading-icon" aria-hidden="true">H<span>3</span></span></button>
+              <button class="editor-format-button" type="button" data-editor-action="bold" aria-label="Tučné" title="Tučné"><strong>B</strong></button>
+              <button class="editor-format-button" type="button" data-editor-action="italic" aria-label="Kurzíva" title="Kurzíva"><em>I</em></button>
+              <button class="editor-format-button" type="button" data-editor-action="underline" aria-label="Podčiarknuť" title="Podčiarknuť"><span class="underline-symbol" aria-hidden="true">U</span></button>
+              <button class="editor-format-button" type="button" data-editor-action="strike" aria-label="Prečiarknuť" title="Prečiarknuť"><span class="strike-symbol" aria-hidden="true">S</span></button>
+              <button class="editor-format-button" type="button" data-editor-action="highlight" aria-label="Zvýrazniť" title="Zvýrazniť"><span class="highlight-symbol" aria-hidden="true">H</span></button>
+              <button class="editor-format-button" type="button" data-editor-action="bullet-list" aria-label="Odrážkový zoznam" title="Odrážkový zoznam"><span class="bullet-list-icon" aria-hidden="true"></span></button>
+              <button class="editor-format-button" type="button" data-editor-action="ordered-list" aria-label="Číslovaný zoznam" title="Číslovaný zoznam"><span class="ordered-list-icon" aria-hidden="true">1.</span></button>
+              <button class="editor-format-button" type="button" data-editor-action="task-list" aria-label="Zoznam úloh" title="Zoznam úloh"><span class="task-list-icon" aria-hidden="true"></span></button>
+              <button class="editor-format-button" type="button" data-editor-action="math-inline" aria-label="Vložiť vzorec v texte" title="Vzorec v texte"><span class="math-inline-icon" aria-hidden="true">fx</span></button>
+              <button class="editor-format-button" type="button" data-editor-action="math-block" aria-label="Vložiť samostatný vzorec" title="Samostatný vzorec"><span class="math-block-icon" aria-hidden="true">Σ</span></button>
+              <button class="editor-format-button" type="button" data-editor-action="blockquote" aria-label="Citát" title="Citát"><span class="quote-symbol" aria-hidden="true">&#8220;</span></button>
+              <button class="editor-format-button" type="button" data-editor-action="link" aria-label="Vytvoriť odkaz" title="Vytvoriť odkaz"><span class="link-icon" aria-hidden="true"></span></button>
+              <button class="editor-format-button" type="button" data-editor-action="citation" aria-label="Vložiť citáciu zdroja" title="Vložiť citáciu zdroja"><span class="citation-icon" aria-hidden="true">[&quot;]</span></button>
+              <button class="editor-format-button" type="button" data-editor-action="attachment" aria-label="Vložiť prílohu" title="Vložiť prílohu"><span class="attachment-icon" aria-hidden="true"></span></button>
+              <button class="editor-format-button article-format-button" type="button" data-editor-action="code-block" aria-label="Blok kódu" title="Blok kódu"><span class="code-symbol" aria-hidden="true">&lt;/&gt;</span></button>
+              <button class="editor-format-button article-format-button" type="button" data-editor-action="divider" aria-label="Vodorovný oddeľovač" title="Vodorovný oddeľovač"><span class="divider-icon" aria-hidden="true"></span></button>
+              <button class="editor-format-button article-format-button" type="button" data-editor-action="image" aria-label="Vložiť obrázok" title="Vložiť obrázok"><span class="image-icon" aria-hidden="true"></span></button>
+              <button class="editor-format-button article-format-button" type="button" data-editor-action="table" aria-label="Vložiť tabuľku" title="Vložiť tabuľku"><span class="table-icon" aria-hidden="true"></span></button>
+            </div>
+          </header>
+          <div id="library-editor-body" class="library-editor-body" role="textbox" aria-multiline="true"></div>
+        </section>
+      </aside>
+      <input id="editor-file-input" type="file" hidden />
 
       <main class="workspace" aria-label="Pracovná plocha">
         <section class="blank-slate">
@@ -139,14 +188,55 @@
             </div>
             <div>
               <dt><kbd>Esc</kbd></dt>
-              <dd>Zatvárať otvorené panely</dd>
+              <dd>Ukončiť celú plochu, potom zatvárať panely</dd>
             </div>
           </dl>
         </section>
-        <p id="app-version" class="app-version">Verzia 0.1.1</p>
+        <p id="app-version" class="app-version">Verzia 0.9.1</p>
       </div>
     </dialog>
 
-    <script src="app.js?v=0.1.1"></script>
+    <dialog id="citation-dialog" class="citation-dialog">
+      <form id="citation-form" class="citation-panel">
+        <header>
+          <h2>Citácia zdroja</h2>
+          <button id="citation-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť">&times;</button>
+        </header>
+        <label>
+          Zdroj
+          <input id="citation-source" type="text" maxlength="160" required autocomplete="off" />
+        </label>
+        <label>
+          Strana alebo čas
+          <input id="citation-locator" type="text" maxlength="80" autocomplete="off" />
+        </label>
+        <footer>
+          <button id="citation-insert" class="citation-insert-button" type="submit">Vložiť</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="math-dialog" class="math-dialog">
+      <form id="math-form" class="math-panel">
+        <header>
+          <h2 id="math-dialog-title">Vzorec</h2>
+          <button id="math-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť">&times;</button>
+        </header>
+        <label>
+          LaTeX zápis
+          <textarea id="math-latex" rows="4" spellcheck="false" autocomplete="off" required placeholder="\frac{a}{b}"></textarea>
+        </label>
+        <section class="math-preview-section" aria-labelledby="math-preview-title">
+          <h3 id="math-preview-title">Náhľad</h3>
+          <div id="math-preview" class="math-preview" aria-live="polite"></div>
+          <p id="math-error" class="math-error" role="alert" hidden></p>
+        </section>
+        <footer>
+          <button id="math-insert" class="citation-insert-button" type="submit">Vložiť</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <script type="module" src="assets/app.js?v=0.9.1"></script>
   </body>
 </html>

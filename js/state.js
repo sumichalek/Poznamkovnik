@@ -1,0 +1,21 @@
+export const state = {
+  pointerNearTop: true,
+  librariesPanelPinned: false,
+  libraryDetailPanelPinned: false,
+  libraries: [],
+  libraryElements: {},
+  activeLibraryId: '',
+  activeDetailLibraryId: '',
+  activeLibraryElementId: '',
+  activeFolderPath: [],
+  editorLayout: 'closed',
+  editorAxis: 'vertical',
+  editorDockInlineSize: 0,
+  editorDockBlockSize: 0,
+  editingLibraryId: '',
+  editingFolderId: '',
+  lastLibraryItemAction: null,
+  hideTimer: 0,
+  librariesHideTimer: 0,
+  libraryDetailHideTimer: 0
+};
