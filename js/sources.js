@@ -2,6 +2,7 @@ import { apiRequest, uploadSourceFile } from './api.js';
 import { dom } from './dom.js';
 import { state } from './state.js';
 import { flushWorkspaceSync } from './storage.js';
+import { updateTopbarVisibility } from './topbar.js';
 
 const kindLabels = {
   source: 'Zdroj',
@@ -24,6 +25,8 @@ const relationLabels = {
 let sources = [];
 let selectedSource = null;
 let searchTimer = 0;
+let panelHideTimer = 0;
+let panelPinned = false;
 
 function notifySourcesChanged() {
   window.dispatchEvent(new Event('sources-changed'));
@@ -47,20 +50,39 @@ function setPanelOpen(open) {
   dom.sourcesPanel.classList.toggle('is-open', open);
   dom.sourcesPanel.setAttribute('aria-hidden', String(!open));
   dom.sourcesButton.setAttribute('aria-expanded', String(open));
+  updateTopbarVisibility();
 }
 
 export function isSourcesPanelOpen() {
   return dom.sourcesPanel.classList.contains('is-open');
 }
 
-export function closeSourcesPanel() {
+export function closeSourcesPanel({ force = false } = {}) {
+  if (panelPinned && !force) return;
+  window.clearTimeout(panelHideTimer);
+  panelPinned = false;
   setPanelOpen(false);
 }
 
-export async function openSourcesPanel({ sourceId = '' } = {}) {
+export async function openSourcesPanel({ sourceId = '', pinned = false } = {}) {
+  window.clearTimeout(panelHideTimer);
+  if (pinned) panelPinned = true;
   setPanelOpen(true);
   await loadSources();
   if (sourceId) await selectSource(sourceId);
+}
+
+function scheduleSourcesPanelClose() {
+  window.clearTimeout(panelHideTimer);
+  panelHideTimer = window.setTimeout(() => {
+    const hoveringPanel = dom.sourcesPanel.matches(':hover');
+    const hoveringButton = dom.sourcesButton.matches(':hover');
+    const focusedPanel = dom.sourcesPanel.contains(document.activeElement);
+    const focusedButton = dom.sourcesButton === document.activeElement;
+    if (!panelPinned && !hoveringPanel && !hoveringButton && !focusedPanel && !focusedButton) {
+      closeSourcesPanel();
+    }
+  }, 160);
 }
 
 async function loadSources() {
@@ -291,7 +313,7 @@ export async function refreshElementSourceLinks() {
       button.className = 'editor-source-chip';
       button.textContent = source.locator ? `${source.title} · ${source.locator}` : source.title;
       button.title = 'Otvoriť detail zdroja';
-      button.addEventListener('click', () => void openSourcesPanel({ sourceId: source.id }));
+      button.addEventListener('click', () => void openSourcesPanel({ sourceId: source.id, pinned: true }));
       dom.editorSourceLinks.append(button);
     });
     dom.editorSourceLinks.hidden = false;
@@ -302,10 +324,21 @@ export async function refreshElementSourceLinks() {
 
 export function initializeSources() {
   dom.sourcesButton.addEventListener('click', () => {
-    if (isSourcesPanelOpen()) closeSourcesPanel();
-    else void openSourcesPanel();
+    if (panelPinned && isSourcesPanelOpen()) {
+      closeSourcesPanel({ force: true });
+      dom.sourcesButton.blur();
+      return;
+    }
+    void openSourcesPanel({ pinned: true });
   });
-  dom.sourcesCloseButton.addEventListener('click', closeSourcesPanel);
+  dom.sourcesButton.addEventListener('pointerenter', () => void openSourcesPanel());
+  dom.sourcesButton.addEventListener('pointerleave', scheduleSourcesPanelClose);
+  dom.sourcesButton.addEventListener('focus', () => void openSourcesPanel());
+  dom.sourcesPanel.addEventListener('pointerenter', () => void openSourcesPanel());
+  dom.sourcesPanel.addEventListener('pointerleave', scheduleSourcesPanelClose);
+  dom.sourcesPanel.addEventListener('focusin', () => void openSourcesPanel());
+  dom.sourcesPanel.addEventListener('focusout', scheduleSourcesPanelClose);
+  dom.sourcesCloseButton.addEventListener('click', () => closeSourcesPanel({ force: true }));
   dom.sourceCreateButton.addEventListener('click', startNewSource);
   dom.sourceSearch.addEventListener('input', () => {
     window.clearTimeout(searchTimer);

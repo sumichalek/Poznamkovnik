@@ -260,7 +260,7 @@ document.addEventListener('pointerdown', (event) => {
     return;
   }
   if (state.librariesPanelPinned || state.libraryDetailPanelPinned) closeLibrariesPanel({ force: true });
-  if (isSourcesPanelOpen()) closeSourcesPanel();
+  if (isSourcesPanelOpen()) closeSourcesPanel({ force: true });
 });
 
 document.addEventListener('keydown', (event) => {
@@ -270,7 +270,7 @@ document.addEventListener('keydown', (event) => {
 
     if (isSourcesPanelOpen()) {
       event.preventDefault();
-      closeSourcesPanel();
+      closeSourcesPanel({ force: true });
       return;
     }
 

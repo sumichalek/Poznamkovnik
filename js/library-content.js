@@ -349,7 +349,7 @@ async function renderLibrarySourceLinks(libraryId) {
       button.className = 'library-source-link';
       button.textContent = source.note ? `${source.title} — ${source.note}` : source.title;
       button.title = 'Otvoriť zdroj';
-      button.addEventListener('click', () => void openSourcesPanel({ sourceId: source.id }));
+      button.addEventListener('click', () => void openSourcesPanel({ sourceId: source.id, pinned: true }));
       list.append(button);
     });
     dom.librarySourceLinks.append(heading, list);

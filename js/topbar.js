@@ -7,6 +7,7 @@ function topbarShouldStayVisible() {
     dom.settingsDialog.open ||
     dom.librariesPanel.classList.contains('is-open') ||
     dom.libraryDetailPanel.classList.contains('is-open') ||
+    dom.sourcesPanel.classList.contains('is-open') ||
     dom.topbar.matches(':hover') ||
     dom.topbar.contains(document.activeElement)
   );
