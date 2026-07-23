@@ -31,6 +31,10 @@ let panelHideTimer = 0;
 let panelPinned = false;
 let previewSourceId = '';
 let previewRequestId = 0;
+let loadedSourcesQuery = null;
+let loadingSourcesQuery = null;
+let sourcesLoadPromise = null;
+let sourcesLoadRequestId = 0;
 
 function notifySourcesChanged() {
   window.dispatchEvent(new Event('sources-changed'));
@@ -181,11 +185,28 @@ function scheduleSourcesPanelClose() {
   }, 160);
 }
 
-async function loadSources() {
+async function loadSources({ force = false } = {}) {
   const query = dom.sourceSearch.value.trim();
-  const result = await apiRequest(`/sources?q=${encodeURIComponent(query)}`);
-  sources = result.sources;
-  renderSourceList();
+  if (!force && loadedSourcesQuery === query) return;
+  if (!force && sourcesLoadPromise && loadingSourcesQuery === query) return sourcesLoadPromise;
+
+  const requestId = ++sourcesLoadRequestId;
+  loadingSourcesQuery = query;
+  const request = apiRequest(`/sources?q=${encodeURIComponent(query)}`)
+    .then((result) => {
+      if (requestId !== sourcesLoadRequestId) return;
+      sources = result.sources;
+      loadedSourcesQuery = query;
+      renderSourceList();
+    })
+    .finally(() => {
+      if (sourcesLoadPromise === request) {
+        sourcesLoadPromise = null;
+        loadingSourcesQuery = null;
+      }
+    });
+  sourcesLoadPromise = request;
+  return request;
 }
 
 function renderSourceList() {
@@ -354,7 +375,7 @@ function renderLibraries() {
       const result = await apiRequest(`/sources/${selectedSource.id}/libraries/${library.id}`, { method: 'DELETE' });
       selectedSource = result.source;
       renderSourceDetail();
-      await loadSources();
+      await loadSources({ force: true });
       notifySourcesChanged();
     });
     row.append(label, remove);
@@ -399,7 +420,7 @@ function renderElements() {
       selectedSource = result.source;
       renderSourceDetail();
       await refreshElementSourceLinks();
-      await loadSources();
+      await loadSources({ force: true });
     });
     row.append(label, remove);
     dom.sourceElementsList.append(row);
@@ -479,7 +500,7 @@ export function initializeSources() {
       : await apiRequest('/sources', { method: 'POST', body: { ...data, id: crypto.randomUUID() } });
     selectedSource = result.source;
     renderSourceDetail();
-    await loadSources();
+    await loadSources({ force: true });
     notifySourcesChanged();
   });
   dom.sourceDeleteButton.addEventListener('click', async () => {
@@ -488,7 +509,7 @@ export function initializeSources() {
     await apiRequest(`/sources/${selectedSource.id}`, { method: 'DELETE' });
     selectedSource = null;
     renderSourceDetail();
-    await loadSources();
+    await loadSources({ force: true });
     await refreshElementSourceLinks();
     notifySourcesChanged();
   });
@@ -502,7 +523,7 @@ export function initializeSources() {
     }
     dom.sourceFileInput.value = '';
     renderSourceDetail();
-    await loadSources();
+    await loadSources({ force: true });
   });
   dom.sourceLibraryLinkButton.addEventListener('click', async () => {
     if (!selectedSource || !dom.sourceLibrarySelect.value) return;
@@ -513,7 +534,7 @@ export function initializeSources() {
     });
     selectedSource = result.source;
     renderSourceDetail();
-    await loadSources();
+    await loadSources({ force: true });
     notifySourcesChanged();
   });
   dom.sourceElementLinkButton.addEventListener('click', async () => {
@@ -532,6 +553,6 @@ export function initializeSources() {
     dom.sourceLocator.value = '';
     renderSourceDetail();
     await refreshElementSourceLinks();
-    await loadSources();
+    await loadSources({ force: true });
   });
 }
