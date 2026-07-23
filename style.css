@@ -380,6 +380,140 @@ select:focus-visible,
   transform: translateX(0);
 }
 
+.source-preview-dock {
+  position: fixed;
+  z-index: 28;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(680px, calc(100vw - 24px));
+  padding: var(--panel-top-padding) var(--panel-side-padding) var(--panel-side-padding);
+  border-left: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 98%, transparent);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(calc(100% + 6px));
+  visibility: hidden;
+  transition: transform 180ms ease, opacity 120ms ease, visibility 0ms linear 180ms;
+}
+
+.source-preview-dock.is-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+  visibility: visible;
+  transition: transform 180ms ease, opacity 120ms ease;
+}
+
+.source-preview-inner {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--space-4);
+  height: 100%;
+  min-height: 0;
+}
+
+.source-preview-head,
+.source-preview-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.source-preview-head > div:first-child {
+  min-width: 0;
+}
+
+.source-preview-head h2,
+.source-preview-source,
+.source-preview-meta {
+  margin: 0;
+}
+
+.source-preview-head h2 {
+  overflow: hidden;
+  font-size: 1rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-preview-source {
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.source-preview-meta {
+  margin-top: var(--space-1);
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.source-preview-actions {
+  flex: 0 0 auto;
+}
+
+.source-preview-actions .panel-icon-button {
+  display: grid;
+  place-items: center;
+  text-decoration: none;
+}
+
+.source-preview-content {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+}
+
+.source-preview-frame,
+.source-preview-image,
+.source-preview-text,
+.source-preview-fallback {
+  width: 100%;
+  min-height: 100%;
+  border: 0;
+}
+
+.source-preview-frame {
+  height: 100%;
+  background: var(--panel-muted);
+}
+
+.source-preview-image {
+  display: block;
+  height: 100%;
+  object-fit: contain;
+  padding: var(--space-4);
+}
+
+.source-preview-text {
+  margin: 0;
+  padding: var(--space-5);
+  overflow: auto;
+  color: var(--text);
+  font: 0.82rem/1.55 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  white-space: pre-wrap;
+}
+
+.source-preview-fallback {
+  display: grid;
+  place-items: center;
+  padding: var(--space-8);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+@media (max-width: 1400px) {
+  .source-preview-dock {
+    z-index: 31;
+    width: min(760px, 100vw);
+  }
+}
+
 .sources-panel-inner {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -586,14 +720,24 @@ select:focus-visible,
   gap: var(--space-1);
 }
 
-.source-file-copy a {
+.source-file-copy a,
+.source-file-open {
   overflow: hidden;
+  border: 0;
+  background: transparent;
   color: var(--accent);
+  cursor: pointer;
   font-size: 0.84rem;
   font-weight: 700;
+  padding: 0;
+  text-align: left;
   text-decoration-thickness: 1px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.source-file-open:hover {
+  text-decoration: underline;
 }
 
 .source-file-download,
@@ -620,14 +764,25 @@ select:focus-visible,
   color: #ffffff;
 }
 
-.source-usage-row > span {
+.source-usage-row > span,
+.source-usage-link {
   min-width: 0;
   overflow: hidden;
+  border: 0;
+  background: transparent;
   color: var(--text);
+  cursor: pointer;
   font-size: 0.8rem;
   line-height: 1.35;
+  padding: 0;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.source-usage-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 .libraries-panel-inner {
@@ -2618,6 +2773,12 @@ kbd {
   }
 
   .sources-panel {
+    width: 100vw;
+    padding: var(--panel-top-padding) var(--panel-side-padding) var(--panel-side-padding);
+  }
+
+  .source-preview-dock {
+    z-index: 31;
     width: 100vw;
     padding: var(--panel-top-padding) var(--panel-side-padding) var(--panel-side-padding);
   }

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sk" data-app-version="0.11.0">
+<html lang="sk" data-app-version="0.12.0">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,8 +7,8 @@
     <script>
       document.documentElement.dataset.theme = localStorage.getItem('knowledge-theme') || 'focus';
     </script>
-    <link rel="stylesheet" href="style.css?v=0.11.0" />
-    <link rel="stylesheet" href="assets/app.css?v=0.11.0" />
+    <link rel="stylesheet" href="style.css?v=0.12.0" />
+    <link rel="stylesheet" href="assets/app.css?v=0.12.0" />
   </head>
   <body>
     <main id="login-screen" class="login-screen" aria-labelledby="login-title">
@@ -169,6 +169,31 @@
         </div>
       </aside>
 
+      <aside id="source-preview-dock" class="source-preview-dock" aria-label="Náhľad prílohy zdroja" aria-hidden="true">
+        <div class="source-preview-inner">
+          <header class="source-preview-head">
+            <div>
+              <p id="source-preview-source" class="source-preview-source"></p>
+              <h2 id="source-preview-title">Príloha zdroja</h2>
+              <p id="source-preview-meta" class="source-preview-meta"></p>
+            </div>
+            <div class="source-preview-actions">
+              <a id="source-preview-external" class="panel-icon-button" target="_blank" rel="noopener" aria-label="Otvoriť v novom okne" title="Otvoriť v novom okne">↗</a>
+              <a id="source-preview-download" class="panel-icon-button" aria-label="Stiahnuť súbor" title="Stiahnuť súbor">↓</a>
+              <button id="source-preview-close" class="panel-icon-button" type="button" aria-label="Zavrieť náhľad" title="Zavrieť náhľad">&times;</button>
+            </div>
+          </header>
+          <div class="source-preview-content">
+            <iframe id="source-preview-frame" class="source-preview-frame" title="Náhľad PDF" hidden></iframe>
+            <img id="source-preview-image" class="source-preview-image" alt="" hidden />
+            <pre id="source-preview-text" class="source-preview-text" hidden></pre>
+            <section id="source-preview-fallback" class="source-preview-fallback" hidden>
+              <p id="source-preview-fallback-message"></p>
+            </section>
+          </div>
+        </div>
+      </aside>
+
       <aside id="library-detail-panel" class="library-detail-panel" aria-label="Detail knižnice" aria-hidden="true">
         <div class="library-detail-panel-inner">
           <header class="library-detail-header">
@@ -300,7 +325,7 @@
         </section>
         <footer class="settings-footer">
           <button id="logout-button" class="settings-logout-button" type="button">Odhlásiť</button>
-          <p id="app-version" class="app-version">Verzia 0.11.0</p>
+          <p id="app-version" class="app-version">Verzia 0.12.0</p>
         </footer>
       </div>
     </dialog>
@@ -352,6 +377,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="assets/app.js?v=0.11.0"></script>
+    <script type="module" src="assets/app.js?v=0.12.0"></script>
   </body>
 </html>

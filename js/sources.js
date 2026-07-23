@@ -22,11 +22,15 @@ const relationLabels = {
   derived: 'Vychádza zo zdroja'
 };
 
+const TEXT_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
+
 let sources = [];
 let selectedSource = null;
 let searchTimer = 0;
 let panelHideTimer = 0;
 let panelPinned = false;
+let previewSourceId = '';
+let previewRequestId = 0;
 
 function notifySourcesChanged() {
   window.dispatchEvent(new Event('sources-changed'));
@@ -44,6 +48,98 @@ function formatFileSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} kB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function sourceFileUrl(file, { download = false } = {}) {
+  const suffix = download ? '?download=1' : '';
+  return `/api/files/${encodeURIComponent(file.id)}${suffix}`;
+}
+
+function setSourcePreviewOpen(open) {
+  dom.sourcePreviewDock.classList.toggle('is-open', open);
+  dom.sourcePreviewDock.setAttribute('aria-hidden', String(!open));
+  updateTopbarVisibility();
+}
+
+export function isSourcePreviewOpen() {
+  return dom.sourcePreviewDock.classList.contains('is-open');
+}
+
+function hideSourcePreviewViews() {
+  dom.sourcePreviewFrame.hidden = true;
+  dom.sourcePreviewFrame.removeAttribute('src');
+  dom.sourcePreviewImage.hidden = true;
+  dom.sourcePreviewImage.removeAttribute('src');
+  dom.sourcePreviewImage.alt = '';
+  dom.sourcePreviewText.hidden = true;
+  dom.sourcePreviewText.textContent = '';
+  dom.sourcePreviewFallback.hidden = true;
+  dom.sourcePreviewFallbackMessage.textContent = '';
+}
+
+function showSourcePreviewFallback(message) {
+  hideSourcePreviewViews();
+  dom.sourcePreviewFallbackMessage.textContent = message;
+  dom.sourcePreviewFallback.hidden = false;
+}
+
+export function closeSourcePreview() {
+  previewRequestId += 1;
+  previewSourceId = '';
+  hideSourcePreviewViews();
+  setSourcePreviewOpen(false);
+}
+
+async function openSourceFile(file) {
+  if (!selectedSource) return;
+
+  const requestId = ++previewRequestId;
+  const fileUrl = sourceFileUrl(file);
+  previewSourceId = selectedSource.id;
+  dom.sourcePreviewSource.textContent = selectedSource.title;
+  dom.sourcePreviewTitle.textContent = file.originalName;
+  dom.sourcePreviewMeta.textContent = `${file.mimeType} · ${formatFileSize(file.sizeBytes)}`;
+  dom.sourcePreviewExternal.href = fileUrl;
+  dom.sourcePreviewDownload.href = sourceFileUrl(file, { download: true });
+  dom.sourcePreviewDownload.download = file.originalName;
+  setSourcePreviewOpen(true);
+  hideSourcePreviewViews();
+
+  if (file.mimeType === 'application/pdf') {
+    dom.sourcePreviewFrame.src = fileUrl;
+    dom.sourcePreviewFrame.hidden = false;
+    return;
+  }
+
+  if (file.mimeType.startsWith('image/') && file.mimeType !== 'image/svg+xml') {
+    dom.sourcePreviewImage.src = fileUrl;
+    dom.sourcePreviewImage.alt = file.originalName;
+    dom.sourcePreviewImage.hidden = false;
+    return;
+  }
+
+  if ((file.mimeType.startsWith('text/') || file.mimeType === 'application/json') && file.sizeBytes <= TEXT_PREVIEW_MAX_BYTES) {
+    dom.sourcePreviewText.textContent = 'Načítavam text...';
+    dom.sourcePreviewText.hidden = false;
+    try {
+      const response = await fetch(fileUrl, { credentials: 'same-origin' });
+      if (!response.ok) throw new Error('Súbor sa nepodarilo načítať.');
+      const text = await response.text();
+      if (requestId !== previewRequestId || !isSourcePreviewOpen()) return;
+      dom.sourcePreviewText.textContent = text;
+    } catch {
+      if (requestId === previewRequestId) {
+        showSourcePreviewFallback('Textový náhľad sa nepodarilo načítať. Súbor môžeš otvoriť v novom okne alebo stiahnuť.');
+      }
+    }
+    return;
+  }
+
+  showSourcePreviewFallback(
+    file.sizeBytes > TEXT_PREVIEW_MAX_BYTES && file.mimeType.startsWith('text/')
+      ? 'Textový súbor je na vstavaný náhľad príliš veľký. Otvor ho v novom okne alebo stiahni.'
+      : 'Pre tento formát zatiaľ nemáme vstavaný náhľad. Otvor ho v novom okne alebo stiahni.'
+  );
 }
 
 function setPanelOpen(open) {
@@ -113,7 +209,11 @@ function renderSourceList() {
     title.textContent = source.title;
     const meta = document.createElement('span');
     meta.className = 'source-list-meta';
-    const usage = [source.fileCount ? `${source.fileCount} súb.` : '', source.libraryCount ? `${source.libraryCount} kn.` : '']
+    const usage = [
+      source.fileCount ? `${source.fileCount} súb.` : '',
+      source.libraryCount ? `${source.libraryCount} kn.` : '',
+      source.elementCount ? `${source.elementCount} prv.` : ''
+    ]
       .filter(Boolean)
       .join(' · ');
     meta.textContent = [kindLabels[source.kind] || 'Zdroj', usage].filter(Boolean).join(' · ');
@@ -123,6 +223,7 @@ function renderSourceList() {
 }
 
 async function selectSource(sourceId) {
+  if (previewSourceId && previewSourceId !== sourceId) closeSourcePreview();
   const result = await apiRequest(`/sources/${encodeURIComponent(sourceId)}`);
   selectedSource = result.source;
   renderSourceList();
@@ -130,6 +231,7 @@ async function selectSource(sourceId) {
 }
 
 function startNewSource() {
+  closeSourcePreview();
   selectedSource = null;
   dom.sourceForm.reset();
   dom.sourceKind.value = 'source';
@@ -186,16 +288,17 @@ function renderFiles() {
   selectedSource.files.forEach((file) => {
     const row = document.createElement('div');
     row.className = 'source-file-row';
-    const name = document.createElement('a');
-    name.href = `/api/files/${encodeURIComponent(file.id)}`;
-    name.target = '_blank';
-    name.rel = 'noopener';
+    const name = document.createElement('button');
+    name.type = 'button';
+    name.className = 'source-file-open';
     name.textContent = file.originalName;
+    name.title = `Otvoriť náhľad ${file.originalName}`;
+    name.addEventListener('click', () => void openSourceFile(file));
     const meta = document.createElement('span');
     meta.textContent = `${file.mimeType} · ${formatFileSize(file.sizeBytes)}`;
     const download = document.createElement('a');
     download.className = 'source-file-download';
-    download.href = `/api/files/${encodeURIComponent(file.id)}?download=1`;
+    download.href = sourceFileUrl(file, { download: true });
     download.download = file.originalName;
     download.textContent = '↓';
     download.title = `Stiahnuť ${file.originalName}`;
@@ -233,8 +336,14 @@ function renderLibraries() {
   selectedSource.libraries.forEach((library) => {
     const row = document.createElement('div');
     row.className = 'source-usage-row';
-    const label = document.createElement('span');
+    const label = document.createElement('button');
+    label.type = 'button';
+    label.className = 'source-usage-link';
     label.textContent = library.note ? `${library.name} — ${library.note}` : library.name;
+    label.title = `Otvoriť knižnicu ${library.name}`;
+    label.addEventListener('click', () => {
+      window.dispatchEvent(new CustomEvent('source-open-library', { detail: { libraryId: library.id } }));
+    });
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'source-unlink-button';
@@ -268,9 +377,17 @@ function renderElements() {
   selectedSource.elements.forEach((element) => {
     const row = document.createElement('div');
     row.className = 'source-usage-row';
-    const label = document.createElement('span');
+    const label = document.createElement('button');
+    label.type = 'button';
+    label.className = 'source-usage-link';
     const locator = element.locator ? ` · ${element.locator}` : '';
     label.textContent = `${element.libraryName} / ${element.title} · ${relationLabels[element.relationType] || element.relationType}${locator}`;
+    label.title = `Otvoriť ${element.title}`;
+    label.addEventListener('click', () => {
+      window.dispatchEvent(
+        new CustomEvent('source-open-element', { detail: { libraryId: element.libraryId, elementId: element.id } })
+      );
+    });
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'source-unlink-button';
@@ -339,6 +456,7 @@ export function initializeSources() {
   dom.sourcesPanel.addEventListener('focusin', () => void openSourcesPanel());
   dom.sourcesPanel.addEventListener('focusout', scheduleSourcesPanelClose);
   dom.sourcesCloseButton.addEventListener('click', () => closeSourcesPanel({ force: true }));
+  dom.sourcePreviewCloseButton.addEventListener('click', closeSourcePreview);
   dom.sourceCreateButton.addEventListener('click', startNewSource);
   dom.sourceSearch.addEventListener('input', () => {
     window.clearTimeout(searchTimer);
@@ -366,6 +484,7 @@ export function initializeSources() {
   });
   dom.sourceDeleteButton.addEventListener('click', async () => {
     if (!selectedSource || !confirm(`Zmazať zdroj "${selectedSource.title}" aj jeho súbory?`)) return;
+    if (previewSourceId === selectedSource.id) closeSourcePreview();
     await apiRequest(`/sources/${selectedSource.id}`, { method: 'DELETE' });
     selectedSource = null;
     renderSourceDetail();

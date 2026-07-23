@@ -23,6 +23,7 @@ import {
   deleteLibraryElement,
   exitEditorFullscreen,
   handleLibraryItemClick,
+  openLibraryElement,
   openLibraryRoot,
   openParentFolder,
   renameCurrentFolder,
@@ -44,8 +45,23 @@ import {
   showLibraryForm,
   upsertLibrary
 } from './library-panels.js';
-import { applyTheme, disableWorkspaceSync, flushWorkspaceSync, hydrateWorkspace, loadLibraries, loadLibraryElements } from './storage.js';
-import { closeSourcesPanel, initializeSources, isSourcesPanelOpen, refreshElementSourceLinks } from './sources.js';
+import {
+  applyTheme,
+  disableWorkspaceSync,
+  flushWorkspaceSync,
+  hydrateWorkspace,
+  loadLibraries,
+  loadLibraryElements,
+  saveLibraries
+} from './storage.js';
+import {
+  closeSourcePreview,
+  closeSourcesPanel,
+  initializeSources,
+  isSourcePreviewOpen,
+  isSourcesPanelOpen,
+  refreshElementSourceLinks
+} from './sources.js';
 import { hideTopbarImmediately, updateTopbarVisibility } from './topbar.js';
 
 document.addEventListener('pointermove', (event) => {
@@ -93,6 +109,26 @@ dom.libraryDetailPanel.addEventListener('focusin', () => {
 dom.libraryDetailPanel.addEventListener('focusout', () => {
   scheduleLibraryDetailPanelClose();
   scheduleLibrariesPanelClose();
+});
+
+function openSourceTarget(libraryId, elementId = '') {
+  if (!state.libraries.some((library) => library.id === libraryId)) return;
+  closeSourcePreview();
+  closeSourcesPanel({ force: true });
+  state.activeLibraryId = libraryId;
+  saveLibraries();
+  openLibrariesPanel({ pinned: true });
+  openLibraryDetailPanel(libraryId, { pinned: true });
+  if (elementId) openLibraryElement(elementId);
+  renderLibraries();
+}
+
+window.addEventListener('source-open-library', (event) => {
+  openSourceTarget(event.detail?.libraryId || '');
+});
+
+window.addEventListener('source-open-element', (event) => {
+  openSourceTarget(event.detail?.libraryId || '', event.detail?.elementId || '');
 });
 
 dom.libraryCreateButton.addEventListener('click', () => showLibraryForm());
@@ -256,7 +292,8 @@ document.addEventListener('pointerdown', (event) => {
     dom.librariesPanel.contains(event.target) ||
     dom.libraryDetailPanel.contains(event.target) ||
     dom.libraryEditorDock.contains(event.target) ||
-    dom.sourcesPanel.contains(event.target)
+    dom.sourcesPanel.contains(event.target) ||
+    dom.sourcePreviewDock.contains(event.target)
   ) {
     return;
   }
@@ -268,6 +305,12 @@ document.addEventListener('keydown', (event) => {
   if (!isAuthenticated()) return;
   if (event.key === 'Escape') {
     if (dom.settingsDialog.open || dom.citationDialog.open || dom.mathDialog.open) return;
+
+    if (isSourcePreviewOpen()) {
+      event.preventDefault();
+      closeSourcePreview();
+      return;
+    }
 
     if (isSourcesPanelOpen()) {
       event.preventDefault();
