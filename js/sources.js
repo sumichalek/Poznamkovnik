@@ -35,6 +35,7 @@ let loadedSourcesQuery = null;
 let loadingSourcesQuery = null;
 let sourcesLoadPromise = null;
 let sourcesLoadRequestId = 0;
+let editorSourceMenuOpen = false;
 
 function notifySourcesChanged() {
   window.dispatchEvent(new Event('sources-changed'));
@@ -92,6 +93,21 @@ export function closeSourcePreview() {
   previewSourceId = '';
   hideSourcePreviewViews();
   setSourcePreviewOpen(false);
+}
+
+function setEditorSourceMenuOpen(open) {
+  const visible = open && !dom.editorSourceLinks.hidden;
+  editorSourceMenuOpen = visible;
+  dom.editorSourceMenu.hidden = !visible;
+  dom.editorSourceToggle.setAttribute('aria-expanded', String(visible));
+}
+
+export function isEditorSourceMenuOpen() {
+  return editorSourceMenuOpen;
+}
+
+export function closeEditorSourceMenu() {
+  setEditorSourceMenuOpen(false);
 }
 
 async function openSourceFile(file) {
@@ -166,6 +182,7 @@ export function closeSourcesPanel({ force = false } = {}) {
 
 export async function openSourcesPanel({ sourceId = '', pinned = false } = {}) {
   window.clearTimeout(panelHideTimer);
+  closeEditorSourceMenu();
   if (pinned) panelPinned = true;
   setPanelOpen(true);
   await loadSources();
@@ -430,21 +447,20 @@ function renderElements() {
 export async function refreshElementSourceLinks() {
   const elementId = state.activeLibraryElementId;
   if (!elementId) {
+    closeEditorSourceMenu();
     dom.editorSourceLinks.hidden = true;
-    dom.editorSourceLinks.replaceChildren();
+    dom.editorSourceMenu.replaceChildren();
     return;
   }
   try {
     const result = await apiRequest(`/elements/${encodeURIComponent(elementId)}/sources`);
-    dom.editorSourceLinks.replaceChildren();
+    closeEditorSourceMenu();
+    dom.editorSourceMenu.replaceChildren();
     if (!result.sources.length) {
       dom.editorSourceLinks.hidden = true;
       return;
     }
-    const label = document.createElement('span');
-    label.className = 'editor-source-label';
-    label.textContent = 'Zdroje';
-    dom.editorSourceLinks.append(label);
+    dom.editorSourceToggleLabel.textContent = `Zdroje (${result.sources.length})`;
     result.sources.forEach((source) => {
       const button = document.createElement('button');
       button.type = 'button';
@@ -452,10 +468,11 @@ export async function refreshElementSourceLinks() {
       button.textContent = source.locator ? `${source.title} · ${source.locator}` : source.title;
       button.title = 'Otvoriť detail zdroja';
       button.addEventListener('click', () => void openSourcesPanel({ sourceId: source.id, pinned: true }));
-      dom.editorSourceLinks.append(button);
+      dom.editorSourceMenu.append(button);
     });
     dom.editorSourceLinks.hidden = false;
   } catch {
+    closeEditorSourceMenu();
     dom.editorSourceLinks.hidden = true;
   }
 }
@@ -478,6 +495,10 @@ export function initializeSources() {
   dom.sourcesPanel.addEventListener('focusout', scheduleSourcesPanelClose);
   dom.sourcesCloseButton.addEventListener('click', () => closeSourcesPanel({ force: true }));
   dom.sourcePreviewCloseButton.addEventListener('click', closeSourcePreview);
+  dom.editorSourceToggle.addEventListener('click', () => setEditorSourceMenuOpen(!editorSourceMenuOpen));
+  document.addEventListener('pointerdown', (event) => {
+    if (editorSourceMenuOpen && !dom.editorSourceLinks.contains(event.target)) closeEditorSourceMenu();
+  });
   dom.sourceCreateButton.addEventListener('click', startNewSource);
   dom.sourceSearch.addEventListener('input', () => {
     window.clearTimeout(searchTimer);

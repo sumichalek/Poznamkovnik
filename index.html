@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sk" data-app-version="0.12.1">
+<html lang="sk" data-app-version="0.12.2">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,8 +7,8 @@
     <script>
       document.documentElement.dataset.theme = localStorage.getItem('knowledge-theme') || 'focus';
     </script>
-    <link rel="stylesheet" href="style.css?v=0.12.1" />
-    <link rel="stylesheet" href="assets/app.css?v=0.12.0" />
+    <link rel="stylesheet" href="style.css?v=0.12.2" />
+    <link rel="stylesheet" href="assets/app.css?v=0.12.2" />
   </head>
   <body>
     <main id="login-screen" class="login-screen" aria-labelledby="login-title">
@@ -223,7 +223,6 @@
                 <span class="tool-icon article-icon" aria-hidden="true"></span>
               </button>
             </div>
-            <div id="editor-source-links" class="editor-source-links" hidden aria-label="Zdroje otvoreného prvku"></div>
           </header>
 
           <section id="library-browser" class="library-browser" aria-label="Obsah knižnice">
@@ -267,6 +266,13 @@
               <button class="editor-format-button article-format-button" type="button" data-editor-action="divider" aria-label="Vodorovný oddeľovač" title="Vodorovný oddeľovač"><span class="divider-icon" aria-hidden="true"></span></button>
               <button class="editor-format-button article-format-button" type="button" data-editor-action="image" aria-label="Vložiť obrázok" title="Vložiť obrázok"><span class="image-icon" aria-hidden="true"></span></button>
               <button class="editor-format-button article-format-button" type="button" data-editor-action="table" aria-label="Vložiť tabuľku" title="Vložiť tabuľku"><span class="table-icon" aria-hidden="true"></span></button>
+            </div>
+            <div id="editor-source-links" class="editor-source-links" hidden>
+              <button id="editor-source-toggle" class="editor-source-toggle" type="button" aria-controls="editor-source-menu" aria-expanded="false">
+                <span class="attachment-icon" aria-hidden="true"></span>
+                <span id="editor-source-toggle-label">Zdroje</span>
+              </button>
+              <div id="editor-source-menu" class="editor-source-menu" hidden aria-label="Zdroje otvoreného prvku"></div>
             </div>
           </header>
           <div id="library-editor-body" class="library-editor-body" role="textbox" aria-multiline="true"></div>
@@ -325,7 +331,7 @@
         </section>
         <footer class="settings-footer">
           <button id="logout-button" class="settings-logout-button" type="button">Odhlásiť</button>
-          <p id="app-version" class="app-version">Verzia 0.12.1</p>
+          <p id="app-version" class="app-version">Verzia 0.12.2</p>
         </footer>
       </div>
     </dialog>
@@ -377,6 +383,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="assets/app.js?v=0.12.1"></script>
+    <script type="module" src="assets/app.js?v=0.12.2"></script>
   </body>
 </html>

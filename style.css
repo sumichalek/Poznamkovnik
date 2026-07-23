@@ -1473,6 +1473,8 @@ body[data-editor-layout="fullscreen"] .library-detail-panel {
 }
 
 .library-editor-head {
+  position: relative;
+  z-index: 2;
   display: grid;
   gap: var(--space-2);
   border-bottom: 1px solid var(--line);
@@ -1629,37 +1631,75 @@ body[data-editor-layout="fullscreen"] .library-detail-panel {
 }
 
 .editor-source-links {
+  position: relative;
   min-width: 0;
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  border-top: 1px solid var(--line);
-  margin-top: var(--space-1);
-  padding-top: var(--space-2);
 }
 
 .editor-source-links[hidden] {
   display: none;
 }
 
-.editor-source-label {
-  color: var(--text-muted);
-  font-size: 0.74rem;
+.editor-source-toggle {
+  min-height: var(--control-size);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.76rem;
   font-weight: 750;
+  padding: var(--space-1) var(--space-3);
+}
+
+.editor-source-toggle .attachment-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.editor-source-toggle:hover,
+.editor-source-toggle[aria-expanded="true"] {
+  border-color: var(--accent);
+  background: var(--panel-muted);
+  color: var(--accent);
+}
+
+.editor-source-menu {
+  position: absolute;
+  z-index: 6;
+  top: calc(100% + var(--space-2));
+  left: 0;
+  width: min(380px, calc(100vw - 48px));
+  max-height: min(420px, 55vh);
+  display: grid;
+  gap: var(--space-1);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: var(--space-2);
+}
+
+.editor-source-menu[hidden] {
+  display: none;
 }
 
 .editor-source-chip {
-  max-width: min(100%, 240px);
+  width: 100%;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--control-radius);
   background: var(--panel);
-  color: var(--accent);
+  color: var(--text);
   cursor: pointer;
   font-size: 0.74rem;
   font-weight: 700;
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1667,6 +1707,7 @@ body[data-editor-layout="fullscreen"] .library-detail-panel {
 .editor-source-chip:hover {
   border-color: var(--accent);
   background: var(--panel-muted);
+  color: var(--accent);
 }
 
 .library-editor[data-element-type="note"] .article-format-button {

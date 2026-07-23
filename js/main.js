@@ -55,9 +55,11 @@ import {
   saveLibraries
 } from './storage.js';
 import {
+  closeEditorSourceMenu,
   closeSourcePreview,
   closeSourcesPanel,
   initializeSources,
+  isEditorSourceMenuOpen,
   isSourcePreviewOpen,
   isSourcesPanelOpen,
   refreshElementSourceLinks
@@ -305,6 +307,12 @@ document.addEventListener('keydown', (event) => {
   if (!isAuthenticated()) return;
   if (event.key === 'Escape') {
     if (dom.settingsDialog.open || dom.citationDialog.open || dom.mathDialog.open) return;
+
+    if (isEditorSourceMenuOpen()) {
+      event.preventDefault();
+      closeEditorSourceMenu();
+      return;
+    }
 
     if (isSourcePreviewOpen()) {
       event.preventDefault();
