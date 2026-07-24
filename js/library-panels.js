@@ -12,6 +12,8 @@ import {
 } from './storage.js';
 import { updateTopbarVisibility } from './topbar.js';
 
+let libraryFormBaseline = '';
+
 function updateWorkspaceVisibility() {
   document.body.classList.toggle(
     'is-library-workspace-active',
@@ -34,6 +36,7 @@ export function showLibraryForm(library = null) {
   }
   state.editingLibraryId = library?.id || '';
   dom.libraryNameInput.value = library?.name || '';
+  libraryFormBaseline = dom.libraryNameInput.value.trim();
   dom.libraryForm.hidden = false;
   openLibrariesPanel({ pinned: true });
   renderLibraries();
@@ -44,13 +47,33 @@ export function hideLibraryForm() {
   state.editingLibraryId = '';
   dom.libraryForm.reset();
   dom.libraryForm.hidden = true;
+  libraryFormBaseline = '';
   renderLibraries();
+}
+
+export function hasUnsavedLibraryForm() {
+  return !dom.libraryForm.hidden && dom.libraryNameInput.value.trim() !== libraryFormBaseline;
+}
+
+export function discardLibraryFormDraft() {
+  hideLibraryForm();
+}
+
+export function saveLibraryFormDraft() {
+  if (!hasUnsavedLibraryForm()) return true;
+  if (!dom.libraryForm.reportValidity()) return false;
+  return upsertLibrary(dom.libraryNameInput.value);
 }
 
 export function renderLibraries() {
   dom.librariesList.innerHTML = '';
   const library = currentLibrary();
-  dom.workspaceTitle.textContent = library ? library.name : 'Pôjdeme pomaly.';
+  dom.libraryEditButton.disabled = !library;
+  dom.libraryDeleteButton.disabled = !library;
+  dom.libraryEditButton.title = library ? `Upraviť knižnicu ${library.name}` : 'Vyber knižnicu na úpravu';
+  dom.libraryDeleteButton.title = library ? `Zmazať knižnicu ${library.name}` : 'Vyber knižnicu na zmazanie';
+  dom.libraryEditButton.setAttribute('aria-label', dom.libraryEditButton.title);
+  dom.libraryDeleteButton.setAttribute('aria-label', dom.libraryDeleteButton.title);
 
   if (state.activeDetailLibraryId && !state.libraries.some((item) => item.id === state.activeDetailLibraryId)) {
     closeLibraryDetailPanel({ force: true });
@@ -101,30 +124,14 @@ export function renderLibraries() {
       renderLibraries();
     });
 
-    const editButton = document.createElement('button');
-    editButton.type = 'button';
-    editButton.className = 'panel-icon-button';
-    editButton.textContent = '✎';
-    editButton.title = 'Upraviť knižnicu';
-    editButton.setAttribute('aria-label', `Upraviť knižnicu ${item.name}`);
-    editButton.addEventListener('click', () => showLibraryForm(item));
-
-    const deleteButton = document.createElement('button');
-    deleteButton.type = 'button';
-    deleteButton.className = 'panel-icon-button danger';
-    deleteButton.textContent = '×';
-    deleteButton.title = 'Zmazať knižnicu';
-    deleteButton.setAttribute('aria-label', `Zmazať knižnicu ${item.name}`);
-    deleteButton.addEventListener('click', () => deleteLibrary(item.id));
-
-    row.append(selectButton, editButton, deleteButton);
+    row.append(selectButton);
     dom.librariesList.append(row);
   });
 }
 
 export function upsertLibrary(name) {
   const cleanName = name.trim();
-  if (!cleanName) return;
+  if (!cleanName) return false;
 
   if (state.editingLibraryId) {
     state.libraries = state.libraries.map((library) =>
@@ -143,6 +150,7 @@ export function upsertLibrary(name) {
   saveLibraries();
   hideLibraryForm();
   renderLibraries();
+  return true;
 }
 
 export function deleteLibrary(id) {

@@ -22,7 +22,7 @@ function updateLoginMode() {
 
 async function activate(user, onAuthenticated) {
   authenticated = true;
-  dom.brandSubtitle.textContent = user.username;
+  dom.topbarUsername.textContent = user.username;
   dom.loginPassword.value = '';
   dom.loginScreen.hidden = true;
   dom.appShell.hidden = false;

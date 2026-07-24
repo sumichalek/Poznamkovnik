@@ -20,6 +20,8 @@ import {
   setArticleEditorContent
 } from './article-editor.js';
 import { refreshEditorResizeHandle } from './editor-resize.js';
+import { createAppIcon, setAppIcon } from './app-icons.js';
+import { createLibraryItemIcon } from './library-icons.js';
 import { openSourcesPanel, refreshElementSourceLinks } from './sources.js';
 import { apiRequest } from './api.js';
 
@@ -91,32 +93,17 @@ function normalizeActiveFolderPath() {
   state.activeFolderPath = normalizedPath;
 }
 
-function resetFolderRenameForm() {
-  state.editingFolderId = '';
-  dom.folderRenameForm.hidden = true;
-  dom.libraryDetailTitle.hidden = false;
-  dom.folderRenameInput.value = '';
-  dom.folderRenameInput.setCustomValidity('');
-}
-
 function updateLibraryPathControls() {
   const library = detailLibrary();
   const pathItems = activeFolderPathItems(library?.id);
   const pathLabels = pathItems.map(elementTitle);
   const rootLabel = library?.name || 'Knižnica';
   const visiblePath = [rootLabel, ...pathLabels].join(' / ');
-  const fullPath = visiblePath;
-  const folder = pathItems.at(-1) || null;
-  const folderActionsVisible = Boolean(folder && !state.activeLibraryElementId);
 
   dom.libraryDetailTitle.textContent = visiblePath;
-  dom.libraryDetailTitle.title = fullPath;
+  dom.libraryDetailTitle.title = visiblePath;
   dom.folderHomeButton.disabled = !state.activeFolderPath.length;
   dom.folderUpButton.disabled = !state.activeFolderPath.length;
-  dom.folderRenameButton.hidden = !folderActionsVisible;
-  dom.folderDeleteButton.hidden = !folderActionsVisible;
-
-  if (!folder || state.editingFolderId !== folder.id) resetFolderRenameForm();
 }
 
 function descendantElementIds(folderId) {
@@ -159,6 +146,7 @@ function syncEditorDock() {
     'aria-label',
     isFullscreen ? 'Zobraziť editor vedľa obsahu' : 'Otvoriť editor na celej ploche'
   );
+  setAppIcon(dom.libraryEditorFullscreen.querySelector('.app-icon'), isFullscreen ? 'minimize' : 'maximize');
   dom.editorResizeHandle.setAttribute('aria-hidden', String(!editorIsOpen || isFullscreen));
   dom.editorResizeHandle.tabIndex = editorIsOpen && !isFullscreen ? 0 : -1;
 }
@@ -204,6 +192,10 @@ function runLibraryItemAction(elementId, action) {
   }
 
   state.lastLibraryItemAction = { elementId, action, at: now };
+  if (action === 'rename') {
+    startFolderRename(elementId);
+    return;
+  }
   if (action === 'delete') {
     deleteLibraryElement(elementId);
     return;
@@ -243,9 +235,7 @@ function createLibraryItemCard(item) {
     windowBar.append(document.createElement('span'));
   }
 
-  const icon = document.createElement('span');
-  icon.className = `library-item-icon ${item.type}-icon`;
-  icon.setAttribute('aria-hidden', 'true');
+  const icon = createLibraryItemIcon(item.type);
 
   const title = document.createElement('span');
   title.className = 'library-item-title';
@@ -261,27 +251,31 @@ function createLibraryItemCard(item) {
   const actions = document.createElement('div');
   actions.className = 'library-item-actions';
 
-  if (item.type !== 'folder') {
-    const editButton = document.createElement('button');
-    editButton.type = 'button';
-    editButton.className = 'library-item-action';
-    editButton.dataset.itemAction = 'edit';
-    editButton.textContent = '✎';
-    editButton.title = 'Upraviť prvok';
-    editButton.setAttribute('aria-label', `Upraviť ${elementTypeLabels[item.type].toLowerCase()} ${elementTitle(item)}`);
-    editButton.addEventListener('pointerup', (event) => stopAndRunLibraryItemAction(event, item.id, 'edit'));
-    editButton.addEventListener('click', (event) => stopAndRunLibraryItemAction(event, item.id, 'edit'));
-    editButton.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') stopAndRunLibraryItemAction(event, item.id, 'edit');
-    });
-    actions.append(editButton);
-  }
+  const editButton = document.createElement('button');
+  const editAction = item.type === 'folder' ? 'rename' : 'edit';
+  editButton.type = 'button';
+  editButton.className = 'library-item-action';
+  editButton.dataset.itemAction = editAction;
+  editButton.append(createAppIcon('pencil'));
+  editButton.title = item.type === 'folder' ? 'Premenovať priečinok' : 'Upraviť prvok';
+  editButton.setAttribute(
+    'aria-label',
+    item.type === 'folder'
+      ? `Premenovať priečinok ${elementTitle(item)}`
+      : `Upraviť ${elementTypeLabels[item.type].toLowerCase()} ${elementTitle(item)}`
+  );
+  editButton.addEventListener('pointerup', (event) => stopAndRunLibraryItemAction(event, item.id, editAction));
+  editButton.addEventListener('click', (event) => stopAndRunLibraryItemAction(event, item.id, editAction));
+  editButton.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') stopAndRunLibraryItemAction(event, item.id, editAction);
+  });
+  actions.append(editButton);
 
   const deleteButton = document.createElement('button');
   deleteButton.type = 'button';
   deleteButton.className = 'library-item-action danger';
   deleteButton.dataset.itemAction = 'delete';
-  deleteButton.textContent = '×';
+  deleteButton.append(createAppIcon('trash'));
   deleteButton.title = 'Zmazať prvok';
   deleteButton.setAttribute('aria-label', `Zmazať ${elementTypeLabels[item.type].toLowerCase()} ${elementTitle(item)}`);
   deleteButton.addEventListener('pointerup', (event) => stopAndRunLibraryItemAction(event, item.id, 'delete'));
@@ -291,13 +285,67 @@ function createLibraryItemCard(item) {
   });
   actions.append(deleteButton);
 
-  card.append(openButton, actions);
+  if (item.type === 'folder' && state.editingFolderId === item.id) {
+    card.classList.add('is-renaming');
+    openButton.classList.add('is-renaming');
+    const renameForm = document.createElement('form');
+    renameForm.className = 'library-folder-rename';
+    renameForm.dataset.folderRenameForm = item.id;
+    const renameInput = document.createElement('input');
+    renameInput.type = 'text';
+    renameInput.maxLength = 120;
+    renameInput.required = true;
+    renameInput.value = elementTitle(item);
+    renameInput.dataset.folderRenameInput = item.id;
+    renameInput.setAttribute('aria-label', `Nový názov priečinka ${elementTitle(item)}`);
+    renameInput.addEventListener('input', () => renameInput.setCustomValidity(''));
+    renameInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      cancelFolderRename();
+      renderLibraryDetailPanel();
+    });
+    const saveButton = document.createElement('button');
+    saveButton.type = 'submit';
+    saveButton.className = 'library-folder-rename-action primary';
+    saveButton.append(createAppIcon('check'));
+    saveButton.title = 'Potvrdiť nový názov';
+    saveButton.setAttribute('aria-label', 'Potvrdiť nový názov');
+    const cancelButton = document.createElement('button');
+    cancelButton.type = 'button';
+    cancelButton.className = 'library-folder-rename-action';
+    cancelButton.append(createAppIcon('close'));
+    cancelButton.title = 'Zrušiť premenovanie';
+    cancelButton.setAttribute('aria-label', 'Zrušiť premenovanie');
+    cancelButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelFolderRename();
+      renderLibraryDetailPanel();
+    });
+    renameForm.addEventListener('click', (event) => event.stopPropagation());
+    renameForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      renameFolder(item.id, renameInput);
+    });
+    renameForm.append(renameInput, saveButton, cancelButton);
+    card.append(openButton, actions, renameForm);
+    window.requestAnimationFrame(() => {
+      renameInput.focus();
+      renameInput.select();
+    });
+  } else {
+    card.append(openButton, actions);
+  }
   return card;
 }
 
 export function handleLibraryItemClick(event) {
   const card = event.target.closest('.library-item-card');
   if (!card || !dom.libraryItemsList.contains(card)) return;
+  if (event.target.closest('.library-folder-rename')) return;
 
   const elementId = card.dataset.elementId;
   if (!elementId) return;
@@ -377,9 +425,6 @@ export function renderLibraryDetailPanel() {
     dom.libraryDetailTitle.textContent = 'Koreň';
     dom.folderHomeButton.disabled = true;
     dom.folderUpButton.disabled = true;
-    dom.folderRenameButton.hidden = true;
-    dom.folderDeleteButton.hidden = true;
-    resetFolderRenameForm();
     return;
   }
   normalizeActiveFolderPath();
@@ -518,53 +563,59 @@ export function openParentFolder() {
   updateTopbarVisibility();
 }
 
-export function startFolderRename() {
-  const folder = activeFolder();
-  if (!folder || state.activeLibraryElementId) return;
+function folderRenameInput(folderId = state.editingFolderId) {
+  return [...dom.libraryItemsList.querySelectorAll('[data-folder-rename-input]')].find(
+    (input) => input.dataset.folderRenameInput === folderId
+  );
+}
 
-  const pathLabels = activeFolderPathItems().slice(0, -1).map(elementTitle);
+export function startFolderRename(folderId) {
+  const folder = elementsForLibrary().find((item) => item.id === folderId && item.type === 'folder');
+  if (!folder || state.activeLibraryElementId) return;
   state.editingFolderId = folder.id;
-  dom.folderRenamePrefix.textContent = `${[detailLibrary()?.name || 'Knižnica', ...pathLabels].join(' / ')} /`;
-  dom.folderRenameInput.value = elementTitle(folder);
-  dom.libraryDetailTitle.hidden = true;
-  dom.folderRenameForm.hidden = false;
-  dom.folderRenameInput.focus();
-  dom.folderRenameInput.select();
+  renderLibraryItems();
 }
 
 export function cancelFolderRename() {
-  if (dom.folderRenameForm.hidden) return;
-  resetFolderRenameForm();
+  state.editingFolderId = '';
 }
 
-export function renameCurrentFolder() {
-  const folder = activeFolder();
-  const nextTitle = dom.folderRenameInput.value.trim();
-  if (!folder || state.editingFolderId !== folder.id) {
+export function hasUnsavedFolderRename() {
+  const folder = elementsForLibrary().find((item) => item.id === state.editingFolderId && item.type === 'folder');
+  const input = folderRenameInput();
+  return Boolean(folder && input && input.value.trim() !== elementTitle(folder));
+}
+
+export function discardFolderRenameDraft() {
+  cancelFolderRename();
+}
+
+export function saveFolderRenameDraft() {
+  const input = folderRenameInput();
+  if (!input) return true;
+  return renameFolder(state.editingFolderId, input);
+}
+
+function renameFolder(folderId, input) {
+  const library = detailLibrary();
+  const nextTitle = input.value.trim();
+  const itemIndex = elementsForLibrary(library?.id).findIndex((item) => item.id === folderId && item.type === 'folder');
+  if (!library || itemIndex === -1 || state.editingFolderId !== folderId) {
     cancelFolderRename();
-    return;
+    renderLibraryDetailPanel();
+    return false;
   }
   if (!nextTitle) {
-    dom.folderRenameInput.setCustomValidity('Názov priečinka je povinný.');
-    dom.folderRenameInput.reportValidity();
-    return;
+    input.setCustomValidity('Názov priečinka je povinný.');
+    input.reportValidity();
+    return false;
   }
 
-  const items = elementsForLibrary();
-  const itemIndex = items.findIndex((item) => item.id === folder.id);
-  if (itemIndex === -1) return;
-
-  const nextItems = [...items];
+  const nextItems = [...elementsForLibrary(library.id)];
   nextItems[itemIndex] = { ...nextItems[itemIndex], title: nextTitle, updatedAt: new Date().toISOString() };
-  setElementsForLibrary(detailLibrary().id, nextItems);
+  setElementsForLibrary(library.id, nextItems);
   saveLibraryElements();
-  state.editingFolderId = '';
-  renderLibraryDetailPanel();
-}
-
-export function deleteCurrentFolder() {
-  const folder = activeFolder();
-  if (!folder || state.activeLibraryElementId) return;
   cancelFolderRename();
-  deleteLibraryElement(folder.id);
+  renderLibraryDetailPanel();
+  return true;
 }

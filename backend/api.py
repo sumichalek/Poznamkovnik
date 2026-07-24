@@ -153,6 +153,14 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         user = self._require_user()
         if route == ["preferences"] and method == "GET":
+            return self.context.database.preferences(user["id"])
+        if route == ["preferences"] and method == "POST":
+            return self.context.database.save_preferences(user["id"], self._read_json())
+        if route == ["preferences", "background", "preset"] and method == "POST":
+            data = self._read_json()
+            previous = self.context.database.save_background_preset(user["id"], str(data.get("presetId", "")))
+            if previous.get("kind") == "custom" and previous.get("filename"):
+                self.context.backgrounds.delete(user["id"], str(previous["filename"]))
             return {"background": self.context.database.background_preference(user["id"])}
         if route == ["preferences", "background"] and method == "POST":
             uploaded = self._read_upload(MAX_BACKGROUND_BYTES + 512 * 1024)
@@ -192,8 +200,17 @@ class AppHandler(SimpleHTTPRequestHandler):
             data.setdefault("id", str(uuid.uuid4()))
             return {"source": self.context.database.create_source(user["id"], data)}
 
+        if route == ["source-collections"] and method == "GET":
+            return {"collections": self.context.database.list_source_collections(user["id"])}
+        if route == ["source-collections"] and method == "POST":
+            data = self._read_json()
+            data.setdefault("id", str(uuid.uuid4()))
+            return self.context.database.create_source_collection(user["id"], data)
+
         if len(route) >= 2 and route[0] == "sources":
             return self._route_source(method, user["id"], route)
+        if len(route) >= 2 and route[0] == "source-collections":
+            return self._route_source_collection(method, user["id"], route)
         if len(route) == 2 and route[0] == "files" and method in {"GET", "HEAD"}:
             self._send_file(
                 user["id"],
@@ -221,8 +238,14 @@ class AppHandler(SimpleHTTPRequestHandler):
                 return {"deleted": True}
 
         if len(route) == 3 and route[2] == "files" and method == "POST":
-            uploaded = self._read_upload()
-            file_info = self.context.files.store_upload(uploaded.file, uploaded.filename, uploaded.type)
+            maximum = self.context.database.source_file_max_bytes(user_id)
+            uploaded = self._read_upload(maximum + 512 * 1024)
+            file_info = self.context.files.store_upload(
+                uploaded.file,
+                uploaded.filename,
+                uploaded.type,
+                maximum_bytes=maximum,
+            )
             try:
                 source = self.context.database.add_source_file(user_id, source_id, str(uuid.uuid4()), file_info)
             except Exception:
@@ -230,6 +253,23 @@ class AppHandler(SimpleHTTPRequestHandler):
                     self.context.files.delete_blob(str(file_info["blobHash"]))
                 raise
             return {"source": source}
+        if len(route) == 4 and route[2] == "files" and method == "DELETE":
+            source, orphaned_blob = self.context.database.delete_source_file(user_id, source_id, route[3])
+            if orphaned_blob:
+                self.context.files.delete_blob(orphaned_blob)
+            return {"source": source}
+
+        if len(route) == 5 and route[2] == "files" and route[4] == "annotations":
+            file_id = route[3]
+            if method == "GET":
+                return {"annotations": self.context.database.list_source_annotations(user_id, source_id, file_id)}
+            if method == "POST":
+                data = self._read_json()
+                data.setdefault("id", str(uuid.uuid4()))
+                return {"annotation": self.context.database.create_source_annotation(user_id, source_id, file_id, data)}
+        if len(route) == 6 and route[2] == "files" and route[4] == "annotations" and method == "DELETE":
+            self.context.database.delete_source_annotation(user_id, source_id, route[3], route[5])
+            return {"deleted": True}
 
         if len(route) == 4 and route[2] == "libraries":
             library_id = route[3]
@@ -249,6 +289,25 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.context.database.unlink_source_element(user_id, source_id, route[3])
             return {"source": self.context.database.source_detail(user_id, source_id)}
         raise ApiError(HTTPStatus.NOT_FOUND, "Neznámy zdrojový endpoint.")
+
+    def _route_source_collection(self, method: str, user_id: str, route: list[str]) -> dict[str, Any]:
+        collection_id = route[1]
+        if len(route) == 2:
+            if method == "GET":
+                return self.context.database.source_collection_detail(user_id, collection_id)
+            if method == "PATCH":
+                return self.context.database.update_source_collection(user_id, collection_id, self._read_json())
+            if method == "DELETE":
+                return {"parentId": self.context.database.delete_source_collection(user_id, collection_id)}
+        if len(route) == 4 and route[2] == "sources":
+            source_id = route[3]
+            if method == "PUT":
+                self.context.database.link_collection_source(user_id, collection_id, source_id)
+                return self.context.database.source_collection_detail(user_id, collection_id)
+            if method == "DELETE":
+                self.context.database.unlink_collection_source(user_id, collection_id, source_id)
+                return self.context.database.source_collection_detail(user_id, collection_id)
+        raise ApiError(HTTPStatus.NOT_FOUND, "Neznámy endpoint zbierky zdrojov.")
 
     def _read_json(self) -> dict[str, Any]:
         content_length = self._content_length(2 * 1024 * 1024)
@@ -326,7 +385,7 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def _send_background(self, user_id: str, *, head_only: bool = False) -> None:
         background = self.context.database.background_preference(user_id)
-        if not background["hasBackground"]:
+        if not background["hasBackground"] or background.get("kind") != "custom":
             raise ApiError(HTTPStatus.NOT_FOUND, "Vlastné pozadie nie je nastavené.")
         path = self.context.backgrounds.path_for(user_id, str(background["filename"]))
         if not path.is_file():

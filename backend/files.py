@@ -25,7 +25,14 @@ class FileStore:
         self.blobs_dir.mkdir(parents=True, exist_ok=True)
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    def store_upload(self, stream: BinaryIO, filename: str, declared_mime: str = "") -> dict[str, str | int | bool]:
+    def store_upload(
+        self,
+        stream: BinaryIO,
+        filename: str,
+        declared_mime: str = "",
+        *,
+        maximum_bytes: int = MAX_UPLOAD_BYTES,
+    ) -> dict[str, str | int | bool]:
         original_name = Path(filename or "priloha").name[:240] or "priloha"
         temporary_path = self.tmp_dir / f"{uuid.uuid4().hex}.upload"
         digest = hashlib.sha256()
@@ -34,8 +41,10 @@ class FileStore:
             with temporary_path.open("wb") as destination:
                 while chunk := stream.read(1024 * 1024):
                     size += len(chunk)
-                    if size > MAX_UPLOAD_BYTES:
-                        raise UploadError("Súbor môže mať najviac 100 MB.")
+                    if size > maximum_bytes:
+                        maximum_megabytes = maximum_bytes / (1024 * 1024)
+                        label = f"{maximum_megabytes:g} MB"
+                        raise UploadError(f"Súbor presahuje nastavený limit {label}.")
                     digest.update(chunk)
                     destination.write(chunk)
             blob_hash = digest.hexdigest()

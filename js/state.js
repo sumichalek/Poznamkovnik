@@ -12,6 +12,8 @@ export const state = {
   editorAxis: 'vertical',
   editorDockInlineSize: 0,
   editorDockBlockSize: 0,
+  sourceDetailInlineSize: 0,
+  sourceDetailBlockSize: 0,
   editingLibraryId: '',
   editingFolderId: '',
   lastLibraryItemAction: null,

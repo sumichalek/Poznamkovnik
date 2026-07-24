@@ -1,4 +1,4 @@
-export const APP_VERSION = '0.12.3';
+export const APP_VERSION = '0.17.1';
 
 export const HORIZONTAL_EDITOR_MIN_WIDTH = 1120;
 export const HORIZONTAL_EDITOR_MIN_RATIO = 1.15;
@@ -10,10 +10,13 @@ export const storageKeys = {
   libraryElements: 'knowledge-library-elements',
   workspaceOwner: 'knowledge-workspace-owner',
   editorDockInlineSize: 'knowledge-editor-dock-inline-size',
-  editorDockBlockSize: 'knowledge-editor-dock-block-size'
+  editorDockBlockSize: 'knowledge-editor-dock-block-size',
+  sourceDetailInlineSize: 'knowledge-source-detail-inline-size',
+  sourceDetailBlockSize: 'knowledge-source-detail-block-size'
 };
 
 export const TOPBAR_REVEAL_DISTANCE = 72;
+export const LEFT_PANEL_REVEAL_DISTANCE = 18;
 export const themes = new Set(['focus', 'paper', 'dark', 'contrast']);
 export const elementTypes = new Set(['folder', 'note', 'article']);
 export const elementTypeLabels = {

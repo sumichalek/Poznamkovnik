@@ -1,4 +1,5 @@
-import { APP_VERSION, TOPBAR_REVEAL_DISTANCE, storageKeys } from './config.js';
+import { APP_VERSION, LEFT_PANEL_REVEAL_DISTANCE, TOPBAR_REVEAL_DISTANCE, storageKeys } from './config.js';
+import { hydrateAppIcons } from './app-icons.js';
 import {
   focusArticleEditor,
   initializeArticleEditor,
@@ -11,23 +12,22 @@ import {
   updateMathPreview
 } from './article-editor.js';
 import { initializeEditorResizing } from './editor-resize.js';
-import { clearAppliedBackground, initializeBackgroundSettings, loadBackgroundPreference } from './background.js';
+import { initializeSourceDetailResizing, refreshSourceDetailResizeHandle } from './source-detail-resize.js';
+import { loadBackgroundPreference } from './background.js';
 import { dom } from './dom.js';
-import { initializeLogin, isAuthenticated, logout } from './login.js';
+import { initializeLogin, isAuthenticated } from './login.js';
 import { state } from './state.js';
 import {
   cancelFolderRename,
   closeLibraryElementEditor,
   createLibraryElement,
-  deleteCurrentFolder,
   deleteLibraryElement,
   exitEditorFullscreen,
   handleLibraryItemClick,
   openLibraryElement,
   openLibraryRoot,
   openParentFolder,
-  renameCurrentFolder,
-  startFolderRename,
+  renderLibraryDetailPanel,
   toggleEditorFullscreen,
   updateEditorDockAxis,
   updateActiveElementFromEditor
@@ -47,7 +47,7 @@ import {
 } from './library-panels.js';
 import {
   applyTheme,
-  disableWorkspaceSync,
+  currentLibrary,
   flushWorkspaceSync,
   hydrateWorkspace,
   loadLibraries,
@@ -56,19 +56,32 @@ import {
 } from './storage.js';
 import {
   closeEditorSourceMenu,
+  closeSourceDetail,
   closeSourcePreview,
   closeSourcesPanel,
   initializeSources,
   isEditorSourceMenuOpen,
+  isSourceDetailOpen,
   isSourcePreviewOpen,
   isSourcesPanelOpen,
   refreshElementSourceLinks
 } from './sources.js';
 import { hideTopbarImmediately, updateTopbarVisibility } from './topbar.js';
+import { closeTopSections, initializeTopSections, switchTopSection } from './top-sections.js';
+import { initializeSettings } from './settings.js';
+import { loadWorkspacePreferences } from './preferences.js';
 
 document.addEventListener('pointermove', (event) => {
   if (!isAuthenticated()) return;
   state.pointerNearTop = event.clientY <= TOPBAR_REVEAL_DISTANCE;
+  if (
+    event.clientX <= LEFT_PANEL_REVEAL_DISTANCE &&
+    !dom.settingsDialog.open &&
+    !isSourcesPanelOpen() &&
+    !isSourcePreviewOpen()
+  ) {
+    openLibrariesPanel();
+  }
   updateTopbarVisibility();
 });
 dom.topbar.addEventListener('pointerenter', () => {
@@ -85,15 +98,6 @@ dom.topbar.addEventListener('focusout', updateTopbarVisibility);
 dom.librariesButton.addEventListener('pointerenter', () => openLibrariesPanel());
 dom.librariesButton.addEventListener('pointerleave', scheduleLibrariesPanelClose);
 dom.librariesButton.addEventListener('focus', () => openLibrariesPanel());
-dom.librariesButton.addEventListener('click', () => {
-  if (state.librariesPanelPinned && dom.librariesPanel.classList.contains('is-open')) {
-    closeLibrariesPanel({ force: true });
-    dom.librariesButton.blur();
-    return;
-  }
-
-  openLibrariesPanel({ pinned: true });
-});
 dom.librariesPanel.addEventListener('pointerenter', () => openLibrariesPanel());
 dom.librariesPanel.addEventListener('pointerleave', scheduleLibrariesPanelClose);
 dom.librariesPanel.addEventListener('focusin', () => openLibrariesPanel());
@@ -113,10 +117,9 @@ dom.libraryDetailPanel.addEventListener('focusout', () => {
   scheduleLibrariesPanelClose();
 });
 
-function openSourceTarget(libraryId, elementId = '') {
+async function openSourceTarget(libraryId, elementId = '') {
   if (!state.libraries.some((library) => library.id === libraryId)) return;
-  closeSourcePreview();
-  closeSourcesPanel({ force: true });
+  if (!(await switchTopSection('libraries'))) return;
   state.activeLibraryId = libraryId;
   saveLibraries();
   openLibrariesPanel({ pinned: true });
@@ -126,14 +129,22 @@ function openSourceTarget(libraryId, elementId = '') {
 }
 
 window.addEventListener('source-open-library', (event) => {
-  openSourceTarget(event.detail?.libraryId || '');
+  void openSourceTarget(event.detail?.libraryId || '');
 });
 
 window.addEventListener('source-open-element', (event) => {
-  openSourceTarget(event.detail?.libraryId || '', event.detail?.elementId || '');
+  void openSourceTarget(event.detail?.libraryId || '', event.detail?.elementId || '');
 });
 
 dom.libraryCreateButton.addEventListener('click', () => showLibraryForm());
+dom.libraryEditButton.addEventListener('click', () => {
+  const library = currentLibrary();
+  if (library) showLibraryForm(library);
+});
+dom.libraryDeleteButton.addEventListener('click', () => {
+  const library = currentLibrary();
+  if (library) deleteLibrary(library.id);
+});
 dom.libraryCancelButton.addEventListener('click', hideLibraryForm);
 dom.libraryForm.addEventListener('submit', (event) => {
   event.preventDefault();
@@ -141,13 +152,6 @@ dom.libraryForm.addEventListener('submit', (event) => {
 });
 dom.folderHomeButton.addEventListener('click', openLibraryRoot);
 dom.folderUpButton.addEventListener('click', openParentFolder);
-dom.folderRenameButton.addEventListener('click', startFolderRename);
-dom.folderDeleteButton.addEventListener('click', deleteCurrentFolder);
-dom.folderRenameForm.addEventListener('submit', (event) => {
-  event.preventDefault();
-  renameCurrentFolder();
-});
-dom.folderRenameInput.addEventListener('input', () => dom.folderRenameInput.setCustomValidity(''));
 dom.createFolderButton.addEventListener('click', () => createLibraryElement('folder'));
 dom.createNoteButton.addEventListener('click', () => createLibraryElement('note'));
 dom.createArticleButton.addEventListener('click', () => createLibraryElement('article'));
@@ -287,7 +291,7 @@ dom.mathDialog.addEventListener('close', resetMathDialog);
 
 document.addEventListener('pointerdown', (event) => {
   if (!isAuthenticated()) return;
-  if (dom.settingsDialog.open || dom.citationDialog.open || dom.mathDialog.open) return;
+  if (dom.settingsDialog.open || dom.citationDialog.open || dom.mathDialog.open || dom.sectionSwitchDialog.open) return;
   if (!state.librariesPanelPinned && !state.libraryDetailPanelPinned && !isSourcesPanelOpen()) return;
   if (
     dom.topbar.contains(event.target) ||
@@ -295,18 +299,19 @@ document.addEventListener('pointerdown', (event) => {
     dom.libraryDetailPanel.contains(event.target) ||
     dom.libraryEditorDock.contains(event.target) ||
     dom.sourcesPanel.contains(event.target) ||
+    dom.sourceBrowserPanel.contains(event.target) ||
+    dom.sourceDetailDock.contains(event.target) ||
     dom.sourcePreviewDock.contains(event.target)
   ) {
     return;
   }
-  if (state.librariesPanelPinned || state.libraryDetailPanelPinned) closeLibrariesPanel({ force: true });
-  if (isSourcesPanelOpen()) closeSourcesPanel({ force: true });
+  void closeTopSections();
 });
 
 document.addEventListener('keydown', (event) => {
   if (!isAuthenticated()) return;
   if (event.key === 'Escape') {
-    if (dom.settingsDialog.open || dom.citationDialog.open || dom.mathDialog.open) return;
+    if (dom.settingsDialog.open || dom.citationDialog.open || dom.mathDialog.open || dom.sectionSwitchDialog.open) return;
 
     if (isEditorSourceMenuOpen()) {
       event.preventDefault();
@@ -317,6 +322,12 @@ document.addEventListener('keydown', (event) => {
     if (isSourcePreviewOpen()) {
       event.preventDefault();
       closeSourcePreview();
+      return;
+    }
+
+    if (isSourceDetailOpen()) {
+      event.preventDefault();
+      closeSourceDetail();
       return;
     }
 
@@ -331,9 +342,10 @@ document.addEventListener('keydown', (event) => {
       return;
     }
 
-    if (!dom.folderRenameForm.hidden) {
+    if (state.editingFolderId) {
       event.preventDefault();
       cancelFolderRename();
+      renderLibraryDetailPanel();
       return;
     }
 
@@ -362,50 +374,38 @@ document.addEventListener('keydown', (event) => {
   if (isTextInput(event.target)) return;
 
   event.preventDefault();
-  openLibrariesPanel({ pinned: true });
-  dom.librariesButton.focus();
+  void (async () => {
+    if (await switchTopSection('libraries')) dom.librariesButton.focus();
+  })();
 });
 
-dom.settingsButton.addEventListener('click', () => {
-  dom.settingsDialog.showModal();
-  updateTopbarVisibility();
-});
-dom.settingsClose.addEventListener('click', () => {
-  dom.settingsDialog.close();
-  updateTopbarVisibility();
-});
-dom.logoutButton.addEventListener('click', async () => {
-  disableWorkspaceSync();
-  clearAppliedBackground();
-  dom.settingsDialog.close();
-  await logout();
-});
-dom.themeSelect.addEventListener('change', () => applyTheme(dom.themeSelect.value));
-dom.settingsDialog.addEventListener('click', (event) => {
-  if (event.target === dom.settingsDialog) dom.settingsDialog.close();
-  updateTopbarVisibility();
-});
-dom.settingsDialog.addEventListener('close', updateTopbarVisibility);
+function refreshDockAxes() {
+  updateEditorDockAxis();
+  refreshSourceDetailResizeHandle();
+}
 
-window.addEventListener('resize', updateEditorDockAxis);
-window.visualViewport?.addEventListener('resize', updateEditorDockAxis);
+window.addEventListener('resize', refreshDockAxes);
+window.visualViewport?.addEventListener('resize', refreshDockAxes);
 
 document.documentElement.dataset.appVersion = APP_VERSION;
+hydrateAppIcons();
 if (dom.appVersion) dom.appVersion.textContent = `Verzia ${APP_VERSION}`;
 initializeArticleEditor({ onUpdate: () => updateActiveElementFromEditor() });
 initializeEditorResizing();
-initializeBackgroundSettings();
+initializeSourceDetailResizing();
+initializeSettings();
 initializeSources();
+initializeTopSections();
 applyTheme(localStorage.getItem(storageKeys.theme) || 'focus');
 loadLibraries();
 loadLibraryElements();
-updateEditorDockAxis();
+refreshDockAxes();
 renderLibraries();
 dom.librariesButton.setAttribute('aria-expanded', 'false');
 updateTopbarVisibility();
 initializeLogin({
   onAuthenticated: async (user) => {
-    await Promise.all([hydrateWorkspace(user), loadBackgroundPreference()]);
+    await Promise.all([hydrateWorkspace(user), loadBackgroundPreference(), loadWorkspacePreferences()]);
     renderLibraries();
     state.pointerNearTop = true;
     updateTopbarVisibility();

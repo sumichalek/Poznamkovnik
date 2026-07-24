@@ -3,6 +3,12 @@ import { dom } from './dom.js';
 
 const MAX_BACKGROUND_BYTES = 12 * 1024 * 1024;
 const supportedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const backgroundPresets = new Map([
+  ['misty-forest', { label: 'Hmlistý les', image: 'assets/backgrounds/misty-forest.jpg' }],
+  ['forest-lake', { label: 'Tiché jazero', image: 'assets/backgrounds/forest-lake.jpg' }],
+  ['calm-ocean', { label: 'Pokojné more', image: 'assets/backgrounds/calm-ocean.jpg' }],
+  ['foggy-mountain', { label: 'Horská hmla', image: 'assets/backgrounds/foggy-mountain.jpg' }]
+]);
 
 function setStatus(message = '', { error = false } = {}) {
   dom.backgroundStatus.textContent = message;
@@ -11,27 +17,46 @@ function setStatus(message = '', { error = false } = {}) {
 
 function setBusy(busy) {
   dom.backgroundUploadButton.disabled = busy;
-  dom.backgroundRemoveButton.disabled = busy || !document.body.classList.contains('has-custom-background');
+  dom.backgroundRemoveButton.disabled = busy || !document.body.classList.contains('has-workspace-background');
+  dom.backgroundPresetButtons.forEach((button) => {
+    button.disabled = busy;
+  });
+}
+
+function setActivePreset(presetId = '') {
+  dom.backgroundPresetButtons.forEach((button) => {
+    const isActive = button.dataset.backgroundPreset === presetId;
+    button.classList.toggle('is-active', isActive);
+    button.setAttribute('aria-pressed', String(isActive));
+  });
 }
 
 export function applyBackgroundPreference(background) {
-  const hasBackground = Boolean(background?.hasBackground && background?.version);
-  document.body.classList.toggle('has-custom-background', hasBackground);
-  if (hasBackground) {
+  const preset = background?.kind === 'preset' ? backgroundPresets.get(background.preset) : null;
+  const hasCustomBackground = Boolean(background?.kind === 'custom' && background?.hasBackground && background?.version);
+  const hasBackground = hasCustomBackground || Boolean(preset);
+
+  document.body.classList.toggle('has-workspace-background', hasBackground);
+  if (hasCustomBackground) {
     const version = encodeURIComponent(background.version);
-    document.body.style.setProperty('--custom-background-image', `url("/api/preferences/background?v=${version}")`);
+    document.body.style.setProperty('--workspace-background-image', `url("/api/preferences/background?v=${version}")`);
     setStatus('Vlastná fotografia je aktívna.');
+  } else if (preset) {
+    document.body.style.setProperty('--workspace-background-image', `url("${preset.image}")`);
+    setStatus(`Aktívne: ${preset.label}.`);
   } else {
-    document.body.style.removeProperty('--custom-background-image');
+    document.body.style.removeProperty('--workspace-background-image');
     setStatus('');
   }
+  setActivePreset(preset ? background.preset : '');
   dom.backgroundRemoveButton.disabled = !hasBackground;
 }
 
 export function clearAppliedBackground() {
-  document.body.classList.remove('has-custom-background');
-  document.body.style.removeProperty('--custom-background-image');
+  document.body.classList.remove('has-workspace-background');
+  document.body.style.removeProperty('--workspace-background-image');
   dom.backgroundRemoveButton.disabled = true;
+  setActivePreset();
   setStatus('');
 }
 
@@ -57,7 +82,29 @@ async function uploadBackground(file) {
   return payload.background;
 }
 
+async function applyPreset(presetId) {
+  const preset = backgroundPresets.get(presetId);
+  if (!preset) return;
+
+  setBusy(true);
+  setStatus(`Nastavujem: ${preset.label}.`);
+  try {
+    const result = await apiRequest('/preferences/background/preset', {
+      method: 'POST',
+      body: { presetId }
+    });
+    applyBackgroundPreference(result.background);
+  } catch (error) {
+    setStatus(error.message || 'Pozadie sa nepodarilo nastaviť.', { error: true });
+  } finally {
+    setBusy(false);
+  }
+}
+
 export function initializeBackgroundSettings() {
+  dom.backgroundPresetButtons.forEach((button) => {
+    button.addEventListener('click', () => applyPreset(button.dataset.backgroundPreset));
+  });
   dom.backgroundUploadButton.addEventListener('click', () => dom.backgroundFileInput.click());
   dom.backgroundFileInput.addEventListener('change', async () => {
     const [file] = dom.backgroundFileInput.files;
@@ -83,7 +130,7 @@ export function initializeBackgroundSettings() {
     }
   });
   dom.backgroundRemoveButton.addEventListener('click', async () => {
-    if (!document.body.classList.contains('has-custom-background')) return;
+    if (!document.body.classList.contains('has-workspace-background')) return;
     setBusy(true);
     try {
       const result = await apiRequest('/preferences/background', { method: 'DELETE', body: {} });
