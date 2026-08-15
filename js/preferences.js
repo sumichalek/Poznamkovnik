@@ -4,11 +4,15 @@ import { dom } from './dom.js';
 const BYTES_PER_MEGABYTE = 1024 * 1024;
 const MIN_SOURCE_FILE_LIMIT_MB = 1;
 const MAX_SOURCE_FILE_LIMIT_MB = 1024;
+const MIN_MUSIC_TRACK_LIMIT_MB = 1;
+const MAX_MUSIC_TRACK_LIMIT_MB = 1024;
 const defaults = {
   mainPanelTransparency: 20,
   workspacePanelTransparency: 24,
   editorSurfaceTransparency: 12,
-  sourceFileMaxBytes: 100 * BYTES_PER_MEGABYTE
+  musicPanelTransparency: 12,
+  sourceFileMaxBytes: 100 * BYTES_PER_MEGABYTE,
+  musicTrackMaxBytes: 250 * BYTES_PER_MEGABYTE
 };
 
 let preferences = { ...defaults };
@@ -29,8 +33,20 @@ function normalizeSourceFileMaxBytes(value) {
   return Math.min(max, Math.max(min, Math.round(numeric)));
 }
 
+function normalizeMusicTrackMaxBytes(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return defaults.musicTrackMaxBytes;
+  const min = MIN_MUSIC_TRACK_LIMIT_MB * BYTES_PER_MEGABYTE;
+  const max = MAX_MUSIC_TRACK_LIMIT_MB * BYTES_PER_MEGABYTE;
+  return Math.min(max, Math.max(min, Math.round(numeric)));
+}
+
 function sourceFileLimitMb() {
   return Math.round(preferences.sourceFileMaxBytes / BYTES_PER_MEGABYTE);
+}
+
+function musicTrackLimitMb() {
+  return Math.round(preferences.musicTrackMaxBytes / BYTES_PER_MEGABYTE);
 }
 
 function setStatus(message = '', { error = false } = {}) {
@@ -38,10 +54,16 @@ function setStatus(message = '', { error = false } = {}) {
   dom.sourceFileLimitStatus.classList.toggle('is-error', error);
 }
 
+function setMusicStatus(message = '', { error = false } = {}) {
+  dom.musicTrackLimitStatus.textContent = message;
+  dom.musicTrackLimitStatus.classList.toggle('is-error', error);
+}
+
 function applyPanelTransparency() {
   document.documentElement.style.setProperty('--main-panel-opacity', `${100 - preferences.mainPanelTransparency}%`);
   document.documentElement.style.setProperty('--workspace-panel-opacity', `${100 - preferences.workspacePanelTransparency}%`);
   document.documentElement.style.setProperty('--editor-surface-opacity', `${100 - preferences.editorSurfaceTransparency}%`);
+  document.documentElement.style.setProperty('--music-panel-opacity', `${100 - preferences.musicPanelTransparency}%`);
   document.documentElement.style.setProperty(
     '--workspace-surface-opacity',
     `${Math.max(32, 90 - preferences.workspacePanelTransparency)}%`
@@ -58,7 +80,11 @@ function updateControls() {
   dom.editorSurfaceTransparency.value = String(preferences.editorSurfaceTransparency);
   dom.editorSurfaceTransparencyOutput.value = `${preferences.editorSurfaceTransparency} %`;
   dom.editorSurfaceTransparencyOutput.textContent = `${preferences.editorSurfaceTransparency} %`;
+  dom.musicPanelTransparency.value = String(preferences.musicPanelTransparency);
+  dom.musicPanelTransparencyOutput.value = `${preferences.musicPanelTransparency} %`;
+  dom.musicPanelTransparencyOutput.textContent = `${preferences.musicPanelTransparency} %`;
   dom.sourceFileLimitMb.value = String(sourceFileLimitMb());
+  dom.musicTrackLimitMb.value = String(musicTrackLimitMb());
 }
 
 function applyPreferences(nextPreferences, { syncControls = true } = {}) {
@@ -66,7 +92,9 @@ function applyPreferences(nextPreferences, { syncControls = true } = {}) {
     mainPanelTransparency: normalizeTransparency(nextPreferences?.mainPanelTransparency, defaults.mainPanelTransparency),
     workspacePanelTransparency: normalizeTransparency(nextPreferences?.workspacePanelTransparency, defaults.workspacePanelTransparency),
     editorSurfaceTransparency: normalizeTransparency(nextPreferences?.editorSurfaceTransparency, defaults.editorSurfaceTransparency),
-    sourceFileMaxBytes: normalizeSourceFileMaxBytes(nextPreferences?.sourceFileMaxBytes)
+    musicPanelTransparency: normalizeTransparency(nextPreferences?.musicPanelTransparency, defaults.musicPanelTransparency),
+    sourceFileMaxBytes: normalizeSourceFileMaxBytes(nextPreferences?.sourceFileMaxBytes),
+    musicTrackMaxBytes: normalizeMusicTrackMaxBytes(nextPreferences?.musicTrackMaxBytes)
   };
   applyPanelTransparency();
   if (syncControls) updateControls();
@@ -121,6 +149,16 @@ function updateEditorSurfaceTransparency() {
   scheduleSave();
 }
 
+function updateMusicPanelTransparency() {
+  preferences.musicPanelTransparency = normalizeTransparency(
+    dom.musicPanelTransparency.value,
+    preferences.musicPanelTransparency
+  );
+  applyPanelTransparency();
+  updateControls();
+  scheduleSave();
+}
+
 function updateSourceFileLimit() {
   const megabytes = Number(dom.sourceFileLimitMb.value);
   if (!Number.isFinite(megabytes) || megabytes < MIN_SOURCE_FILE_LIMIT_MB || megabytes > MAX_SOURCE_FILE_LIMIT_MB) {
@@ -132,6 +170,22 @@ function updateSourceFileLimit() {
   preferences.sourceFileMaxBytes = normalizeSourceFileMaxBytes(megabytes * BYTES_PER_MEGABYTE);
   updateControls();
   setStatus('');
+  scheduleSave();
+}
+
+function updateMusicTrackLimit() {
+  const megabytes = Number(dom.musicTrackLimitMb.value);
+  if (!Number.isFinite(megabytes) || megabytes < MIN_MUSIC_TRACK_LIMIT_MB || megabytes > MAX_MUSIC_TRACK_LIMIT_MB) {
+    dom.musicTrackLimitMb.setCustomValidity(
+      `Zadaj hodnotu od ${MIN_MUSIC_TRACK_LIMIT_MB} do ${MAX_MUSIC_TRACK_LIMIT_MB} MB.`
+    );
+    dom.musicTrackLimitMb.reportValidity();
+    return;
+  }
+  dom.musicTrackLimitMb.setCustomValidity('');
+  preferences.musicTrackMaxBytes = normalizeMusicTrackMaxBytes(megabytes * BYTES_PER_MEGABYTE);
+  updateControls();
+  setMusicStatus('');
   scheduleSave();
 }
 
@@ -148,8 +202,11 @@ export async function loadWorkspacePreferences() {
     const result = await apiRequest('/preferences');
     applyPreferences(result);
     setStatus('');
+    setMusicStatus('');
   } catch {
     applyPreferences(defaults);
+    setStatus('');
+    setMusicStatus('');
   }
 }
 
@@ -159,6 +216,7 @@ export function clearWorkspacePreferences() {
   preferenceRevision += 1;
   applyPreferences(defaults);
   setStatus('');
+  setMusicStatus('');
 }
 
 export function initializeWorkspacePreferences() {
@@ -166,6 +224,9 @@ export function initializeWorkspacePreferences() {
   dom.mainPanelTransparency.addEventListener('input', updateMainPanelTransparency);
   dom.workspacePanelTransparency.addEventListener('input', updateWorkspacePanelTransparency);
   dom.editorSurfaceTransparency.addEventListener('input', updateEditorSurfaceTransparency);
+  dom.musicPanelTransparency.addEventListener('input', updateMusicPanelTransparency);
   dom.sourceFileLimitMb.addEventListener('change', updateSourceFileLimit);
   dom.sourceFileLimitMb.addEventListener('input', () => dom.sourceFileLimitMb.setCustomValidity(''));
+  dom.musicTrackLimitMb.addEventListener('change', updateMusicTrackLimit);
+  dom.musicTrackLimitMb.addEventListener('input', () => dom.musicTrackLimitMb.setCustomValidity(''));
 }

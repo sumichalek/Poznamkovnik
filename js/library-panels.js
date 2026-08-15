@@ -11,8 +11,13 @@ import {
   saveLibraryElements
 } from './storage.js';
 import { updateTopbarVisibility } from './topbar.js';
+import { readTagField, setTagField } from './tags.js';
 
 let libraryFormBaseline = '';
+
+function libraryFormSnapshot() {
+  return JSON.stringify({ name: dom.libraryNameInput.value.trim(), tags: readTagField(dom.libraryTags) });
+}
 
 function updateWorkspaceVisibility() {
   document.body.classList.toggle(
@@ -36,7 +41,8 @@ export function showLibraryForm(library = null) {
   }
   state.editingLibraryId = library?.id || '';
   dom.libraryNameInput.value = library?.name || '';
-  libraryFormBaseline = dom.libraryNameInput.value.trim();
+  setTagField(dom.libraryTags, dom.libraryTagChips, library?.tags || []);
+  libraryFormBaseline = libraryFormSnapshot();
   dom.libraryForm.hidden = false;
   openLibrariesPanel({ pinned: true });
   renderLibraries();
@@ -46,13 +52,14 @@ export function showLibraryForm(library = null) {
 export function hideLibraryForm() {
   state.editingLibraryId = '';
   dom.libraryForm.reset();
+  setTagField(dom.libraryTags, dom.libraryTagChips, []);
   dom.libraryForm.hidden = true;
   libraryFormBaseline = '';
   renderLibraries();
 }
 
 export function hasUnsavedLibraryForm() {
-  return !dom.libraryForm.hidden && dom.libraryNameInput.value.trim() !== libraryFormBaseline;
+  return !dom.libraryForm.hidden && libraryFormSnapshot() !== libraryFormBaseline;
 }
 
 export function discardLibraryFormDraft() {
@@ -62,7 +69,7 @@ export function discardLibraryFormDraft() {
 export function saveLibraryFormDraft() {
   if (!hasUnsavedLibraryForm()) return true;
   if (!dom.libraryForm.reportValidity()) return false;
-  return upsertLibrary(dom.libraryNameInput.value);
+  return upsertLibrary(dom.libraryNameInput.value, readTagField(dom.libraryTags));
 }
 
 export function renderLibraries() {
@@ -129,18 +136,19 @@ export function renderLibraries() {
   });
 }
 
-export function upsertLibrary(name) {
+export function upsertLibrary(name, tags = []) {
   const cleanName = name.trim();
   if (!cleanName) return false;
 
   if (state.editingLibraryId) {
     state.libraries = state.libraries.map((library) =>
-      library.id === state.editingLibraryId ? { ...library, name: cleanName } : library
+      library.id === state.editingLibraryId ? { ...library, name: cleanName, tags } : library
     );
   } else {
     const library = {
       id: crypto.randomUUID(),
       name: cleanName,
+      tags,
       createdAt: new Date().toISOString()
     };
     state.libraries = [library, ...state.libraries];

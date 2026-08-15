@@ -23,9 +23,14 @@ import { refreshEditorResizeHandle } from './editor-resize.js';
 import { createAppIcon, setAppIcon } from './app-icons.js';
 import { createLibraryItemIcon } from './library-icons.js';
 import { openSourcesPanel, refreshElementSourceLinks } from './sources.js';
+import { refreshElementTaskLinks } from './tasks.js';
+import { refreshElementCalendarLinks } from './calendar.js';
 import { apiRequest } from './api.js';
+import { readTagField, setTagField } from './tags.js';
 
 window.addEventListener('sources-changed', () => renderLibraryDetailPanel());
+window.addEventListener('tasks-changed', () => renderLibraryDetailPanel());
+window.addEventListener('calendar-changed', () => renderLibraryDetailPanel());
 
 export function currentFolderId() {
   return state.activeFolderPath.at(-1) || '';
@@ -244,7 +249,9 @@ function createLibraryItemCard(item) {
   const meta = document.createElement('span');
   meta.className = 'library-item-meta';
   const childCount = item.type === 'folder' ? elementsForLibrary().filter((child) => child.parentId === item.id).length : 0;
-  meta.textContent = item.type === 'folder' ? `${elementTypeLabels[item.type]} · ${childCount}` : elementTypeLabels[item.type];
+  const typeMeta = item.type === 'folder' ? `${elementTypeLabels[item.type]} · ${childCount}` : elementTypeLabels[item.type];
+  const tagMeta = (item.tags || []).slice(0, 2).map((tag) => `#${tag}`).join(' ');
+  meta.textContent = [typeMeta, tagMeta].filter(Boolean).join(' · ');
 
   openButton.append(windowBar, icon, title, meta);
 
@@ -407,6 +414,72 @@ async function renderLibrarySourceLinks(libraryId) {
   }
 }
 
+async function renderLibraryTaskLinks(libraryId) {
+  dom.libraryTaskLinks.hidden = true;
+  dom.libraryTaskLinks.replaceChildren();
+  if (state.activeFolderPath.length) return;
+  try {
+    const result = await apiRequest(`/task-links/library/${encodeURIComponent(libraryId)}`);
+    if (state.activeDetailLibraryId !== libraryId || state.activeFolderPath.length || !result.tasks.length) return;
+    const heading = document.createElement('h3');
+    heading.textContent = 'Úlohy v knižnici';
+    const list = document.createElement('div');
+    list.className = 'library-task-list';
+    result.tasks.forEach((task) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'library-task-link';
+      button.classList.toggle('is-done', task.status === 'done');
+      button.textContent = task.title;
+      button.title = 'Otvoriť úlohu';
+      button.addEventListener('click', () => {
+        window.dispatchEvent(new CustomEvent('task-open', { detail: { taskId: task.id } }));
+      });
+      list.append(button);
+    });
+    dom.libraryTaskLinks.append(heading, list);
+    dom.libraryTaskLinks.hidden = false;
+  } catch {
+    dom.libraryTaskLinks.hidden = true;
+  }
+}
+
+function calendarEventMeta(event) {
+  if (event.allDay) return event.startDate === event.endDate ? event.startDate : `${event.startDate} - ${event.endDate}`;
+  const start = event.startTime ? `${event.startDate} ${event.startTime}` : event.startDate;
+  const end = event.endTime ? `${event.endDate} ${event.endTime}` : event.endDate;
+  return start === end ? start : `${start} - ${end}`;
+}
+
+async function renderLibraryCalendarLinks(libraryId) {
+  dom.libraryCalendarLinks.hidden = true;
+  dom.libraryCalendarLinks.replaceChildren();
+  if (state.activeFolderPath.length) return;
+  try {
+    const result = await apiRequest(`/calendar-event-links/library/${encodeURIComponent(libraryId)}`);
+    if (state.activeDetailLibraryId !== libraryId || state.activeFolderPath.length || !result.events.length) return;
+    const heading = document.createElement('h3');
+    heading.textContent = 'Udalosti v kalendári';
+    const list = document.createElement('div');
+    list.className = 'library-calendar-list';
+    result.events.forEach((event) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'library-calendar-link';
+      button.textContent = `${event.title} · ${calendarEventMeta(event)}`;
+      button.title = 'Otvoriť udalosť';
+      button.addEventListener('click', () => {
+        window.dispatchEvent(new CustomEvent('calendar-open-event', { detail: { eventId: event.id } }));
+      });
+      list.append(button);
+    });
+    dom.libraryCalendarLinks.append(heading, list);
+    dom.libraryCalendarLinks.hidden = false;
+  } catch {
+    dom.libraryCalendarLinks.hidden = true;
+  }
+}
+
 export function closeLibraryElementEditor({ render = true } = {}) {
   state.activeLibraryElementId = '';
   state.editorLayout = 'closed';
@@ -414,8 +487,11 @@ export function closeLibraryElementEditor({ render = true } = {}) {
   dom.libraryBrowser.hidden = false;
   syncEditorDock();
   dom.libraryEditorTitle.value = '';
+  setTagField(dom.libraryEditorTags, dom.libraryEditorTagChips, []);
   clearArticleEditor();
   void refreshElementSourceLinks();
+  void refreshElementTaskLinks();
+  void refreshElementCalendarLinks();
   if (render) renderLibraryDetailPanel();
 }
 
@@ -425,8 +501,10 @@ export function renderLibraryDetailPanel() {
     dom.libraryDetailTitle.textContent = 'Koreň';
     dom.folderHomeButton.disabled = true;
     dom.folderUpButton.disabled = true;
+    dom.libraryRelationshipsButton.disabled = true;
     return;
   }
+  dom.libraryRelationshipsButton.disabled = false;
   normalizeActiveFolderPath();
   updateLibraryPathControls();
   if (state.activeLibraryElementId && !activeLibraryElement()) {
@@ -435,6 +513,8 @@ export function renderLibraryDetailPanel() {
   }
   renderLibraryItems();
   void renderLibrarySourceLinks(library.id);
+  void renderLibraryTaskLinks(library.id);
+  void renderLibraryCalendarLinks(library.id);
 }
 
 export function createLibraryElement(type) {
@@ -449,6 +529,7 @@ export function createLibraryElement(type) {
     parentId: currentFolderId(),
     title: nextElementTitle(type),
     content: '',
+    tags: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -481,12 +562,15 @@ export function openLibraryElement(elementId, { focusTitle = false } = {}) {
   dom.libraryDetailPanel.classList.add('is-editing');
   dom.libraryBrowser.hidden = false;
   dom.libraryEditorTitle.value = elementTitle(item);
+  setTagField(dom.libraryEditorTags, dom.libraryEditorTagChips, item.tags || []);
   setArticleEditorContent(item.content, item.type === 'article' ? 'Píšte článok...' : 'Píšte poznámku...');
   dom.libraryEditor.dataset.elementType = item.type;
   updateEditorDockAxis();
   syncEditorDock();
   renderLibraryDetailPanel();
   void refreshElementSourceLinks();
+  void refreshElementTaskLinks();
+  void refreshElementCalendarLinks();
   updateTopbarVisibility();
   if (focusTitle) {
     dom.libraryEditorTitle.focus();
@@ -509,6 +593,7 @@ export function updateActiveElementFromEditor({ renderItems = false } = {}) {
     ...nextItems[itemIndex],
     title: dom.libraryEditorTitle.value.trim(),
     content: articleEditorContent(),
+    tags: readTagField(dom.libraryEditorTags),
     updatedAt: new Date().toISOString()
   };
 

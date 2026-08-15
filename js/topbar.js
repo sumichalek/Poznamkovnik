@@ -9,6 +9,13 @@ function topbarShouldStayVisible() {
     dom.libraryDetailPanel.classList.contains('is-open') ||
     dom.sourcesPanel.classList.contains('is-open') ||
     dom.sourcePreviewDock.classList.contains('is-open') ||
+    dom.tasksPanel.classList.contains('is-open') ||
+    dom.taskDetailDock.classList.contains('is-open') ||
+    dom.calendarPanel.classList.contains('is-open') ||
+    dom.calendarEventDock.classList.contains('is-open') ||
+    dom.tutorialPanel.classList.contains('is-open') ||
+    dom.tutorialPlaygroundDock.classList.contains('is-open') ||
+    dom.musicDock.classList.contains('is-open') ||
     dom.topbar.matches(':hover') ||
     dom.topbar.contains(document.activeElement)
   );

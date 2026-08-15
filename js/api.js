@@ -34,3 +34,30 @@ export async function uploadSourceFile(sourceId, file) {
   if (!response.ok) throw new ApiError(payload?.error || 'Súbor sa nepodarilo nahrať.', response.status);
   return payload;
 }
+
+export async function uploadMusicTrack(file) {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  const response = await fetch('/api/music/tracks', {
+    method: 'POST',
+    credentials: 'same-origin',
+    body: form
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new ApiError(payload?.error || 'Skladbu sa nepodarilo nahrať.', response.status);
+  return payload;
+}
+
+export async function uploadBackupArchive(file) {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  const response = await fetch('/api/backups/restore', {
+    method: 'POST',
+    credentials: 'same-origin',
+    body: form
+  });
+  const contentType = response.headers.get('Content-Type') || '';
+  const payload = contentType.includes('application/json') ? await response.json() : null;
+  if (!response.ok) throw new ApiError(payload?.error || 'Zálohu sa nepodarilo obnoviť.', response.status);
+  return payload;
+}

@@ -13,9 +13,32 @@ import {
 } from './article-editor.js';
 import { initializeEditorResizing } from './editor-resize.js';
 import { initializeSourceDetailResizing, refreshSourceDetailResizeHandle } from './source-detail-resize.js';
+import { initializeSourcePreviewResizing, refreshSourcePreviewResizeHandle } from './source-preview-resize.js';
+import { initializeTutorialPlaygroundResizing, refreshTutorialPlaygroundResizeHandle } from './tutorial-playground-resize.js';
+import {
+  closeEditorCalendarMenu,
+  closeCalendarEventDetail,
+  closeCalendarPanel,
+  initializeCalendar,
+  isEditorCalendarMenuOpen,
+  isCalendarEventDetailOpen,
+  isCalendarPanelOpen,
+  openCalendarPanel
+} from './calendar.js';
+import {
+  closeTaskDetail,
+  closeTasksPanel,
+  initializeTasks,
+  isTaskDetailOpen,
+  isTasksPanelOpen,
+  openTasksPanel
+} from './tasks.js';
 import { loadBackgroundPreference } from './background.js';
+import { loadBackupOverview } from './backups.js';
 import { dom } from './dom.js';
 import { initializeLogin, isAuthenticated } from './login.js';
+import { closeMusicPanel, initializeMusic, isMusicPanelOpen, openMusicPanel } from './music.js';
+import { initializeMusicResizing } from './music-resize.js';
 import { state } from './state.js';
 import {
   cancelFolderRename,
@@ -40,10 +63,8 @@ import {
   openLibraryDetailPanel,
   openLibrariesPanel,
   renderLibraries,
-  scheduleLibrariesPanelClose,
-  scheduleLibraryDetailPanelClose,
+  saveLibraryFormDraft,
   showLibraryForm,
-  upsertLibrary
 } from './library-panels.js';
 import {
   applyTheme,
@@ -58,18 +79,36 @@ import {
   closeEditorSourceMenu,
   closeSourceDetail,
   closeSourcePreview,
+  exitSourcePreviewFullscreen,
   closeSourcesPanel,
   initializeSources,
   isEditorSourceMenuOpen,
   isSourceDetailOpen,
   isSourcePreviewOpen,
   isSourcesPanelOpen,
+  openSourcesPanel,
   refreshElementSourceLinks
 } from './sources.js';
 import { hideTopbarImmediately, updateTopbarVisibility } from './topbar.js';
-import { closeTopSections, initializeTopSections, switchTopSection } from './top-sections.js';
+import {
+  closeTemporaryTopSection,
+  closeTopSections,
+  initializeTopSections,
+  isTemporaryTopSectionOpen,
+  switchTopSection
+} from './top-sections.js';
 import { initializeSettings } from './settings.js';
+import { initializeGlobalSearch, openGlobalSearch } from './search.js';
+import { initializeRelationships, openRelationships } from './relationships.js';
+import { wireTagInput } from './tags.js';
 import { loadWorkspacePreferences } from './preferences.js';
+import {
+  closeTutorialPlayground,
+  initializeTutorial,
+  isTutorialPanelOpen,
+  isTutorialPlaygroundOpen,
+  openTutorialPanel
+} from './tutorial.js';
 
 document.addEventListener('pointermove', (event) => {
   if (!isAuthenticated()) return;
@@ -78,6 +117,9 @@ document.addEventListener('pointermove', (event) => {
     event.clientX <= LEFT_PANEL_REVEAL_DISTANCE &&
     !dom.settingsDialog.open &&
     !isSourcesPanelOpen() &&
+    !isTasksPanelOpen() &&
+    !isCalendarPanelOpen() &&
+    !isTutorialPanelOpen() &&
     !isSourcePreviewOpen()
   ) {
     openLibrariesPanel();
@@ -95,28 +137,6 @@ dom.topbar.addEventListener('pointerleave', () => {
 dom.topbar.addEventListener('focusin', updateTopbarVisibility);
 dom.topbar.addEventListener('focusout', updateTopbarVisibility);
 
-dom.librariesButton.addEventListener('pointerenter', () => openLibrariesPanel());
-dom.librariesButton.addEventListener('pointerleave', scheduleLibrariesPanelClose);
-dom.librariesButton.addEventListener('focus', () => openLibrariesPanel());
-dom.librariesPanel.addEventListener('pointerenter', () => openLibrariesPanel());
-dom.librariesPanel.addEventListener('pointerleave', scheduleLibrariesPanelClose);
-dom.librariesPanel.addEventListener('focusin', () => openLibrariesPanel());
-dom.librariesPanel.addEventListener('focusout', scheduleLibrariesPanelClose);
-dom.libraryDetailPanel.addEventListener('pointerenter', () => {
-  if (state.activeDetailLibraryId) openLibraryDetailPanel(state.activeDetailLibraryId);
-});
-dom.libraryDetailPanel.addEventListener('pointerleave', () => {
-  scheduleLibraryDetailPanelClose();
-  scheduleLibrariesPanelClose();
-});
-dom.libraryDetailPanel.addEventListener('focusin', () => {
-  if (state.activeDetailLibraryId) openLibraryDetailPanel(state.activeDetailLibraryId);
-});
-dom.libraryDetailPanel.addEventListener('focusout', () => {
-  scheduleLibraryDetailPanelClose();
-  scheduleLibrariesPanelClose();
-});
-
 async function openSourceTarget(libraryId, elementId = '') {
   if (!state.libraries.some((library) => library.id === libraryId)) return;
   if (!(await switchTopSection('libraries'))) return;
@@ -128,12 +148,150 @@ async function openSourceTarget(libraryId, elementId = '') {
   renderLibraries();
 }
 
+dom.libraryDetailPanel.addEventListener('pointerenter', () => {
+  if (state.activeDetailLibraryId) openLibraryDetailPanel(state.activeDetailLibraryId);
+});
+dom.libraryDetailPanel.addEventListener('focusin', () => {
+  if (state.activeDetailLibraryId) openLibraryDetailPanel(state.activeDetailLibraryId);
+});
+
 window.addEventListener('source-open-library', (event) => {
   void openSourceTarget(event.detail?.libraryId || '');
 });
 
 window.addEventListener('source-open-element', (event) => {
   void openSourceTarget(event.detail?.libraryId || '', event.detail?.elementId || '');
+});
+
+window.addEventListener('task-open', (event) => {
+  void (async () => {
+    if (await switchTopSection('tasks')) await openTasksPanel({ taskId: event.detail?.taskId || '', pinned: true });
+  })();
+});
+
+window.addEventListener('task-open-target', (event) => {
+  const target = event.detail || {};
+  if (target.targetType === 'library') {
+    void openSourceTarget(target.libraryId || target.targetId || '');
+    return;
+  }
+  if (target.targetType === 'element') {
+    void openSourceTarget(target.libraryId || '', target.targetId || '');
+    return;
+  }
+  if (target.targetType === 'source') {
+    void (async () => {
+      if (await switchTopSection('sources')) await openSourcesPanel({ sourceId: target.targetId || '', pinned: true });
+    })();
+  }
+});
+
+window.addEventListener('calendar-open-target', (event) => {
+  const target = event.detail || {};
+  if (target.targetType === 'library') {
+    void openSourceTarget(target.libraryId || target.targetId || '');
+    return;
+  }
+  if (target.targetType === 'element') {
+    void openSourceTarget(target.libraryId || '', target.targetId || '');
+    return;
+  }
+  if (target.targetType === 'source') {
+    void (async () => {
+      if (await switchTopSection('sources')) await openSourcesPanel({ sourceId: target.targetId || '', pinned: true });
+    })();
+  }
+});
+
+window.addEventListener('calendar-open-event', (event) => {
+  void (async () => {
+    if (await switchTopSection('calendar')) await openCalendarPanel({ eventId: event.detail?.eventId || '', pinned: true });
+  })();
+});
+
+window.addEventListener('relationship-open', (event) => {
+  const target = event.detail || {};
+  if (target.targetType === 'library') {
+    void openSourceTarget(target.targetId || '');
+    return;
+  }
+  if (target.targetType === 'element') {
+    void openSourceTarget(target.libraryId || '', target.targetId || '');
+    return;
+  }
+  if (target.targetType === 'source') {
+    void (async () => {
+      if (await switchTopSection('sources')) await openSourcesPanel({ sourceId: target.targetId || '', pinned: true });
+    })();
+    return;
+  }
+  if (target.targetType === 'task') {
+    void (async () => {
+      if (await switchTopSection('tasks')) await openTasksPanel({ taskId: target.targetId || '', pinned: true });
+    })();
+    return;
+  }
+  if (target.targetType === 'calendar_event') {
+    void (async () => {
+      if (await switchTopSection('calendar')) await openCalendarPanel({ eventId: target.targetId || '', pinned: true });
+    })();
+    return;
+  }
+  if (target.targetType === 'tutorial_page') {
+    void (async () => {
+      if (await switchTopSection('tutorial')) {
+        await openTutorialPanel({ languageId: target.languageId || '', pageId: target.targetId || '', pinned: true });
+      }
+    })();
+  }
+});
+
+window.addEventListener('global-search-open', (event) => {
+  const result = event.detail || {};
+  const targetId = result.targetId || result.id || '';
+  void (async () => {
+    if (result.type === 'library') {
+      await openSourceTarget(targetId);
+      return;
+    }
+    if (result.type === 'folder' || result.type === 'note' || result.type === 'article') {
+      await openSourceTarget(result.contextId || '', targetId);
+      return;
+    }
+    if (result.type === 'source' || result.type === 'source_file') {
+      if (await switchTopSection('sources')) await openSourcesPanel({ sourceId: targetId, pinned: true });
+      return;
+    }
+    if (result.type === 'source_collection') {
+      if (await switchTopSection('sources')) await openSourcesPanel({ collectionId: targetId, pinned: true });
+      return;
+    }
+    if (result.type === 'task') {
+      if (await switchTopSection('tasks')) await openTasksPanel({ taskId: targetId, pinned: true });
+      return;
+    }
+    if (result.type === 'calendar_event') {
+      if (await switchTopSection('calendar')) await openCalendarPanel({ eventId: targetId, pinned: true });
+      return;
+    }
+    if (result.type === 'music_track') {
+      await openMusicPanel({ trackId: targetId });
+      return;
+    }
+    if (result.type === 'music_playlist') {
+      await openMusicPanel({ playlistId: targetId });
+      return;
+    }
+    if (result.type === 'tutorial_language') {
+      if (await switchTopSection('tutorial')) await openTutorialPanel({ languageId: targetId, pinned: true });
+      return;
+    }
+    if (result.type === 'tutorial_page' || result.type === 'tutorial_example' || result.type === 'tutorial_note') {
+      if (await switchTopSection('tutorial')) {
+        await openTutorialPanel({ languageId: result.contextId || '', pageId: targetId, pinned: true });
+      }
+    }
+  })();
 });
 
 dom.libraryCreateButton.addEventListener('click', () => showLibraryForm());
@@ -148,18 +306,24 @@ dom.libraryDeleteButton.addEventListener('click', () => {
 dom.libraryCancelButton.addEventListener('click', hideLibraryForm);
 dom.libraryForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  upsertLibrary(dom.libraryNameInput.value);
+  saveLibraryFormDraft();
 });
 dom.folderHomeButton.addEventListener('click', openLibraryRoot);
 dom.folderUpButton.addEventListener('click', openParentFolder);
 dom.createFolderButton.addEventListener('click', () => createLibraryElement('folder'));
 dom.createNoteButton.addEventListener('click', () => createLibraryElement('note'));
 dom.createArticleButton.addEventListener('click', () => createLibraryElement('article'));
+dom.libraryRelationshipsButton.addEventListener('click', () => {
+  if (state.activeDetailLibraryId) void openRelationships({ targetType: 'library', targetId: state.activeDetailLibraryId });
+});
 dom.libraryItemsList.addEventListener('pointerup', handleLibraryItemClick);
 dom.libraryItemsList.addEventListener('click', handleLibraryItemClick);
 dom.libraryEditorBack.addEventListener('click', () => closeLibraryElementEditor());
 dom.libraryEditorFullscreen.addEventListener('click', toggleEditorFullscreen);
 dom.libraryEditorDelete.addEventListener('click', () => deleteLibraryElement());
+dom.libraryEditorRelationships.addEventListener('click', () => {
+  if (state.activeLibraryElementId) void openRelationships({ targetType: 'element', targetId: state.activeLibraryElementId });
+});
 dom.libraryEditorTitle.addEventListener('input', () => updateActiveElementFromEditor({ renderItems: true }));
 dom.libraryEditorTitle.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter') return;
@@ -168,6 +332,7 @@ dom.libraryEditorTitle.addEventListener('keydown', (event) => {
   focusArticleEditor();
 });
 dom.libraryEditorBody.addEventListener('input', () => updateActiveElementFromEditor());
+dom.libraryEditorTags.addEventListener('input', () => updateActiveElementFromEditor({ renderItems: true }));
 
 async function openCitationDialog() {
   if (!state.activeLibraryElementId) return;
@@ -291,8 +456,11 @@ dom.mathDialog.addEventListener('close', resetMathDialog);
 
 document.addEventListener('pointerdown', (event) => {
   if (!isAuthenticated()) return;
-  if (dom.settingsDialog.open || dom.citationDialog.open || dom.mathDialog.open || dom.sectionSwitchDialog.open) return;
-  if (!state.librariesPanelPinned && !state.libraryDetailPanelPinned && !isSourcesPanelOpen()) return;
+  if (
+    dom.settingsDialog.open || dom.relationshipsDialog.open || dom.citationDialog.open || dom.mathDialog.open || dom.sectionSwitchDialog.open ||
+    dom.tutorialPageDialog.open || dom.musicTrackDialog.open || dom.searchDialog.open
+  ) return;
+  if (!state.librariesPanelPinned && !state.libraryDetailPanelPinned && !isSourcesPanelOpen() && !isTasksPanelOpen() && !isCalendarPanelOpen() && !isTutorialPanelOpen()) return;
   if (
     dom.topbar.contains(event.target) ||
     dom.librariesPanel.contains(event.target) ||
@@ -302,6 +470,13 @@ document.addEventListener('pointerdown', (event) => {
     dom.sourceBrowserPanel.contains(event.target) ||
     dom.sourceDetailDock.contains(event.target) ||
     dom.sourcePreviewDock.contains(event.target)
+    || dom.tasksPanel.contains(event.target)
+    || dom.taskDetailDock.contains(event.target)
+    || dom.calendarPanel.contains(event.target)
+    || dom.calendarEventDock.contains(event.target)
+    || dom.tutorialPanel.contains(event.target)
+    || dom.tutorialPlaygroundDock.contains(event.target)
+    || dom.musicDock.contains(event.target)
   ) {
     return;
   }
@@ -310,8 +485,32 @@ document.addEventListener('pointerdown', (event) => {
 
 document.addEventListener('keydown', (event) => {
   if (!isAuthenticated()) return;
+  if (
+    event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === 'f' &&
+    !dom.settingsDialog.open && !dom.relationshipsDialog.open && !dom.citationDialog.open && !dom.mathDialog.open && !dom.sectionSwitchDialog.open &&
+    !dom.tutorialPageDialog.open && !dom.musicTrackDialog.open
+  ) {
+    event.preventDefault();
+    openGlobalSearch();
+    return;
+  }
   if (event.key === 'Escape') {
-    if (dom.settingsDialog.open || dom.citationDialog.open || dom.mathDialog.open || dom.sectionSwitchDialog.open) return;
+    if (
+      dom.settingsDialog.open || dom.relationshipsDialog.open || dom.citationDialog.open || dom.mathDialog.open || dom.sectionSwitchDialog.open ||
+      dom.tutorialPageDialog.open || dom.musicTrackDialog.open || dom.searchDialog.open
+    ) return;
+
+    if (isTemporaryTopSectionOpen()) {
+      event.preventDefault();
+      void closeTemporaryTopSection();
+      return;
+    }
+
+    if (isMusicPanelOpen()) {
+      event.preventDefault();
+      closeMusicPanel();
+      return;
+    }
 
     if (isEditorSourceMenuOpen()) {
       event.preventDefault();
@@ -319,8 +518,15 @@ document.addEventListener('keydown', (event) => {
       return;
     }
 
+    if (isEditorCalendarMenuOpen()) {
+      event.preventDefault();
+      closeEditorCalendarMenu();
+      return;
+    }
+
     if (isSourcePreviewOpen()) {
       event.preventDefault();
+      if (exitSourcePreviewFullscreen()) return;
       closeSourcePreview();
       return;
     }
@@ -334,6 +540,42 @@ document.addEventListener('keydown', (event) => {
     if (isSourcesPanelOpen()) {
       event.preventDefault();
       closeSourcesPanel({ force: true });
+      return;
+    }
+
+    if (isTutorialPlaygroundOpen()) {
+      event.preventDefault();
+      closeTutorialPlayground();
+      return;
+    }
+
+    if (isTutorialPanelOpen()) {
+      event.preventDefault();
+      void closeTopSections();
+      return;
+    }
+
+    if (isCalendarEventDetailOpen()) {
+      event.preventDefault();
+      closeCalendarEventDetail();
+      return;
+    }
+
+    if (isCalendarPanelOpen()) {
+      event.preventDefault();
+      closeCalendarPanel({ force: true });
+      return;
+    }
+
+    if (isTaskDetailOpen()) {
+      event.preventDefault();
+      closeTaskDetail();
+      return;
+    }
+
+    if (isTasksPanelOpen()) {
+      event.preventDefault();
+      closeTasksPanel({ force: true });
       return;
     }
 
@@ -382,6 +624,8 @@ document.addEventListener('keydown', (event) => {
 function refreshDockAxes() {
   updateEditorDockAxis();
   refreshSourceDetailResizeHandle();
+  refreshSourcePreviewResizeHandle();
+  refreshTutorialPlaygroundResizeHandle();
 }
 
 window.addEventListener('resize', refreshDockAxes);
@@ -393,8 +637,24 @@ if (dom.appVersion) dom.appVersion.textContent = `Verzia ${APP_VERSION}`;
 initializeArticleEditor({ onUpdate: () => updateActiveElementFromEditor() });
 initializeEditorResizing();
 initializeSourceDetailResizing();
+initializeSourcePreviewResizing();
+initializeTutorialPlaygroundResizing();
+initializeMusicResizing();
 initializeSettings();
+initializeGlobalSearch();
+initializeRelationships();
+[
+  [dom.libraryTags, dom.libraryTagChips],
+  [dom.libraryEditorTags, dom.libraryEditorTagChips],
+  [dom.sourceTags, dom.sourceTagChips],
+  [dom.taskTags, dom.taskTagChips],
+  [dom.calendarEventTags, dom.calendarEventTagChips]
+].forEach(([input, chips]) => wireTagInput(input, chips));
+initializeMusic();
 initializeSources();
+initializeTasks();
+initializeCalendar();
+initializeTutorial();
 initializeTopSections();
 applyTheme(localStorage.getItem(storageKeys.theme) || 'focus');
 loadLibraries();
@@ -405,7 +665,7 @@ dom.librariesButton.setAttribute('aria-expanded', 'false');
 updateTopbarVisibility();
 initializeLogin({
   onAuthenticated: async (user) => {
-    await Promise.all([hydrateWorkspace(user), loadBackgroundPreference(), loadWorkspacePreferences()]);
+    await Promise.all([hydrateWorkspace(user), loadBackgroundPreference(), loadWorkspacePreferences(), loadBackupOverview()]);
     renderLibraries();
     state.pointerNearTop = true;
     updateTopbarVisibility();

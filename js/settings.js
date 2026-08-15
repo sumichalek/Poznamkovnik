@@ -1,6 +1,8 @@
 import { clearAppliedBackground, initializeBackgroundSettings } from './background.js';
+import { initializeBackups } from './backups.js';
 import { dom } from './dom.js';
 import { logout } from './login.js';
+import { stopMusicPlayback } from './music.js';
 import { clearWorkspacePreferences, initializeWorkspacePreferences } from './preferences.js';
 import { applyTheme, disableWorkspaceSync } from './storage.js';
 import { updateTopbarVisibility } from './topbar.js';
@@ -70,6 +72,7 @@ export function initializeSettings() {
   });
   dom.logoutButton.addEventListener('click', async () => {
     disableWorkspaceSync();
+    stopMusicPlayback();
     clearAppliedBackground();
     clearWorkspacePreferences();
     closeSettings();
@@ -82,4 +85,5 @@ export function initializeSettings() {
   dom.settingsDialog.addEventListener('close', updateTopbarVisibility);
   initializeBackgroundSettings();
   initializeWorkspacePreferences();
+  initializeBackups();
 }

@@ -1,11 +1,14 @@
 import { apiRequest, uploadSourceFile } from './api.js';
-import { createAppIcon, sourceFileIcon, sourceKindIcon } from './app-icons.js';
+import { createAppIcon, setAppIcon, sourceFileIcon, sourceKindIcon } from './app-icons.js';
 import { dom } from './dom.js';
 import { state } from './state.js';
 import { flushWorkspaceSync } from './storage.js';
 import { updateTopbarVisibility } from './topbar.js';
 import { getSourceFileMaxBytes, sourceFileLimitLabel } from './preferences.js';
 import { refreshSourceDetailResizeHandle } from './source-detail-resize.js';
+import { refreshSourcePreviewResizeHandle } from './source-preview-resize.js';
+import { readTagField, refreshTagSuggestions, setTagField } from './tags.js';
+import { openRelationships } from './relationships.js';
 
 const kindLabels = {
   source: 'Zdroj',
@@ -31,7 +34,6 @@ const TEXT_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
 let sources = [];
 let selectedSource = null;
 let searchTimer = 0;
-let panelHideTimer = 0;
 let panelPinned = false;
 let previewSourceId = '';
 let previewFileId = '';
@@ -39,6 +41,7 @@ let previewRequestId = 0;
 let previewAnnotations = [];
 let previewAnnotationsError = '';
 let previewSelectedText = '';
+let previewFullscreen = false;
 let loadedSourcesQuery = null;
 let loadingSourcesQuery = null;
 let sourcesLoadPromise = null;
@@ -77,7 +80,8 @@ function sourceFormSnapshot() {
     year: dom.sourceYear.value.trim(),
     author: dom.sourceAuthor.value.trim(),
     url: dom.sourceUrl.value.trim(),
-    description: dom.sourceDescription.value.trim()
+    description: dom.sourceDescription.value.trim(),
+    tags: readTagField(dom.sourceTags)
   });
 }
 
@@ -198,13 +202,49 @@ function sourceAnnotationUrl(fileId = previewFileId, annotationId = '') {
 }
 
 function setSourcePreviewOpen(open) {
+  if (!open) previewFullscreen = false;
   dom.sourcePreviewDock.classList.toggle('is-open', open);
   dom.sourcePreviewDock.setAttribute('aria-hidden', String(!open));
+  syncSourcePreviewFullscreen();
+  refreshSourcePreviewResizeHandle();
   updateTopbarVisibility();
 }
 
 export function isSourcePreviewOpen() {
   return dom.sourcePreviewDock.classList.contains('is-open');
+}
+
+export function isSourcePreviewFullscreen() {
+  return previewFullscreen && isSourcePreviewOpen();
+}
+
+function syncSourcePreviewFullscreen() {
+  const fullscreen = isSourcePreviewFullscreen();
+  dom.sourcePreviewDock.classList.toggle('is-fullscreen', fullscreen);
+  dom.sourcePreviewFullscreen.dataset.mode = fullscreen ? 'restore' : 'maximize';
+  dom.sourcePreviewFullscreen.title = fullscreen ? 'Zobraziť vedľa detailu zdroja' : 'Celá plocha';
+  dom.sourcePreviewFullscreen.setAttribute(
+    'aria-label',
+    fullscreen ? 'Zobraziť náhľad vedľa detailu zdroja' : 'Otvoriť náhľad na celej ploche'
+  );
+  setAppIcon(dom.sourcePreviewFullscreen.querySelector('.app-icon'), fullscreen ? 'minimize' : 'maximize');
+}
+
+export function toggleSourcePreviewFullscreen() {
+  if (!isSourcePreviewOpen()) return;
+  previewFullscreen = !previewFullscreen;
+  syncSourcePreviewFullscreen();
+  refreshSourcePreviewResizeHandle();
+  updateTopbarVisibility();
+}
+
+export function exitSourcePreviewFullscreen() {
+  if (!isSourcePreviewFullscreen()) return false;
+  previewFullscreen = false;
+  syncSourcePreviewFullscreen();
+  refreshSourcePreviewResizeHandle();
+  updateTopbarVisibility();
+  return true;
 }
 
 function hideSourcePreviewViews() {
@@ -570,6 +610,7 @@ function setSourceDetailOpen(open) {
     delete document.body.dataset.sourceDetailOpen;
   }
   refreshSourceDetailResizeHandle();
+  refreshSourcePreviewResizeHandle();
   updateTopbarVisibility();
 }
 
@@ -587,43 +628,21 @@ export function isSourcesPanelPinned() {
 
 export function closeSourcesPanel({ force = false } = {}) {
   if (panelPinned && !force) return;
-  window.clearTimeout(panelHideTimer);
   panelPinned = false;
   dom.sourceDetail.hidden = true;
   setSourceDetailOpen(false);
   setPanelOpen(false);
 }
 
-export async function openSourcesPanel({ sourceId = '', pinned = false } = {}) {
-  window.clearTimeout(panelHideTimer);
+export async function openSourcesPanel({ sourceId = '', collectionId = '', pinned = false } = {}) {
   closeEditorSourceMenu();
   if (pinned) panelPinned = true;
   setPanelOpen(true);
   await Promise.all([loadSources(), loadSourceCollections()]);
-  if (activeSourceCollectionId) await loadActiveSourceCollection();
+  if (collectionId) await openSourceCollection(collectionId);
+  else if (activeSourceCollectionId) await loadActiveSourceCollection();
   else renderSourceBrowser();
   if (sourceId) await selectSource(sourceId);
-}
-
-function scheduleSourcesPanelClose() {
-  window.clearTimeout(panelHideTimer);
-  panelHideTimer = window.setTimeout(() => {
-    const hoveringPanel =
-      dom.sourcesPanel.matches(':hover') ||
-      dom.sourceBrowserPanel.matches(':hover') ||
-      dom.sourceDetailDock.matches(':hover') ||
-      dom.sourcePreviewDock.matches(':hover');
-    const hoveringButton = dom.sourcesButton.matches(':hover');
-    const focusedPanel =
-      dom.sourcesPanel.contains(document.activeElement) ||
-      dom.sourceBrowserPanel.contains(document.activeElement) ||
-      dom.sourceDetailDock.contains(document.activeElement) ||
-      dom.sourcePreviewDock.contains(document.activeElement);
-    const focusedButton = dom.sourcesButton === document.activeElement;
-    if (!panelPinned && !hoveringPanel && !hoveringButton && !focusedPanel && !focusedButton) {
-      closeSourcesPanel();
-    }
-  }, 160);
 }
 
 async function loadSources({ force = false } = {}) {
@@ -752,7 +771,8 @@ function renderSourceBrowserItem(source) {
   const title = document.createElement('strong');
   title.textContent = source.title;
   const meta = document.createElement('small');
-  meta.textContent = sourceUsageMeta(source);
+  const tagMeta = (source.tags || []).slice(0, 2).map((tag) => `#${tag}`).join(' ');
+  meta.textContent = [sourceUsageMeta(source), tagMeta].filter(Boolean).join(' · ');
   copy.append(title, meta);
   button.append(icon, copy);
 
@@ -1057,9 +1077,11 @@ function startNewSource() {
   setSourceFilesStatus('');
   showSourceDetail();
   dom.sourceForm.reset();
+  setTagField(dom.sourceTags, dom.sourceTagChips, []);
   dom.sourceKind.value = 'source';
   dom.sourceFormTitle.textContent = 'Nový zdroj';
   dom.sourceDeleteButton.hidden = true;
+  dom.sourceRelationshipsButton.hidden = true;
   dom.sourceDetailEmpty.hidden = true;
   dom.sourceForm.hidden = false;
   hideSourceSections();
@@ -1073,6 +1095,8 @@ function hideSourceSections() {
   dom.sourceLibrarySection.hidden = true;
   dom.sourceElementSection.hidden = true;
   dom.sourceAnnotationSection.hidden = true;
+  dom.sourceTaskSection.hidden = true;
+  dom.sourceCalendarSection.hidden = true;
 }
 
 function renderSourceDetail() {
@@ -1087,22 +1111,28 @@ function renderSourceDetail() {
   dom.sourceForm.hidden = false;
   dom.sourceFormTitle.textContent = selectedSource.title;
   dom.sourceDeleteButton.hidden = false;
+  dom.sourceRelationshipsButton.hidden = false;
   dom.sourceTitle.value = selectedSource.title;
   dom.sourceKind.value = selectedSource.kind in kindLabels ? selectedSource.kind : 'source';
   dom.sourceYear.value = metadata.year || '';
   dom.sourceAuthor.value = metadata.author || '';
   dom.sourceUrl.value = metadata.url || '';
   dom.sourceDescription.value = selectedSource.description || '';
+  setTagField(dom.sourceTags, dom.sourceTagChips, selectedSource.tags || []);
   dom.sourceCollectionSection.hidden = false;
   dom.sourceFilesSection.hidden = false;
   dom.sourceLibrarySection.hidden = false;
   dom.sourceElementSection.hidden = false;
   dom.sourceAnnotationSection.hidden = false;
+  dom.sourceTaskSection.hidden = false;
+  dom.sourceCalendarSection.hidden = false;
   renderFiles();
   renderSourceCollections();
   renderLibraries();
   renderElements();
   renderSourceAnnotations();
+  renderSourceTasks();
+  renderSourceCalendarEvents();
   if (previewFileId) {
     const previewedFile = selectedSource.files?.find((file) => file.id === previewFileId);
     if (previewedFile) renderSourcePreviewRelations(previewedFile);
@@ -1135,6 +1165,7 @@ export async function saveSourceDraft() {
         title: dom.sourceTitle.value.trim(),
         kind: dom.sourceKind.value,
         description: dom.sourceDescription.value.trim(),
+        tags: readTagField(dom.sourceTags),
         metadata: {
           author: dom.sourceAuthor.value.trim(),
           year: dom.sourceYear.value.trim(),
@@ -1156,6 +1187,7 @@ export async function saveSourceDraft() {
       sourceDraftCollectionId = '';
       renderSourceDetail();
       await refreshSourceCatalog();
+      refreshTagSuggestions();
       notifySourcesChanged();
     });
     return true;
@@ -1506,6 +1538,73 @@ function renderSourceAnnotations() {
   });
 }
 
+function renderSourceTasks() {
+  const tasks = selectedSource?.tasks || [];
+  dom.sourceTasksCount.textContent = tasks.length ? String(tasks.length) : '';
+  dom.sourceTasksCount.hidden = !tasks.length;
+  dom.sourceTasksList.replaceChildren();
+  if (!tasks.length) {
+    const empty = document.createElement('p');
+    empty.className = 'source-usage-empty';
+    empty.textContent = 'Zatiaľ nie je pripojený k žiadnej úlohe.';
+    dom.sourceTasksList.append(empty);
+    return;
+  }
+  tasks.forEach((task) => {
+    const row = document.createElement('div');
+    row.className = 'source-usage-row';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'source-usage-link';
+    const details = [
+      task.status === 'done' ? 'Hotová' : task.priority === 'high' ? 'Vysoká priorita' : 'Úloha',
+      task.dueDate ? `do ${task.dueDate}` : ''
+    ].filter(Boolean).join(' · ');
+    open.textContent = details ? `${task.title} · ${details}` : task.title;
+    open.title = `Otvoriť úlohu ${task.title}`;
+    open.addEventListener('click', () => {
+      window.dispatchEvent(new CustomEvent('task-open', { detail: { taskId: task.id } }));
+    });
+    row.append(open);
+    dom.sourceTasksList.append(row);
+  });
+}
+
+function calendarEventTiming(event) {
+  if (event.allDay) return event.startDate === event.endDate ? event.startDate : `${event.startDate} - ${event.endDate}`;
+  const start = event.startTime ? `${event.startDate} ${event.startTime}` : event.startDate;
+  const end = event.endTime ? `${event.endDate} ${event.endTime}` : event.endDate;
+  return start === end ? start : `${start} - ${end}`;
+}
+
+function renderSourceCalendarEvents() {
+  const events = selectedSource?.calendarEvents || [];
+  dom.sourceCalendarCount.textContent = events.length ? String(events.length) : '';
+  dom.sourceCalendarCount.hidden = !events.length;
+  dom.sourceCalendarList.replaceChildren();
+  if (!events.length) {
+    const empty = document.createElement('p');
+    empty.className = 'source-usage-empty';
+    empty.textContent = 'Zatiaľ nie je pripojený k žiadnej udalosti.';
+    dom.sourceCalendarList.append(empty);
+    return;
+  }
+  events.forEach((event) => {
+    const row = document.createElement('div');
+    row.className = 'source-usage-row';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'source-usage-link';
+    open.textContent = `${event.title} · ${calendarEventTiming(event)}`;
+    open.title = `Otvoriť udalosť ${event.title}`;
+    open.addEventListener('click', () => {
+      window.dispatchEvent(new CustomEvent('calendar-open-event', { detail: { eventId: event.id } }));
+    });
+    row.append(open);
+    dom.sourceCalendarList.append(row);
+  });
+}
+
 export async function refreshElementSourceLinks() {
   const elementId = state.activeLibraryElementId;
   if (!elementId) {
@@ -1558,22 +1657,8 @@ export async function refreshElementSourceLinks() {
 }
 
 export function initializeSources() {
-  dom.sourcesButton.addEventListener('pointerenter', () => void openSourcesPanel());
-  dom.sourcesButton.addEventListener('pointerleave', scheduleSourcesPanelClose);
-  dom.sourcesButton.addEventListener('focus', () => void openSourcesPanel());
-  dom.sourcesPanel.addEventListener('pointerenter', () => void openSourcesPanel());
-  dom.sourcesPanel.addEventListener('pointerleave', scheduleSourcesPanelClose);
-  dom.sourcesPanel.addEventListener('focusin', () => void openSourcesPanel());
-  dom.sourcesPanel.addEventListener('focusout', scheduleSourcesPanelClose);
-  dom.sourceBrowserPanel.addEventListener('pointerenter', () => window.clearTimeout(panelHideTimer));
-  dom.sourceBrowserPanel.addEventListener('pointerleave', scheduleSourcesPanelClose);
-  dom.sourceBrowserPanel.addEventListener('focusin', () => window.clearTimeout(panelHideTimer));
-  dom.sourceBrowserPanel.addEventListener('focusout', scheduleSourcesPanelClose);
-  dom.sourceDetailDock.addEventListener('pointerenter', () => window.clearTimeout(panelHideTimer));
-  dom.sourceDetailDock.addEventListener('pointerleave', scheduleSourcesPanelClose);
-  dom.sourceDetailDock.addEventListener('focusin', () => window.clearTimeout(panelHideTimer));
-  dom.sourceDetailDock.addEventListener('focusout', scheduleSourcesPanelClose);
   dom.sourcePreviewCloseButton.addEventListener('click', closeSourcePreview);
+  dom.sourcePreviewFullscreen.addEventListener('click', toggleSourcePreviewFullscreen);
   dom.sourcePreviewAnnotateButton.addEventListener('pointerdown', captureSourcePreviewSelection);
   dom.sourcePreviewAnnotateButton.addEventListener('click', openSourceAnnotationForm);
   dom.sourcePreviewAnnotationCancelButton.addEventListener('click', clearSourcePreviewAnnotationForm);
@@ -1628,6 +1713,9 @@ export function initializeSources() {
   dom.sourceDeleteButton.addEventListener('click', () => {
     if (!selectedSource) return;
     void deleteSource(selectedSource.id, selectedSource.title);
+  });
+  dom.sourceRelationshipsButton.addEventListener('click', () => {
+    if (selectedSource) void openRelationships({ targetType: 'source', targetId: selectedSource.id });
   });
   dom.sourceUploadButton.addEventListener('click', () => dom.sourceFileInput.click());
   dom.sourceFileDropzone.addEventListener('click', () => {
@@ -1701,5 +1789,11 @@ export function initializeSources() {
     renderSourceDetail();
     await refreshElementSourceLinks();
     await refreshSourceCatalog();
+  });
+  window.addEventListener('tasks-changed', () => {
+    if (isSourcesPanelOpen() && selectedSource && !hasUnsavedSourceChanges()) void selectSource(selectedSource.id);
+  });
+  window.addEventListener('calendar-changed', () => {
+    if (isSourcesPanelOpen() && selectedSource && !hasUnsavedSourceChanges()) void selectSource(selectedSource.id);
   });
 }

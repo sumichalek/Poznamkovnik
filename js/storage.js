@@ -2,6 +2,7 @@ import { elementTypes, storageKeys, themes } from './config.js';
 import { apiRequest } from './api.js';
 import { dom } from './dom.js';
 import { state } from './state.js';
+import { normalizeTags } from './tags.js';
 
 let serverWorkspaceReady = false;
 let syncTimer = 0;
@@ -16,6 +17,7 @@ export function normalizeLibraries(value) {
     .map((library) => ({
       id: library?.id || crypto.randomUUID(),
       name: String(library?.name || '').trim(),
+      tags: normalizeTags(library?.tags),
       createdAt: library?.createdAt || new Date().toISOString()
     }))
     .filter((library) => {
@@ -36,6 +38,7 @@ export function normalizeLibraryElementList(value) {
       parentId: typeof item?.parentId === 'string' ? item.parentId : '',
       title: String(item?.title || '').trim(),
       content: String(item?.content || ''),
+      tags: normalizeTags(item?.tags),
       createdAt: item?.createdAt || new Date().toISOString(),
       updatedAt: item?.updatedAt || item?.createdAt || new Date().toISOString()
     }))
