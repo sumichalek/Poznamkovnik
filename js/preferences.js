@@ -6,13 +6,19 @@ const MIN_SOURCE_FILE_LIMIT_MB = 1;
 const MAX_SOURCE_FILE_LIMIT_MB = 1024;
 const MIN_MUSIC_TRACK_LIMIT_MB = 1;
 const MAX_MUSIC_TRACK_LIMIT_MB = 1024;
+const MIN_RADIO_RECORDING_LIMIT_MINUTES = 1;
+const MAX_RADIO_RECORDING_LIMIT_MINUTES = 720;
+const MIN_RADIO_RECORDING_LIMIT_MB = 10;
+const MAX_RADIO_RECORDING_LIMIT_MB = 4096;
 const defaults = {
   mainPanelTransparency: 20,
   workspacePanelTransparency: 24,
   editorSurfaceTransparency: 12,
   musicPanelTransparency: 12,
   sourceFileMaxBytes: 100 * BYTES_PER_MEGABYTE,
-  musicTrackMaxBytes: 250 * BYTES_PER_MEGABYTE
+  musicTrackMaxBytes: 250 * BYTES_PER_MEGABYTE,
+  radioRecordingMaxSeconds: 120 * 60,
+  radioRecordingMaxBytes: 500 * BYTES_PER_MEGABYTE
 };
 
 let preferences = { ...defaults };
@@ -41,12 +47,37 @@ function normalizeMusicTrackMaxBytes(value) {
   return Math.min(max, Math.max(min, Math.round(numeric)));
 }
 
+function normalizeRadioRecordingMaxSeconds(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return defaults.radioRecordingMaxSeconds;
+  return Math.min(
+    MAX_RADIO_RECORDING_LIMIT_MINUTES * 60,
+    Math.max(MIN_RADIO_RECORDING_LIMIT_MINUTES * 60, Math.round(numeric))
+  );
+}
+
+function normalizeRadioRecordingMaxBytes(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return defaults.radioRecordingMaxBytes;
+  const min = MIN_RADIO_RECORDING_LIMIT_MB * BYTES_PER_MEGABYTE;
+  const max = MAX_RADIO_RECORDING_LIMIT_MB * BYTES_PER_MEGABYTE;
+  return Math.min(max, Math.max(min, Math.round(numeric)));
+}
+
 function sourceFileLimitMb() {
   return Math.round(preferences.sourceFileMaxBytes / BYTES_PER_MEGABYTE);
 }
 
 function musicTrackLimitMb() {
   return Math.round(preferences.musicTrackMaxBytes / BYTES_PER_MEGABYTE);
+}
+
+function radioRecordingLimitMinutes() {
+  return Math.round(preferences.radioRecordingMaxSeconds / 60);
+}
+
+function radioRecordingLimitMb() {
+  return Math.round(preferences.radioRecordingMaxBytes / BYTES_PER_MEGABYTE);
 }
 
 function setStatus(message = '', { error = false } = {}) {
@@ -57,6 +88,11 @@ function setStatus(message = '', { error = false } = {}) {
 function setMusicStatus(message = '', { error = false } = {}) {
   dom.musicTrackLimitStatus.textContent = message;
   dom.musicTrackLimitStatus.classList.toggle('is-error', error);
+}
+
+function setRadioRecordingStatus(message = '', { error = false } = {}) {
+  dom.radioRecordingLimitStatus.textContent = message;
+  dom.radioRecordingLimitStatus.classList.toggle('is-error', error);
 }
 
 function applyPanelTransparency() {
@@ -85,6 +121,8 @@ function updateControls() {
   dom.musicPanelTransparencyOutput.textContent = `${preferences.musicPanelTransparency} %`;
   dom.sourceFileLimitMb.value = String(sourceFileLimitMb());
   dom.musicTrackLimitMb.value = String(musicTrackLimitMb());
+  dom.radioRecordingLimitMinutes.value = String(radioRecordingLimitMinutes());
+  dom.radioRecordingLimitMb.value = String(radioRecordingLimitMb());
 }
 
 function applyPreferences(nextPreferences, { syncControls = true } = {}) {
@@ -94,7 +132,9 @@ function applyPreferences(nextPreferences, { syncControls = true } = {}) {
     editorSurfaceTransparency: normalizeTransparency(nextPreferences?.editorSurfaceTransparency, defaults.editorSurfaceTransparency),
     musicPanelTransparency: normalizeTransparency(nextPreferences?.musicPanelTransparency, defaults.musicPanelTransparency),
     sourceFileMaxBytes: normalizeSourceFileMaxBytes(nextPreferences?.sourceFileMaxBytes),
-    musicTrackMaxBytes: normalizeMusicTrackMaxBytes(nextPreferences?.musicTrackMaxBytes)
+    musicTrackMaxBytes: normalizeMusicTrackMaxBytes(nextPreferences?.musicTrackMaxBytes),
+    radioRecordingMaxSeconds: normalizeRadioRecordingMaxSeconds(nextPreferences?.radioRecordingMaxSeconds),
+    radioRecordingMaxBytes: normalizeRadioRecordingMaxBytes(nextPreferences?.radioRecordingMaxBytes)
   };
   applyPanelTransparency();
   if (syncControls) updateControls();
@@ -189,6 +229,32 @@ function updateMusicTrackLimit() {
   scheduleSave();
 }
 
+function updateRadioRecordingLimit() {
+  const minutes = Number(dom.radioRecordingLimitMinutes.value);
+  const megabytes = Number(dom.radioRecordingLimitMb.value);
+  if (!Number.isFinite(minutes) || minutes < MIN_RADIO_RECORDING_LIMIT_MINUTES || minutes > MAX_RADIO_RECORDING_LIMIT_MINUTES) {
+    dom.radioRecordingLimitMinutes.setCustomValidity(
+      `Zadaj hodnotu od ${MIN_RADIO_RECORDING_LIMIT_MINUTES} do ${MAX_RADIO_RECORDING_LIMIT_MINUTES} minút.`
+    );
+    dom.radioRecordingLimitMinutes.reportValidity();
+    return;
+  }
+  if (!Number.isFinite(megabytes) || megabytes < MIN_RADIO_RECORDING_LIMIT_MB || megabytes > MAX_RADIO_RECORDING_LIMIT_MB) {
+    dom.radioRecordingLimitMb.setCustomValidity(
+      `Zadaj hodnotu od ${MIN_RADIO_RECORDING_LIMIT_MB} do ${MAX_RADIO_RECORDING_LIMIT_MB} MB.`
+    );
+    dom.radioRecordingLimitMb.reportValidity();
+    return;
+  }
+  dom.radioRecordingLimitMinutes.setCustomValidity('');
+  dom.radioRecordingLimitMb.setCustomValidity('');
+  preferences.radioRecordingMaxSeconds = normalizeRadioRecordingMaxSeconds(minutes * 60);
+  preferences.radioRecordingMaxBytes = normalizeRadioRecordingMaxBytes(megabytes * BYTES_PER_MEGABYTE);
+  updateControls();
+  setRadioRecordingStatus('');
+  scheduleSave();
+}
+
 export function getSourceFileMaxBytes() {
   return preferences.sourceFileMaxBytes;
 }
@@ -203,10 +269,12 @@ export async function loadWorkspacePreferences() {
     applyPreferences(result);
     setStatus('');
     setMusicStatus('');
+    setRadioRecordingStatus('');
   } catch {
     applyPreferences(defaults);
     setStatus('');
     setMusicStatus('');
+    setRadioRecordingStatus('');
   }
 }
 
@@ -217,6 +285,7 @@ export function clearWorkspacePreferences() {
   applyPreferences(defaults);
   setStatus('');
   setMusicStatus('');
+  setRadioRecordingStatus('');
 }
 
 export function initializeWorkspacePreferences() {
@@ -229,4 +298,8 @@ export function initializeWorkspacePreferences() {
   dom.sourceFileLimitMb.addEventListener('input', () => dom.sourceFileLimitMb.setCustomValidity(''));
   dom.musicTrackLimitMb.addEventListener('change', updateMusicTrackLimit);
   dom.musicTrackLimitMb.addEventListener('input', () => dom.musicTrackLimitMb.setCustomValidity(''));
+  dom.radioRecordingLimitMinutes.addEventListener('change', updateRadioRecordingLimit);
+  dom.radioRecordingLimitMinutes.addEventListener('input', () => dom.radioRecordingLimitMinutes.setCustomValidity(''));
+  dom.radioRecordingLimitMb.addEventListener('change', updateRadioRecordingLimit);
+  dom.radioRecordingLimitMb.addEventListener('input', () => dom.radioRecordingLimitMb.setCustomValidity(''));
 }

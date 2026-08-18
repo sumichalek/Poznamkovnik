@@ -22,11 +22,12 @@ import {
 import { refreshEditorResizeHandle } from './editor-resize.js';
 import { createAppIcon, setAppIcon } from './app-icons.js';
 import { createLibraryItemIcon } from './library-icons.js';
-import { openSourcesPanel, refreshElementSourceLinks } from './sources.js';
+import { refreshElementSourceLinks } from './sources.js';
 import { refreshElementTaskLinks } from './tasks.js';
 import { refreshElementCalendarLinks } from './calendar.js';
 import { apiRequest } from './api.js';
 import { readTagField, setTagField } from './tags.js';
+import { downloadLibraryElementMarkdown } from './markdown-export.js';
 
 window.addEventListener('sources-changed', () => renderLibraryDetailPanel());
 window.addEventListener('tasks-changed', () => renderLibraryDetailPanel());
@@ -404,7 +405,16 @@ async function renderLibrarySourceLinks(libraryId) {
       button.className = 'library-source-link';
       button.textContent = source.note ? `${source.title} — ${source.note}` : source.title;
       button.title = 'Otvoriť zdroj';
-      button.addEventListener('click', () => void openSourcesPanel({ sourceId: source.id, pinned: true }));
+      button.addEventListener('click', () => {
+        window.dispatchEvent(
+          new CustomEvent('source-open-request', {
+            detail: {
+              sourceId: source.id,
+              returnTarget: { libraryId, title: library.name }
+            }
+          })
+        );
+      });
       list.append(button);
     });
     dom.librarySourceLinks.append(heading, list);
@@ -523,6 +533,7 @@ export function createLibraryElement(type) {
 
   state.librariesPanelPinned = true;
   state.libraryDetailPanelPinned = true;
+  window.dispatchEvent(new CustomEvent('workspace-activate', { detail: { section: 'libraries' } }));
   const item = {
     id: crypto.randomUUID(),
     type,
@@ -545,9 +556,6 @@ export function openLibraryElement(elementId, { focusTitle = false } = {}) {
   const item = elementsForLibrary().find((element) => element.id === elementId);
   if (!item) return;
 
-  state.librariesPanelPinned = true;
-  state.libraryDetailPanelPinned = true;
-
   if (item.type === 'folder') {
     closeLibraryElementEditor({ render: false });
     state.activeFolderPath = [...folderPathTo(item.parentId || ''), item.id];
@@ -557,6 +565,9 @@ export function openLibraryElement(elementId, { focusTitle = false } = {}) {
     return;
   }
 
+  state.librariesPanelPinned = true;
+  state.libraryDetailPanelPinned = true;
+  window.dispatchEvent(new CustomEvent('workspace-activate', { detail: { section: 'libraries' } }));
   state.activeLibraryElementId = item.id;
   state.editorLayout = 'docked';
   dom.libraryDetailPanel.classList.add('is-editing');
@@ -600,6 +611,15 @@ export function updateActiveElementFromEditor({ renderItems = false } = {}) {
   setElementsForLibrary(library.id, nextItems);
   saveLibraryElements();
   if (renderItems) renderLibraryItems();
+}
+
+export function exportActiveLibraryElementMarkdown() {
+  const library = detailLibrary();
+  if (!library || !state.activeLibraryElementId) return;
+  updateActiveElementFromEditor();
+  const element = activeLibraryElement();
+  if (!element || !['article', 'note'].includes(element.type)) return;
+  downloadLibraryElementMarkdown(element, library);
 }
 
 export function deleteLibraryElement(elementId = state.activeLibraryElementId) {
@@ -657,6 +677,9 @@ function folderRenameInput(folderId = state.editingFolderId) {
 export function startFolderRename(folderId) {
   const folder = elementsForLibrary().find((item) => item.id === folderId && item.type === 'folder');
   if (!folder || state.activeLibraryElementId) return;
+  state.librariesPanelPinned = true;
+  state.libraryDetailPanelPinned = true;
+  window.dispatchEvent(new CustomEvent('workspace-activate', { detail: { section: 'libraries' } }));
   state.editingFolderId = folder.id;
   renderLibraryItems();
 }

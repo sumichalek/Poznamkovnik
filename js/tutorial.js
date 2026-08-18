@@ -1,5 +1,6 @@
 import { apiRequest } from './api.js';
 import { createAppIcon, setAppIcon } from './app-icons.js';
+import { installDialogBackdropClose } from './dialogs.js';
 import { dom } from './dom.js';
 import { updateTopbarVisibility } from './topbar.js';
 import { refreshTutorialPlaygroundResizeHandle } from './tutorial-playground-resize.js';
@@ -87,6 +88,7 @@ function setPlaygroundOpen(open) {
   if (open) document.body.dataset.tutorialPlaygroundOpen = 'true';
   else delete document.body.dataset.tutorialPlaygroundOpen;
   if (!open) setPlaygroundFullscreen(false);
+  if (open) window.dispatchEvent(new CustomEvent('workspace-activate', { detail: { section: 'tutorial' } }));
   refreshTutorialPlaygroundResizeHandle();
   updateTopbarVisibility();
 }
@@ -440,6 +442,7 @@ function syncTutorialPageForm() {
 
 async function openTutorialPageDialog() {
   if (!tutorial || !(await saveTutorialChanges())) return;
+  window.dispatchEvent(new CustomEvent('workspace-activate', { detail: { section: 'tutorial' } }));
   populateTutorialPageParents();
   const parentId = creationParentId();
   dom.tutorialPageKind.value = parentId ? 'lesson' : 'chapter';
@@ -723,10 +726,9 @@ export function initializeTutorial() {
   dom.tutorialPageKind.addEventListener('change', syncTutorialPageForm);
   dom.tutorialPageForm.addEventListener('submit', (event) => void createTutorialPage(event));
   dom.tutorialPageCancelButton.addEventListener('click', () => dom.tutorialPageDialog.close());
-  dom.tutorialPageDialog.addEventListener('click', (event) => {
-    if (event.target === dom.tutorialPageDialog) dom.tutorialPageDialog.close();
-  });
+  installDialogBackdropClose(dom.tutorialPageDialog, () => dom.tutorialPageDialog.close());
   dom.tutorialNotesInput.addEventListener('input', () => {
+    window.dispatchEvent(new CustomEvent('workspace-activate', { detail: { section: 'tutorial' } }));
     dom.tutorialNotesStatus.textContent = 'Neuložené zmeny';
   });
   dom.tutorialNotesSave.addEventListener('click', () => void runOperation(saveNote));

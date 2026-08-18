@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import fnmatch
 import html
 import json
 import re
 import sqlite3
+import unicodedata
 import uuid
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time as clock_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .podcast import PodcastFeed
 from .tutorial_content import C_EXAMPLES, C_LANGUAGE, C_PAGES
 
 
@@ -31,19 +36,32 @@ MAX_SOURCE_FILE_MAX_BYTES = 1024 * 1024 * 1024
 DEFAULT_MUSIC_TRACK_MAX_BYTES = 250 * 1024 * 1024
 MIN_MUSIC_TRACK_MAX_BYTES = 1 * 1024 * 1024
 MAX_MUSIC_TRACK_MAX_BYTES = 1024 * 1024 * 1024
+DEFAULT_RADIO_RECORDING_MAX_SECONDS = 2 * 60 * 60
+MIN_RADIO_RECORDING_MAX_SECONDS = 60
+MAX_RADIO_RECORDING_MAX_SECONDS = 12 * 60 * 60
+DEFAULT_RADIO_RECORDING_MAX_BYTES = 500 * 1024 * 1024
+MIN_RADIO_RECORDING_MAX_BYTES = 10 * 1024 * 1024
+MAX_RADIO_RECORDING_MAX_BYTES = 4 * 1024 * 1024 * 1024
+RADIO_RECORDING_STATUSES = {"recording", "stopping", "completed", "stopped", "failed"}
+RADIO_RECORDING_SCHEDULE_STATUSES = {"scheduled", "running", "paused", "completed", "failed", "cancelled", "missed"}
+RADIO_RECORDING_SCHEDULE_GRACE_SECONDS = 5 * 60
+RADIO_RECORDING_SCHEDULE_MAX_AHEAD_DAYS = 366
 DEFAULT_AUTOMATIC_BACKUP_ENABLED = True
 DEFAULT_AUTOMATIC_BACKUP_INTERVAL_HOURS = 24
 DEFAULT_AUTOMATIC_BACKUP_RETENTION_COUNT = 14
 AUTOMATIC_BACKUP_INTERVAL_HOURS = {6, 24, 168}
 MIN_AUTOMATIC_BACKUP_RETENTION_COUNT = 3
 MAX_AUTOMATIC_BACKUP_RETENTION_COUNT = 50
-SEARCH_INDEX_VERSION = "2"
+DEFAULT_AUTO_LOCK_MINUTES = 0
+AUTO_LOCK_MINUTES = {0, 5, 10, 15, 30, 60}
+SEARCH_INDEX_VERSION = "4"
 MAX_TAGS_PER_ITEM = 20
 MAX_TAG_LENGTH = 48
 TASK_STATUSES = {"open", "in_progress", "done"}
 TASK_PRIORITIES = {"none", "low", "medium", "high"}
 TASK_TARGET_TYPES = {"library", "element", "source"}
 SEMANTIC_TARGET_TYPES = {"element", "source", "tutorial_page", "task", "calendar_event"}
+SEMANTIC_RELATION_TYPES = {"related", "reference", "comparison", "study"}
 BACKUP_RECORD_LIMITS = {
     "libraries": 500,
     "elements": 10_000,
@@ -54,6 +72,10 @@ BACKUP_RECORD_LIMITS = {
     "musicTracks": 20_000,
     "musicPlaylists": 5_000,
     "musicPlaylistTracks": 100_000,
+    "radioStations": 5_000,
+    "radioRecordingSchedules": 5_000,
+    "podcastFeeds": 5_000,
+    "podcastEpisodes": 100_000,
     "sourceAnnotations": 50_000,
     "librarySources": 50_000,
     "elementSources": 50_000,
@@ -113,12 +135,15 @@ class Database:
                     music_panel_transparency INTEGER NOT NULL DEFAULT 12,
                     source_file_max_bytes INTEGER NOT NULL DEFAULT 104857600,
                     music_track_max_bytes INTEGER NOT NULL DEFAULT 262144000,
+                    radio_recording_max_seconds INTEGER NOT NULL DEFAULT 7200,
+                    radio_recording_max_bytes INTEGER NOT NULL DEFAULT 524288000,
                     automatic_backup_enabled INTEGER NOT NULL DEFAULT 1,
                     automatic_backup_interval_hours INTEGER NOT NULL DEFAULT 24,
                     automatic_backup_retention_count INTEGER NOT NULL DEFAULT 14,
                     last_auto_backup_at TEXT NOT NULL DEFAULT '',
                     last_auto_backup_attempt_at TEXT NOT NULL DEFAULT '',
                     last_auto_backup_error TEXT NOT NULL DEFAULT '',
+                    auto_lock_minutes INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT NOT NULL
                 );
 
@@ -127,6 +152,7 @@ class Database:
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     token_hash TEXT NOT NULL UNIQUE,
                     created_at TEXT NOT NULL,
+                    last_active_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS sessions_token_idx ON sessions(token_hash);
@@ -225,6 +251,92 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS music_playlists_user_idx ON music_playlists(user_id, title COLLATE NOCASE);
+
+                CREATE TABLE IF NOT EXISTS radio_stations (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    stream_url TEXT NOT NULL,
+                    website_url TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS radio_stations_user_idx ON radio_stations(user_id, title COLLATE NOCASE, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS radio_recordings (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    station_id TEXT NOT NULL,
+                    station_title TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    mime_type TEXT NOT NULL DEFAULT 'audio/mpeg',
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    duration_seconds INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    error TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS radio_recordings_user_started_idx
+                    ON radio_recordings(user_id, started_at DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS radio_recordings_user_status_idx
+                    ON radio_recordings(user_id, status, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS radio_recording_schedules (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    station_id TEXT NOT NULL,
+                    station_title TEXT NOT NULL,
+                    start_at TEXT NOT NULL,
+                    duration_seconds INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'scheduled',
+                    recording_id TEXT NOT NULL DEFAULT '',
+                    error TEXT NOT NULL DEFAULT '',
+                    recurrence_weekdays_json TEXT NOT NULL DEFAULT '[]',
+                    timezone_name TEXT NOT NULL DEFAULT '',
+                    local_time TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS radio_recording_schedules_user_status_start_idx
+                    ON radio_recording_schedules(user_id, status, start_at, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS podcast_feeds (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    feed_url TEXT NOT NULL,
+                    website_url TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    image_url TEXT NOT NULL DEFAULT '',
+                    refreshed_at TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(user_id, feed_url)
+                );
+                CREATE INDEX IF NOT EXISTS podcast_feeds_user_idx
+                    ON podcast_feeds(user_id, title COLLATE NOCASE, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS podcast_episodes (
+                    id TEXT PRIMARY KEY,
+                    feed_id TEXT NOT NULL REFERENCES podcast_feeds(id) ON DELETE CASCADE,
+                    external_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    media_url TEXT NOT NULL,
+                    media_type TEXT NOT NULL DEFAULT '',
+                    published_at TEXT NOT NULL DEFAULT '',
+                    duration_seconds INTEGER NOT NULL DEFAULT 0,
+                    image_url TEXT NOT NULL DEFAULT '',
+                    position INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(feed_id, external_id)
+                );
+                CREATE INDEX IF NOT EXISTS podcast_episodes_feed_idx
+                    ON podcast_episodes(feed_id, published_at DESC, position ASC);
 
                 CREATE TABLE IF NOT EXISTS music_playlist_tracks (
                     playlist_id TEXT NOT NULL REFERENCES music_playlists(id) ON DELETE CASCADE,
@@ -337,6 +449,7 @@ class Database:
                     second_type TEXT NOT NULL CHECK(second_type IN ('element', 'source', 'tutorial_page', 'task', 'calendar_event')),
                     second_id TEXT NOT NULL,
                     relation_type TEXT NOT NULL DEFAULT 'related',
+                    note TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     UNIQUE(user_id, first_type, first_id, second_type, second_id)
                 );
@@ -431,6 +544,27 @@ class Database:
                 connection.execute(
                     "ALTER TABLE user_preferences ADD COLUMN music_track_max_bytes INTEGER NOT NULL DEFAULT 262144000"
                 )
+            if "radio_recording_max_seconds" not in columns:
+                connection.execute(
+                    "ALTER TABLE user_preferences ADD COLUMN radio_recording_max_seconds INTEGER NOT NULL DEFAULT 7200"
+                )
+            if "radio_recording_max_bytes" not in columns:
+                connection.execute(
+                    "ALTER TABLE user_preferences ADD COLUMN radio_recording_max_bytes INTEGER NOT NULL DEFAULT 524288000"
+                )
+            schedule_columns = {row["name"] for row in connection.execute("PRAGMA table_info(radio_recording_schedules)")}
+            if "recurrence_weekdays_json" not in schedule_columns:
+                connection.execute(
+                    "ALTER TABLE radio_recording_schedules ADD COLUMN recurrence_weekdays_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "timezone_name" not in schedule_columns:
+                connection.execute(
+                    "ALTER TABLE radio_recording_schedules ADD COLUMN timezone_name TEXT NOT NULL DEFAULT ''"
+                )
+            if "local_time" not in schedule_columns:
+                connection.execute(
+                    "ALTER TABLE radio_recording_schedules ADD COLUMN local_time TEXT NOT NULL DEFAULT ''"
+                )
             if "automatic_backup_enabled" not in columns:
                 connection.execute(
                     "ALTER TABLE user_preferences ADD COLUMN automatic_backup_enabled INTEGER NOT NULL DEFAULT 1"
@@ -451,6 +585,14 @@ class Database:
                 )
             if "last_auto_backup_error" not in columns:
                 connection.execute("ALTER TABLE user_preferences ADD COLUMN last_auto_backup_error TEXT NOT NULL DEFAULT ''")
+            if "auto_lock_minutes" not in columns:
+                connection.execute("ALTER TABLE user_preferences ADD COLUMN auto_lock_minutes INTEGER NOT NULL DEFAULT 0")
+            session_columns = {row["name"] for row in connection.execute("PRAGMA table_info(sessions)")}
+            if "last_active_at" not in session_columns:
+                connection.execute("ALTER TABLE sessions ADD COLUMN last_active_at TEXT NOT NULL DEFAULT ''")
+                connection.execute(
+                    "UPDATE sessions SET last_active_at = created_at WHERE last_active_at = ''"
+                )
             library_columns = {row["name"] for row in connection.execute("PRAGMA table_info(libraries)")}
             if "tags_json" not in library_columns:
                 connection.execute("ALTER TABLE libraries ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'")
@@ -476,6 +618,9 @@ class Database:
             tutorial_page_columns = {row["name"] for row in connection.execute("PRAGMA table_info(tutorial_pages)")}
             if "origin" not in tutorial_page_columns:
                 connection.execute("ALTER TABLE tutorial_pages ADD COLUMN origin TEXT NOT NULL DEFAULT 'builtin'")
+            semantic_link_columns = {row["name"] for row in connection.execute("PRAGMA table_info(semantic_links)")}
+            if "note" not in semantic_link_columns:
+                connection.execute("ALTER TABLE semantic_links ADD COLUMN note TEXT NOT NULL DEFAULT ''")
             self._initialize_search_index(connection)
 
     def _initialize_search_index(self, connection: sqlite3.Connection) -> None:
@@ -595,6 +740,43 @@ class Database:
                 DELETE FROM global_search_index WHERE item_type = 'music_playlist' AND item_id = old.id;
             END;
 
+            CREATE TRIGGER IF NOT EXISTS global_search_radio_stations_ai AFTER INSERT ON radio_stations BEGIN
+                INSERT INTO global_search_index VALUES (new.user_id, 'radio_station', new.id, new.id, new.title, new.stream_url || ' ' || new.website_url || ' ' || new.note);
+            END;
+            CREATE TRIGGER IF NOT EXISTS global_search_radio_stations_au AFTER UPDATE ON radio_stations BEGIN
+                DELETE FROM global_search_index WHERE item_type = 'radio_station' AND item_id = old.id;
+                INSERT INTO global_search_index VALUES (new.user_id, 'radio_station', new.id, new.id, new.title, new.stream_url || ' ' || new.website_url || ' ' || new.note);
+            END;
+            CREATE TRIGGER IF NOT EXISTS global_search_radio_stations_ad AFTER DELETE ON radio_stations BEGIN
+                DELETE FROM global_search_index WHERE item_type = 'radio_station' AND item_id = old.id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS global_search_podcast_feeds_ai AFTER INSERT ON podcast_feeds BEGIN
+                INSERT INTO global_search_index VALUES (new.user_id, 'podcast_feed', new.id, new.id, new.title, new.description || ' ' || new.feed_url || ' ' || new.website_url);
+            END;
+            CREATE TRIGGER IF NOT EXISTS global_search_podcast_feeds_au AFTER UPDATE ON podcast_feeds BEGIN
+                DELETE FROM global_search_index WHERE item_type = 'podcast_feed' AND item_id = old.id;
+                INSERT INTO global_search_index VALUES (new.user_id, 'podcast_feed', new.id, new.id, new.title, new.description || ' ' || new.feed_url || ' ' || new.website_url);
+            END;
+            CREATE TRIGGER IF NOT EXISTS global_search_podcast_feeds_ad AFTER DELETE ON podcast_feeds BEGIN
+                DELETE FROM global_search_index WHERE item_type = 'podcast_feed' AND item_id = old.id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS global_search_podcast_episodes_ai AFTER INSERT ON podcast_episodes BEGIN
+                INSERT INTO global_search_index
+                SELECT f.user_id, 'podcast_episode', new.id, new.feed_id, new.title, new.description
+                FROM podcast_feeds f WHERE f.id = new.feed_id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS global_search_podcast_episodes_au AFTER UPDATE ON podcast_episodes BEGIN
+                DELETE FROM global_search_index WHERE item_type = 'podcast_episode' AND item_id = old.id;
+                INSERT INTO global_search_index
+                SELECT f.user_id, 'podcast_episode', new.id, new.feed_id, new.title, new.description
+                FROM podcast_feeds f WHERE f.id = new.feed_id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS global_search_podcast_episodes_ad AFTER DELETE ON podcast_episodes BEGIN
+                DELETE FROM global_search_index WHERE item_type = 'podcast_episode' AND item_id = old.id;
+            END;
+
             CREATE TRIGGER IF NOT EXISTS global_search_tasks_ai AFTER INSERT ON tasks BEGIN
                 INSERT INTO global_search_index VALUES (new.user_id, 'task', new.id, new.id, new.title, new.description || ' ' || new.tags_json);
             END;
@@ -692,6 +874,9 @@ class Database:
             "source_files",
             "music_tracks",
             "music_playlists",
+            "radio_stations",
+            "podcast_feeds",
+            "podcast_episodes",
             "tasks",
             "calendar_events",
             "tutorial_languages",
@@ -725,6 +910,13 @@ class Database:
             INSERT INTO global_search_index
             SELECT user_id, 'music_playlist', id, id, title, '' FROM music_playlists;
             INSERT INTO global_search_index
+            SELECT user_id, 'radio_station', id, id, title, stream_url || ' ' || website_url || ' ' || note FROM radio_stations;
+            INSERT INTO global_search_index
+            SELECT user_id, 'podcast_feed', id, id, title, description || ' ' || feed_url || ' ' || website_url FROM podcast_feeds;
+            INSERT INTO global_search_index
+            SELECT f.user_id, 'podcast_episode', e.id, e.feed_id, e.title, e.description
+            FROM podcast_episodes e JOIN podcast_feeds f ON f.id = e.feed_id;
+            INSERT INTO global_search_index
             SELECT user_id, 'task', id, id, title, description || ' ' || tags_json FROM tasks;
             INSERT INTO global_search_index
             SELECT user_id, 'calendar_event', id, id, title, description || ' ' || tags_json FROM calendar_events;
@@ -745,22 +937,39 @@ class Database:
         )
 
     def global_search(self, user_id: str, query: Any, limit: int = 60) -> list[dict[str, Any]]:
-        expression = self._search_expression(query)
-        if not expression or not self.search_available:
+        raw_query = str(query or "")[:400]
+        expression = self._search_expression(raw_query)
+        if not raw_query.strip() or not self.search_available:
             return []
         maximum = min(100, max(1, int(limit)))
         with self.connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT item_type, item_id, context_id, title,
-                       snippet(global_search_index, 5, '', '', '...', 18) AS preview
-                FROM global_search_index
-                WHERE user_id = ? AND global_search_index MATCH ?
-                ORDER BY bm25(global_search_index), title COLLATE NOCASE
-                LIMIT ?
-                """,
-                (user_id, expression, maximum),
-            ).fetchall()
+            if self._has_glob_pattern(raw_query):
+                connection.create_function("glob_search_match", 2, self._glob_search_match)
+                rows = connection.execute(
+                    """
+                    SELECT item_type, item_id, context_id, title,
+                           substr(content, 1, 180) AS preview
+                    FROM global_search_index
+                    WHERE user_id = ? AND glob_search_match(title || ' ' || content, ?)
+                    ORDER BY title COLLATE NOCASE
+                    LIMIT ?
+                    """,
+                    (user_id, raw_query, maximum),
+                ).fetchall()
+            elif expression:
+                rows = connection.execute(
+                    """
+                    SELECT item_type, item_id, context_id, title,
+                           snippet(global_search_index, 5, '', '', '...', 18) AS preview
+                    FROM global_search_index
+                    WHERE user_id = ? AND global_search_index MATCH ?
+                    ORDER BY bm25(global_search_index), title COLLATE NOCASE
+                    LIMIT ?
+                    """,
+                    (user_id, expression, maximum),
+                ).fetchall()
+            else:
+                rows = []
             example_ids = [row["item_id"] for row in rows if row["item_type"] == "tutorial_example"]
             example_page_ids: dict[str, str] = {}
             if example_ids:
@@ -815,6 +1024,32 @@ class Database:
     def _search_expression(query: Any) -> str:
         terms = re.findall(r"[^\W_]+", str(query or "")[:400].lower(), flags=re.UNICODE)
         return " AND ".join(f"{term}*" for term in terms[:8])
+
+    @staticmethod
+    def _has_glob_pattern(query: Any) -> bool:
+        return any(symbol in str(query or "") for symbol in ("*", "?", "["))
+
+    @staticmethod
+    def _glob_search_text(value: Any) -> str:
+        normalized = unicodedata.normalize("NFKD", html.unescape(str(value or "")))
+        return "".join(character for character in normalized if not unicodedata.combining(character)).casefold()
+
+    @classmethod
+    def _glob_search_match(cls, value: Any, pattern: Any) -> int:
+        normalized_pattern = cls._glob_search_text(pattern)
+        normalized_value = cls._glob_search_text(value)
+        if not normalized_pattern:
+            return 0
+        pattern_terms = re.findall(r"[^\s]+", normalized_pattern)
+        text_terms = re.findall(r"[^\W_]+", normalized_value, flags=re.UNICODE)
+        if not pattern_terms or not text_terms:
+            return 0
+        return int(
+            all(
+                any(fnmatch.fnmatchcase(text_term, f"*{pattern_term}*") for text_term in text_terms)
+                for pattern_term in pattern_terms
+            )
+        )
 
     @staticmethod
     def _plain_search_text(value: Any) -> str:
@@ -889,7 +1124,8 @@ class Database:
                 """
                 SELECT main_panel_transparency, workspace_panel_transparency, editor_surface_transparency,
                        music_panel_transparency,
-                       source_file_max_bytes, music_track_max_bytes
+                       source_file_max_bytes, music_track_max_bytes,
+                       radio_recording_max_seconds, radio_recording_max_bytes
                 FROM user_preferences WHERE user_id = ?
                 """,
                 (user_id,),
@@ -908,6 +1144,12 @@ class Database:
             ),
             "sourceFileMaxBytes": int(row["source_file_max_bytes"]) if row else DEFAULT_SOURCE_FILE_MAX_BYTES,
             "musicTrackMaxBytes": int(row["music_track_max_bytes"]) if row else DEFAULT_MUSIC_TRACK_MAX_BYTES,
+            "radioRecordingMaxSeconds": (
+                int(row["radio_recording_max_seconds"]) if row else DEFAULT_RADIO_RECORDING_MAX_SECONDS
+            ),
+            "radioRecordingMaxBytes": (
+                int(row["radio_recording_max_bytes"]) if row else DEFAULT_RADIO_RECORDING_MAX_BYTES
+            ),
         }
 
     def source_file_max_bytes(self, user_id: str) -> int:
@@ -924,6 +1166,22 @@ class Database:
                 "SELECT music_track_max_bytes FROM user_preferences WHERE user_id = ?", (user_id,)
             ).fetchone()
         return int(row["music_track_max_bytes"]) if row else DEFAULT_MUSIC_TRACK_MAX_BYTES
+
+    def radio_recording_limits(self, user_id: str) -> dict[str, int]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT radio_recording_max_seconds, radio_recording_max_bytes
+                FROM user_preferences WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+        return {
+            "maxDurationSeconds": (
+                int(row["radio_recording_max_seconds"]) if row else DEFAULT_RADIO_RECORDING_MAX_SECONDS
+            ),
+            "maxBytes": int(row["radio_recording_max_bytes"]) if row else DEFAULT_RADIO_RECORDING_MAX_BYTES,
+        }
 
     def automatic_backup_preferences(self, user_id: str) -> dict[str, Any]:
         with self.connect() as connection:
@@ -988,6 +1246,39 @@ class Database:
                 (user_id, int(enabled), interval_hours, retention_count, now_iso()),
             )
         return self.automatic_backup_preferences(user_id)
+
+    def security_preferences(self, user_id: str) -> dict[str, int]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT auto_lock_minutes FROM user_preferences WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        value = int(row["auto_lock_minutes"]) if row else DEFAULT_AUTO_LOCK_MINUTES
+        return {"autoLockMinutes": value if value in AUTO_LOCK_MINUTES else DEFAULT_AUTO_LOCK_MINUTES}
+
+    def save_security_preferences(self, user_id: str, data: Any) -> dict[str, int]:
+        if not isinstance(data, dict):
+            raise ValidationError("Nastavenia bezpečnosti musia byť objekt.")
+        current = self.security_preferences(user_id)
+        auto_lock_minutes = self._preference_int(
+            data.get("autoLockMinutes", current["autoLockMinutes"]),
+            "Automatické zamknutie",
+            0,
+            60,
+        )
+        if auto_lock_minutes not in AUTO_LOCK_MINUTES:
+            raise ValidationError("Automatické zamknutie môže byť vypnuté alebo 5, 10, 15, 30 či 60 minút.")
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_preferences(user_id, auto_lock_minutes, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    auto_lock_minutes = excluded.auto_lock_minutes,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, auto_lock_minutes, now_iso()),
+            )
+        return self.security_preferences(user_id)
 
     def automatic_backup_candidates(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
@@ -1069,14 +1360,27 @@ class Database:
             MIN_MUSIC_TRACK_MAX_BYTES,
             MAX_MUSIC_TRACK_MAX_BYTES,
         )
+        radio_recording_max_seconds = self._preference_int(
+            data.get("radioRecordingMaxSeconds", current["radioRecordingMaxSeconds"]),
+            "Limit dĺžky nahrávania rádia",
+            MIN_RADIO_RECORDING_MAX_SECONDS,
+            MAX_RADIO_RECORDING_MAX_SECONDS,
+        )
+        radio_recording_max_bytes = self._preference_int(
+            data.get("radioRecordingMaxBytes", current["radioRecordingMaxBytes"]),
+            "Limit veľkosti nahrávania rádia",
+            MIN_RADIO_RECORDING_MAX_BYTES,
+            MAX_RADIO_RECORDING_MAX_BYTES,
+        )
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO user_preferences(
                     user_id, main_panel_transparency, workspace_panel_transparency, editor_surface_transparency,
-                    music_panel_transparency, source_file_max_bytes, music_track_max_bytes, updated_at
+                    music_panel_transparency, source_file_max_bytes, music_track_max_bytes,
+                    radio_recording_max_seconds, radio_recording_max_bytes, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     main_panel_transparency = excluded.main_panel_transparency,
                     workspace_panel_transparency = excluded.workspace_panel_transparency,
@@ -1084,6 +1388,8 @@ class Database:
                     music_panel_transparency = excluded.music_panel_transparency,
                     source_file_max_bytes = excluded.source_file_max_bytes,
                     music_track_max_bytes = excluded.music_track_max_bytes,
+                    radio_recording_max_seconds = excluded.radio_recording_max_seconds,
+                    radio_recording_max_bytes = excluded.radio_recording_max_bytes,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -1094,6 +1400,8 @@ class Database:
                     music_panel_transparency,
                     source_file_max_bytes,
                     music_track_max_bytes,
+                    radio_recording_max_seconds,
+                    radio_recording_max_bytes,
                     now_iso(),
                 ),
             )
@@ -1599,8 +1907,9 @@ class Database:
                        main_panel_transparency, workspace_panel_transparency, editor_surface_transparency,
                        music_panel_transparency,
                        source_file_max_bytes, music_track_max_bytes,
+                       radio_recording_max_seconds, radio_recording_max_bytes,
                        automatic_backup_enabled, automatic_backup_interval_hours,
-                       automatic_backup_retention_count, updated_at
+                       automatic_backup_retention_count, auto_lock_minutes, updated_at
                 FROM user_preferences WHERE user_id = ?
                 """,
                 (user_id,),
@@ -1653,6 +1962,33 @@ class Database:
                 ),
                 "musicPlaylists": rows(
                     "SELECT id, title, created_at, updated_at FROM music_playlists WHERE user_id = ? ORDER BY created_at"
+                ),
+                "radioStations": rows(
+                    """
+                    SELECT id, title, stream_url, website_url, note, created_at, updated_at
+                    FROM radio_stations WHERE user_id = ? ORDER BY created_at
+                    """
+                ),
+                "podcastFeeds": rows(
+                    """
+                    SELECT id, title, feed_url, website_url, description, image_url, refreshed_at, created_at, updated_at
+                    FROM podcast_feeds WHERE user_id = ? ORDER BY created_at
+                    """
+                ),
+                "podcastEpisodes": rows(
+                    """
+                    SELECT e.id, e.feed_id, e.external_id, e.title, e.description, e.media_url, e.media_type,
+                           e.published_at, e.duration_seconds, e.image_url, e.position, e.created_at, e.updated_at
+                    FROM podcast_episodes e JOIN podcast_feeds f ON f.id = e.feed_id
+                    WHERE f.user_id = ? ORDER BY e.feed_id, e.position, e.created_at
+                    """
+                ),
+                "radioRecordingSchedules": rows(
+                    """
+                    SELECT id, station_id, station_title, start_at, duration_seconds, status, recording_id,
+                           error, recurrence_weekdays_json, timezone_name, local_time, created_at, updated_at
+                    FROM radio_recording_schedules WHERE user_id = ? ORDER BY start_at, created_at
+                    """
                 ),
                 "musicPlaylistTracks": rows(
                     """
@@ -1714,7 +2050,7 @@ class Database:
                 ),
                 "semanticLinks": rows(
                     """
-                    SELECT id, first_type, first_id, second_type, second_id, relation_type, created_at
+                    SELECT id, first_type, first_id, second_type, second_id, relation_type, note, created_at
                     FROM semantic_links WHERE user_id = ? ORDER BY created_at
                     """
                 ),
@@ -1780,6 +2116,10 @@ class Database:
             "musicTracks",
             "musicPlaylists",
             "musicPlaylistTracks",
+            "radioStations",
+            "radioRecordingSchedules",
+            "podcastFeeds",
+            "podcastEpisodes",
         }
         records = {
             key: self._backup_records(snapshot.get(key, [] if key in optional_backup_keys else None), key)
@@ -1967,6 +2307,134 @@ class Database:
                     "added_at": self._timestamp(row.get("added_at")),
                 }
             )
+
+        radio_stations = []
+        for row in records["radioStations"]:
+            try:
+                stream_url = self._external_http_url(row.get("stream_url"), "Stream stanice", required=True)
+                website_url = self._external_http_url(row.get("website_url"), "Web stanice")
+            except ValidationError:
+                continue
+            title = self._backup_text(row, "title", 160).strip()
+            if not title:
+                continue
+            radio_stations.append(
+                {
+                    "id": self._backup_id(row, "id"),
+                    "title": title,
+                    "stream_url": stream_url,
+                    "website_url": website_url,
+                    "note": self._backup_text(row, "note", 2_000),
+                    "created_at": self._timestamp(row.get("created_at")),
+                    "updated_at": self._timestamp(row.get("updated_at")),
+                }
+            )
+        self._backup_unique_ids(radio_stations, "rádiových staníc")
+
+        radio_station_ids = {station["id"] for station in radio_stations}
+        radio_recording_schedules = []
+        for row in records["radioRecordingSchedules"]:
+            station_id = self._clean_id(row.get("station_id"))
+            if station_id not in radio_station_ids:
+                continue
+            try:
+                duration_seconds = int(row.get("duration_seconds", 0))
+            except (TypeError, ValueError):
+                continue
+            status = self._backup_text(row, "status", 24) or "scheduled"
+            if status not in RADIO_RECORDING_SCHEDULE_STATUSES or duration_seconds < MIN_RADIO_RECORDING_MAX_SECONDS:
+                continue
+            try:
+                start_at = self._schedule_timestamp(row.get("start_at"))
+            except ValidationError:
+                continue
+            try:
+                recurrence_weekdays = self._radio_schedule_weekdays(row.get("recurrence_weekdays_json", "[]"))
+                timezone_name, local_time = self._radio_schedule_timezone_and_time(
+                    row.get("timezone_name", ""), row.get("local_time", ""), recurrence_weekdays
+                )
+            except ValidationError:
+                continue
+            radio_recording_schedules.append(
+                {
+                    "id": self._backup_id(row, "id"),
+                    "station_id": station_id,
+                    "station_title": self._backup_text(row, "station_title", 160).strip() or "Rádiová stanica",
+                    "start_at": start_at,
+                    "duration_seconds": min(duration_seconds, MAX_RADIO_RECORDING_MAX_SECONDS),
+                    "status": status,
+                    "recording_id": self._clean_id(row.get("recording_id")),
+                    "error": self._backup_text(row, "error", 1_200),
+                    "recurrence_weekdays_json": json.dumps(recurrence_weekdays),
+                    "timezone_name": timezone_name,
+                    "local_time": local_time,
+                    "created_at": self._timestamp(row.get("created_at")),
+                    "updated_at": self._timestamp(row.get("updated_at")),
+                }
+            )
+        self._backup_unique_ids(radio_recording_schedules, "plánovaných nahrávok rádia")
+
+        podcast_feeds = []
+        for row in records["podcastFeeds"]:
+            try:
+                feed_url = self._external_http_url(row.get("feed_url"), "Adresa podcastu", required=True)
+                website_url = self._external_http_url(row.get("website_url"), "Web podcastu")
+                image_url = self._external_http_url(row.get("image_url"), "Obrázok podcastu")
+            except ValidationError:
+                continue
+            title = self._backup_text(row, "title", 240).strip()
+            if not title:
+                continue
+            podcast_feeds.append(
+                {
+                    "id": self._backup_id(row, "id"),
+                    "title": title,
+                    "feed_url": feed_url,
+                    "website_url": website_url,
+                    "description": self._backup_text(row, "description", 10_000),
+                    "image_url": image_url,
+                    "refreshed_at": self._timestamp(row.get("refreshed_at")) if row.get("refreshed_at") else "",
+                    "created_at": self._timestamp(row.get("created_at")),
+                    "updated_at": self._timestamp(row.get("updated_at")),
+                }
+            )
+        podcast_feed_ids = self._backup_unique_ids(podcast_feeds, "podcastov")
+
+        podcast_episodes = []
+        seen_podcast_episodes: set[tuple[str, str]] = set()
+        for row in records["podcastEpisodes"]:
+            feed_id = self._clean_id(row.get("feed_id"))
+            external_id = self._backup_text(row, "external_id", 80).strip()
+            if feed_id not in podcast_feed_ids or not external_id or (feed_id, external_id) in seen_podcast_episodes:
+                continue
+            try:
+                media_url = self._external_http_url(row.get("media_url"), "Adresa epizódy", required=True)
+                image_url = self._external_http_url(row.get("image_url"), "Obrázok epizódy")
+                duration_seconds = int(row.get("duration_seconds", 0))
+                position = int(row.get("position", 0))
+            except (ValidationError, TypeError, ValueError):
+                continue
+            if duration_seconds < 0 or duration_seconds > 172_800:
+                continue
+            seen_podcast_episodes.add((feed_id, external_id))
+            podcast_episodes.append(
+                {
+                    "id": self._backup_id(row, "id"),
+                    "feed_id": feed_id,
+                    "external_id": external_id,
+                    "title": self._backup_text(row, "title", 400).strip() or "Bez názvu",
+                    "description": self._backup_text(row, "description", 20_000),
+                    "media_url": media_url,
+                    "media_type": self._backup_text(row, "media_type", 160),
+                    "published_at": self._backup_text(row, "published_at", 64),
+                    "duration_seconds": duration_seconds,
+                    "image_url": image_url,
+                    "position": max(-100_000, min(100_000, position)),
+                    "created_at": self._timestamp(row.get("created_at")),
+                    "updated_at": self._timestamp(row.get("updated_at")),
+                }
+            )
+        self._backup_unique_ids(podcast_episodes, "epizód podcastov")
 
         tasks = []
         for row in records["tasks"]:
@@ -2281,6 +2749,7 @@ class Database:
                     "second_type": second_type,
                     "second_id": second_id,
                     "relation_type": self._backup_text(row, "relation_type", 40) or "related",
+                    "note": self._backup_text(row, "note", 500),
                     "created_at": self._timestamp(row.get("created_at")),
                 }
             )
@@ -2302,6 +2771,20 @@ class Database:
                 preferences, "music_track_max_bytes", DEFAULT_MUSIC_TRACK_MAX_BYTES,
                 MIN_MUSIC_TRACK_MAX_BYTES, MAX_MUSIC_TRACK_MAX_BYTES
             ),
+            "radio_recording_max_seconds": self._backup_preference(
+                preferences,
+                "radio_recording_max_seconds",
+                DEFAULT_RADIO_RECORDING_MAX_SECONDS,
+                MIN_RADIO_RECORDING_MAX_SECONDS,
+                MAX_RADIO_RECORDING_MAX_SECONDS,
+            ),
+            "radio_recording_max_bytes": self._backup_preference(
+                preferences,
+                "radio_recording_max_bytes",
+                DEFAULT_RADIO_RECORDING_MAX_BYTES,
+                MIN_RADIO_RECORDING_MAX_BYTES,
+                MAX_RADIO_RECORDING_MAX_BYTES,
+            ),
             "automatic_backup_enabled": self._backup_boolean(
                 preferences.get("automatic_backup_enabled"), DEFAULT_AUTOMATIC_BACKUP_ENABLED
             ),
@@ -2318,6 +2801,12 @@ class Database:
                 MIN_AUTOMATIC_BACKUP_RETENTION_COUNT,
                 MAX_AUTOMATIC_BACKUP_RETENTION_COUNT,
             ),
+            "auto_lock_minutes": self._backup_allowed_preference(
+                preferences,
+                "auto_lock_minutes",
+                DEFAULT_AUTO_LOCK_MINUTES,
+                AUTO_LOCK_MINUTES,
+            ),
             "updated_at": self._timestamp(preferences.get("updated_at")),
         }
 
@@ -2327,6 +2816,9 @@ class Database:
             connection.execute("DELETE FROM tutorial_languages WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM tasks WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM calendar_events WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM radio_recording_schedules WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM radio_stations WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM podcast_feeds WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM music_playlists WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM music_tracks WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM sources WHERE user_id = ?", (user_id,))
@@ -2339,9 +2831,10 @@ class Database:
                     user_id, background_filename, background_mime_type, background_version, background_preset,
                     main_panel_transparency, workspace_panel_transparency, editor_surface_transparency,
                     music_panel_transparency, source_file_max_bytes, music_track_max_bytes,
+                    radio_recording_max_seconds, radio_recording_max_bytes,
                     automatic_backup_enabled, automatic_backup_interval_hours,
-                    automatic_backup_retention_count, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    automatic_backup_retention_count, auto_lock_minutes, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (user_id, *preference_values.values()),
             )
@@ -2389,6 +2882,48 @@ class Database:
             connection.executemany(
                 "INSERT INTO music_playlists(id, user_id, title, created_at, updated_at) VALUES (:id, :user_id, :title, :created_at, :updated_at)",
                 [{**row, "user_id": user_id} for row in music_playlists],
+            )
+            connection.executemany(
+                """
+                INSERT INTO radio_stations(id, user_id, title, stream_url, website_url, note, created_at, updated_at)
+                VALUES (:id, :user_id, :title, :stream_url, :website_url, :note, :created_at, :updated_at)
+                """,
+                [{**row, "user_id": user_id} for row in radio_stations],
+            )
+            connection.executemany(
+                """
+                INSERT INTO podcast_feeds(
+                    id, user_id, title, feed_url, website_url, description, image_url, refreshed_at, created_at, updated_at
+                ) VALUES (
+                    :id, :user_id, :title, :feed_url, :website_url, :description, :image_url, :refreshed_at, :created_at, :updated_at
+                )
+                """,
+                [{**row, "user_id": user_id} for row in podcast_feeds],
+            )
+            connection.executemany(
+                """
+                INSERT INTO podcast_episodes(
+                    id, feed_id, external_id, title, description, media_url, media_type, published_at,
+                    duration_seconds, image_url, position, created_at, updated_at
+                ) VALUES (
+                    :id, :feed_id, :external_id, :title, :description, :media_url, :media_type, :published_at,
+                    :duration_seconds, :image_url, :position, :created_at, :updated_at
+                )
+                """,
+                podcast_episodes,
+            )
+            connection.executemany(
+                """
+                INSERT INTO radio_recording_schedules(
+                    id, user_id, station_id, station_title, start_at, duration_seconds, status, recording_id,
+                    error, recurrence_weekdays_json, timezone_name, local_time, created_at, updated_at
+                ) VALUES (
+                    :id, :user_id, :station_id, :station_title, :start_at, :duration_seconds, :status,
+                    :recording_id, :error, :recurrence_weekdays_json, :timezone_name, :local_time,
+                    :created_at, :updated_at
+                )
+                """,
+                [{**row, "user_id": user_id} for row in radio_recording_schedules],
             )
             connection.executemany(
                 "INSERT INTO music_playlist_tracks(playlist_id, track_id, position, added_at) VALUES (:playlist_id, :track_id, :position, :added_at)",
@@ -2474,9 +3009,9 @@ class Database:
             connection.executemany(
                 """
                 INSERT INTO semantic_links(
-                    id, user_id, first_type, first_id, second_type, second_id, relation_type, created_at
+                    id, user_id, first_type, first_id, second_type, second_id, relation_type, note, created_at
                 ) VALUES (
-                    :id, :user_id, :first_type, :first_id, :second_type, :second_id, :relation_type, :created_at
+                    :id, :user_id, :first_type, :first_id, :second_type, :second_id, :relation_type, :note, :created_at
                 )
                 """,
                 [{**row, "user_id": user_id} for row in semantic_links],
@@ -2735,6 +3270,18 @@ class Database:
     def _clean_text(value: Any, maximum: int) -> str:
         return str(value or "").strip()[:maximum]
 
+    @classmethod
+    def _external_http_url(cls, value: Any, label: str, *, required: bool = False) -> str:
+        url = cls._clean_text(value, 2_000)
+        if not url:
+            if required:
+                raise ValidationError(f"{label} potrebuje adresu.")
+            return ""
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValidationError(f"{label} musí mať platnú adresu http alebo https.")
+        return url
+
     @staticmethod
     def _timestamp(value: Any) -> str:
         value = str(value or "").strip()
@@ -2980,6 +3527,10 @@ class Database:
         source_id = self._clean_id(source_id)
         target_type = self._semantic_target_type(data.get("targetType"))
         target_id = self._clean_id(data.get("targetId"))
+        relation_type = str(data.get("relationType") or "related").strip().lower()
+        note = self._clean_text(data.get("note"), 500)
+        if relation_type not in SEMANTIC_RELATION_TYPES:
+            raise ValidationError("Neznámy význam prepojenia.")
         if not source_id or not target_id or (source_type == target_type and source_id == target_id):
             raise ValidationError("Prepojenie potrebuje dva rozdielne prvky.")
         first_type, first_id, second_type, second_id = (source_type, source_id, target_type, target_id)
@@ -2991,11 +3542,11 @@ class Database:
             link_id = self._clean_id(data.get("id")) or str(uuid.uuid4())
             connection.execute(
                 """
-                INSERT INTO semantic_links(id, user_id, first_type, first_id, second_type, second_id, relation_type, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'related', ?)
+                INSERT INTO semantic_links(id, user_id, first_type, first_id, second_type, second_id, relation_type, note, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, first_type, first_id, second_type, second_id) DO NOTHING
                 """,
-                (link_id, user_id, first_type, first_id, second_type, second_id, now_iso()),
+                (link_id, user_id, first_type, first_id, second_type, second_id, relation_type, note, now_iso()),
             )
         return target
 
@@ -3021,6 +3572,8 @@ class Database:
                     connection.execute("DELETE FROM semantic_links WHERE id = ? AND user_id = ?", (row["id"], user_id))
                     continue
                 target["linkId"] = row["id"]
+                target["relationType"] = row["relation_type"]
+                target["linkNote"] = row["note"]
                 results.append(target)
         return results
 
@@ -3028,6 +3581,22 @@ class Database:
         link_id = self._clean_id(link_id)
         with self.connect() as connection:
             result = connection.execute("DELETE FROM semantic_links WHERE id = ? AND user_id = ?", (link_id, user_id))
+            if result.rowcount != 1:
+                raise KeyError("Prepojenie neexistuje.")
+
+    def update_semantic_link(self, user_id: str, link_id: str, data: Any) -> None:
+        if not isinstance(data, dict):
+            raise ValidationError("Úprava prepojenia má neplatný tvar.")
+        link_id = self._clean_id(link_id)
+        relation_type = str(data.get("relationType") or "related").strip().lower()
+        if relation_type not in SEMANTIC_RELATION_TYPES:
+            raise ValidationError("Neznámy význam prepojenia.")
+        note = self._clean_text(data.get("note"), 500)
+        with self.connect() as connection:
+            result = connection.execute(
+                "UPDATE semantic_links SET relation_type = ?, note = ? WHERE id = ? AND user_id = ?",
+                (relation_type, note, link_id, user_id),
+            )
             if result.rowcount != 1:
                 raise KeyError("Prepojenie neexistuje.")
 
@@ -3060,7 +3629,19 @@ class Database:
             key = (item["targetType"], item["targetId"])
             if key == (target_type, target_id):
                 return
-            if any((current["targetType"], current["targetId"]) == key for current in groups[group]):
+            existing_index = next(
+                (
+                    index
+                    for index, current in enumerate(groups[group])
+                    if (current["targetType"], current["targetId"]) == key
+                ),
+                None,
+            )
+            if existing_index is not None:
+                # A manually named relationship is more useful than a derived one
+                # when both point to the same item.
+                if item.get("linkId") and not groups[group][existing_index].get("linkId"):
+                    groups[group][existing_index] = {**groups[group][existing_index], **item}
                 return
             groups[group].append(item)
 
@@ -3099,6 +3680,15 @@ class Database:
                     add(source)
             elif target_type == "source":
                 source = self.source_detail(user_id, target_id)
+                for library in source["libraries"]:
+                    add(
+                        {
+                            "targetType": "library",
+                            "targetId": library["id"],
+                            "title": library["name"],
+                            "subtitle": "Knižnica",
+                        }
+                    )
                 elements: dict[str, dict[str, Any]] = {}
                 for element in source["elements"]:
                     element_label = "Článok" if element["type"] == "article" else "Poznámka"
@@ -3743,12 +4333,92 @@ class Database:
                 """,
                 (user_id,),
             ).fetchall()
+            radio_stations = [
+                self._radio_station_row(row)
+                for row in connection.execute(
+                    """
+                    SELECT id, title, stream_url, website_url, note, created_at, updated_at
+                    FROM radio_stations
+                    WHERE user_id = ?
+                    ORDER BY title COLLATE NOCASE, created_at, id
+                    """,
+                    (user_id,),
+                )
+            ]
+            radio_recordings = [
+                self._radio_recording_row(row)
+                for row in connection.execute(
+                    """
+                    SELECT id, station_id, station_title, filename, mime_type, size_bytes, duration_seconds,
+                           status, error, started_at, finished_at, updated_at
+                    FROM radio_recordings
+                    WHERE user_id = ?
+                    ORDER BY started_at DESC, id DESC
+                    LIMIT 100
+                    """,
+                    (user_id,),
+                )
+            ]
+            radio_recording_schedules = [
+                self._radio_recording_schedule_row(row)
+                for row in connection.execute(
+                    """
+                    SELECT id, station_id, station_title, start_at, duration_seconds, status, recording_id,
+                           error, recurrence_weekdays_json, timezone_name, local_time, created_at, updated_at
+                    FROM radio_recording_schedules
+                    WHERE user_id = ?
+                    ORDER BY CASE WHEN status IN ('scheduled', 'running', 'paused') THEN 0 ELSE 1 END,
+                             start_at ASC, updated_at DESC, id DESC
+                    LIMIT 100
+                    """,
+                    (user_id,),
+                )
+            ]
+            podcasts = [
+                self._podcast_feed_row(row)
+                for row in connection.execute(
+                    """
+                    SELECT f.id, f.title, f.feed_url, f.website_url, f.description, f.image_url, f.refreshed_at,
+                           f.created_at, f.updated_at, COUNT(e.id) AS episode_count
+                    FROM podcast_feeds f
+                    LEFT JOIN podcast_episodes e ON e.feed_id = f.id
+                    WHERE f.user_id = ?
+                    GROUP BY f.id
+                    ORDER BY f.title COLLATE NOCASE, f.created_at, f.id
+                    """,
+                    (user_id,),
+                )
+            ]
+            podcast_episodes = [
+                self._podcast_episode_row(row)
+                for row in connection.execute(
+                    """
+                    SELECT e.id, e.feed_id, e.external_id, e.title, e.description, e.media_url, e.media_type,
+                           e.published_at, e.duration_seconds, e.image_url, e.position, e.created_at, e.updated_at,
+                           f.title AS feed_title
+                    FROM podcast_episodes e
+                    JOIN podcast_feeds f ON f.id = e.feed_id
+                    WHERE f.user_id = ?
+                    ORDER BY CASE WHEN e.published_at = '' THEN 1 ELSE 0 END, e.published_at DESC, e.position ASC, e.created_at DESC
+                    LIMIT 1200
+                    """,
+                    (user_id,),
+                )
+            ]
         track_ids_by_playlist: dict[str, list[str]] = {playlist["id"]: [] for playlist in playlists}
         for row in playlist_tracks:
             track_ids_by_playlist.setdefault(row["playlist_id"], []).append(row["track_id"])
         for playlist in playlists:
             playlist["trackIds"] = track_ids_by_playlist.get(playlist["id"], [])
-        return {"tracks": tracks, "playlists": playlists}
+        return {
+            "tracks": tracks,
+            "playlists": playlists,
+            "radioStations": radio_stations,
+            "radioRecordings": radio_recordings,
+            "radioRecordingSchedules": radio_recording_schedules,
+            "podcasts": podcasts,
+            "podcastEpisodes": podcast_episodes,
+        }
 
     def add_music_track(
         self, user_id: str, track_id: str, file_info: dict[str, Any], metadata: dict[str, Any] | None = None
@@ -3828,6 +4498,118 @@ class Database:
         with self.connect() as connection:
             return dict(self._music_track(connection, user_id, track_id))
 
+    def radio_station_stream(self, user_id: str, station_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            return dict(self._radio_station(connection, user_id, station_id))
+
+    def create_podcast_feed(self, user_id: str, podcast_id: str, feed: PodcastFeed) -> dict[str, Any]:
+        if not podcast_id:
+            raise ValidationError("Podcastu chýba identifikátor.")
+        if not feed.episodes:
+            raise ValidationError("Feed neobsahuje žiadnu prehrateľnú zvukovú epizódu.")
+        timestamp = now_iso()
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT id FROM podcast_feeds WHERE user_id = ? AND feed_url = ?", (user_id, feed.feed_url)
+            ).fetchone()
+            if existing:
+                raise ValidationError("Tento podcast už je v knižnici pridaný.")
+            connection.execute(
+                """
+                INSERT INTO podcast_feeds(
+                    id, user_id, title, feed_url, website_url, description, image_url, refreshed_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    podcast_id,
+                    user_id,
+                    self._clean_text(feed.title, 240) or "Podcast",
+                    self._external_http_url(feed.feed_url, "Adresa podcastu", required=True),
+                    self._external_http_url(feed.website_url, "Web podcastu"),
+                    self._clean_text(feed.description, 10_000),
+                    self._external_http_url(feed.image_url, "Obrázok podcastu"),
+                    timestamp,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            self._store_podcast_episodes(connection, podcast_id, feed, timestamp)
+        return self.music_library(user_id)
+
+    def refresh_podcast_feed(self, user_id: str, podcast_id: str, feed: PodcastFeed) -> dict[str, Any]:
+        timestamp = now_iso()
+        with self.connect() as connection:
+            self._podcast_feed(connection, user_id, podcast_id)
+            connection.execute(
+                """
+                UPDATE podcast_feeds
+                SET title = ?, feed_url = ?, website_url = ?, description = ?, image_url = ?, refreshed_at = ?, updated_at = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (
+                    self._clean_text(feed.title, 240) or "Podcast",
+                    self._external_http_url(feed.feed_url, "Adresa podcastu", required=True),
+                    self._external_http_url(feed.website_url, "Web podcastu"),
+                    self._clean_text(feed.description, 10_000),
+                    self._external_http_url(feed.image_url, "Obrázok podcastu"),
+                    timestamp,
+                    timestamp,
+                    podcast_id,
+                    user_id,
+                ),
+            )
+            self._store_podcast_episodes(connection, podcast_id, feed, timestamp)
+        return self.music_library(user_id)
+
+    def podcast_feed_url(self, user_id: str, podcast_id: str) -> str:
+        with self.connect() as connection:
+            return str(self._podcast_feed(connection, user_id, podcast_id)["feed_url"])
+
+    def delete_podcast_feed(self, user_id: str, podcast_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            self._podcast_feed(connection, user_id, podcast_id)
+            connection.execute("DELETE FROM podcast_feeds WHERE id = ? AND user_id = ?", (podcast_id, user_id))
+        return self.music_library(user_id)
+
+    def _store_podcast_episodes(
+        self, connection: sqlite3.Connection, podcast_id: str, feed: PodcastFeed, timestamp: str
+    ) -> None:
+        for episode in feed.episodes:
+            episode_id = uuid.uuid5(uuid.NAMESPACE_URL, f"poznamkovnik-podcast:{podcast_id}:{episode.external_id}").hex
+            connection.execute(
+                """
+                INSERT INTO podcast_episodes(
+                    id, feed_id, external_id, title, description, media_url, media_type, published_at,
+                    duration_seconds, image_url, position, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(feed_id, external_id) DO UPDATE SET
+                    title = excluded.title,
+                    description = excluded.description,
+                    media_url = excluded.media_url,
+                    media_type = excluded.media_type,
+                    published_at = excluded.published_at,
+                    duration_seconds = excluded.duration_seconds,
+                    image_url = excluded.image_url,
+                    position = excluded.position,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    episode_id,
+                    podcast_id,
+                    self._clean_text(episode.external_id, 80),
+                    self._clean_text(episode.title, 400) or "Bez názvu",
+                    self._clean_text(episode.description, 20_000),
+                    self._external_http_url(episode.media_url, "Adresa epizódy", required=True),
+                    self._clean_text(episode.media_type, 160),
+                    self._clean_text(episode.published_at, 64),
+                    max(0, min(172_800, int(episode.duration_seconds))),
+                    self._external_http_url(episode.image_url, "Obrázok epizódy"),
+                    max(-100_000, min(100_000, int(episode.position))),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+
     def create_music_playlist(self, user_id: str, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise ValidationError("Playlist musí byť objekt.")
@@ -3862,6 +4644,359 @@ class Database:
             self._music_playlist(connection, user_id, playlist_id)
             connection.execute("DELETE FROM music_playlists WHERE id = ? AND user_id = ?", (playlist_id, user_id))
         return self.music_library(user_id)
+
+    def create_radio_station(self, user_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Stanica musí byť objekt.")
+        station_id = self._clean_id(data.get("id"))
+        title, stream_url, website_url, note = self._radio_station_fields(data)
+        if not station_id:
+            raise ValidationError("Stanici chýba identifikátor.")
+        timestamp = now_iso()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO radio_stations(id, user_id, title, stream_url, website_url, note, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (station_id, user_id, title, stream_url, website_url, note, timestamp, timestamp),
+            )
+        return self.music_library(user_id)
+
+    def update_radio_station(self, user_id: str, station_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Úprava stanice musí byť objekt.")
+        with self.connect() as connection:
+            current = self._radio_station(connection, user_id, station_id)
+            title, stream_url, website_url, note = self._radio_station_fields(data, current)
+            connection.execute(
+                """
+                UPDATE radio_stations
+                SET title = ?, stream_url = ?, website_url = ?, note = ?, updated_at = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (title, stream_url, website_url, note, now_iso(), station_id, user_id),
+            )
+        return self.music_library(user_id)
+
+    def delete_radio_station(self, user_id: str, station_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            self._radio_station(connection, user_id, station_id)
+            planned = connection.execute(
+                """
+                SELECT 1 FROM radio_recording_schedules
+                WHERE user_id = ? AND station_id = ? AND status IN ('scheduled', 'running', 'paused')
+                LIMIT 1
+                """,
+                (user_id, station_id),
+            ).fetchone()
+            if planned:
+                raise ValidationError("Najprv zruš naplánované nahrávanie tejto stanice.")
+            connection.execute("DELETE FROM radio_stations WHERE id = ? AND user_id = ?", (station_id, user_id))
+        return self.music_library(user_id)
+
+    def create_radio_recording_schedule(self, user_id: str, station_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Plán nahrávania musí byť objekt.")
+        schedule_id = self._clean_id(data.get("id"))
+        if not schedule_id:
+            raise ValidationError("Plánu nahrávania chýba identifikátor.")
+        now = datetime.now(timezone.utc)
+        recurrence_weekdays = self._radio_schedule_weekdays(data.get("recurrenceWeekdays", []))
+        timezone_name, local_time = self._radio_schedule_timezone_and_time(
+            data.get("timeZone", ""), data.get("localTime", ""), recurrence_weekdays
+        )
+        if recurrence_weekdays:
+            start_at = self._first_recurring_radio_schedule_start(
+                data.get("startDate"), local_time, timezone_name, recurrence_weekdays, now
+            )
+        else:
+            start_at = self._schedule_timestamp(data.get("startAt"))
+        scheduled_for = datetime.fromisoformat(start_at.replace("Z", "+00:00"))
+        if scheduled_for <= now:
+            raise ValidationError("Začiatok nahrávania musí byť v budúcnosti.")
+        if scheduled_for > now.replace(microsecond=0) + timedelta(days=RADIO_RECORDING_SCHEDULE_MAX_AHEAD_DAYS):
+            raise ValidationError("Nahrávanie je možné naplánovať najviac rok dopredu.")
+        try:
+            duration_seconds = int(data.get("durationSeconds", 0))
+        except (TypeError, ValueError) as error:
+            raise ValidationError("Dĺžka nahrávania musí byť celé číslo.") from error
+        maximum = self.radio_recording_limits(user_id)["maxDurationSeconds"]
+        if duration_seconds < MIN_RADIO_RECORDING_MAX_SECONDS or duration_seconds > maximum:
+            raise ValidationError(
+                f"Dĺžka nahrávania musí byť od 1 minúty do {maximum // 60} minút podľa nastaveného limitu."
+            )
+        timestamp = now_iso()
+        with self.connect() as connection:
+            station = self._radio_station(connection, user_id, station_id)
+            connection.execute(
+                """
+                INSERT INTO radio_recording_schedules(
+                    id, user_id, station_id, station_title, start_at, duration_seconds, status,
+                    recurrence_weekdays_json, timezone_name, local_time, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?, ?, ?)
+                """,
+                (
+                    schedule_id, user_id, station_id, station["title"], start_at, duration_seconds,
+                    json.dumps(recurrence_weekdays), timezone_name, local_time, timestamp, timestamp,
+                ),
+            )
+        return self.music_library(user_id)
+
+    def cancel_radio_recording_schedule(self, user_id: str, schedule_id: str) -> dict[str, Any]:
+        timestamp = now_iso()
+        with self.connect() as connection:
+            schedule = self._radio_recording_schedule(connection, user_id, schedule_id)
+            if schedule["status"] not in {"scheduled", "paused"}:
+                raise ValidationError("Toto nahrávanie už nie je možné zrušiť.")
+            connection.execute(
+                """
+                UPDATE radio_recording_schedules SET status = 'cancelled', updated_at = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (timestamp, schedule_id, user_id),
+            )
+        return self.music_library(user_id)
+
+    def pause_radio_recording_schedule(self, user_id: str, schedule_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            schedule = self._radio_recording_schedule(connection, user_id, schedule_id)
+            if schedule["status"] != "scheduled" or not self._radio_schedule_weekdays(schedule["recurrence_weekdays_json"]):
+                raise ValidationError("Pozastaviť je možné iba opakovaný aktívny plán.")
+            connection.execute(
+                """
+                UPDATE radio_recording_schedules SET status = 'paused', updated_at = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (now_iso(), schedule_id, user_id),
+            )
+        return self.music_library(user_id)
+
+    def resume_radio_recording_schedule(self, user_id: str, schedule_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            schedule = self._radio_recording_schedule(connection, user_id, schedule_id)
+            if schedule["status"] != "paused" or not self._radio_schedule_weekdays(schedule["recurrence_weekdays_json"]):
+                raise ValidationError("Obnoviť je možné iba pozastavený opakovaný plán.")
+            self._advance_recurring_radio_schedule(connection, schedule)
+        return self.music_library(user_id)
+
+    def delete_radio_recording_schedule(self, user_id: str, schedule_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            schedule = self._radio_recording_schedule(connection, user_id, schedule_id)
+            if schedule["status"] in {"scheduled", "running", "paused"}:
+                raise ValidationError("Aktívny termín najprv zruš.")
+            connection.execute(
+                "DELETE FROM radio_recording_schedules WHERE id = ? AND user_id = ?", (schedule_id, user_id)
+            )
+        return self.music_library(user_id)
+
+    def claim_due_radio_recording_schedules(self) -> list[dict[str, Any]]:
+        now = datetime.now(timezone.utc)
+        timestamp = now_iso()
+        claimed: list[dict[str, Any]] = []
+        with self.connect() as connection:
+            due = connection.execute(
+                """
+                SELECT * FROM radio_recording_schedules
+                WHERE status = 'scheduled' AND start_at <= ?
+                ORDER BY start_at, created_at
+                LIMIT 20
+                """,
+                (timestamp,),
+            ).fetchall()
+            for schedule in due:
+                try:
+                    scheduled_for = datetime.fromisoformat(str(schedule["start_at"]).replace("Z", "+00:00"))
+                except ValueError:
+                    scheduled_for = now - timedelta(seconds=RADIO_RECORDING_SCHEDULE_GRACE_SECONDS + 1)
+                if scheduled_for < now - timedelta(seconds=RADIO_RECORDING_SCHEDULE_GRACE_SECONDS):
+                    if self._radio_schedule_weekdays(schedule["recurrence_weekdays_json"]):
+                        self._advance_recurring_radio_schedule(
+                            connection,
+                            schedule,
+                            error="Predchádzajúci termín bol zmeškaný, plán pokračuje ďalším behom.",
+                        )
+                    else:
+                        connection.execute(
+                            """
+                            UPDATE radio_recording_schedules
+                            SET status = 'missed', error = 'Termín už uplynul, kým server nebol pripravený.', updated_at = ?
+                            WHERE id = ? AND status = 'scheduled'
+                            """,
+                            (timestamp, schedule["id"]),
+                        )
+                    continue
+                result = connection.execute(
+                    """
+                    UPDATE radio_recording_schedules SET status = 'running', updated_at = ?
+                    WHERE id = ? AND status = 'scheduled'
+                    """,
+                    (timestamp, schedule["id"]),
+                )
+                if result.rowcount:
+                    claimed.append(dict(schedule))
+        return claimed
+
+    def attach_radio_recording_schedule(self, user_id: str, schedule_id: str, recording_id: str) -> None:
+        with self.connect() as connection:
+            schedule = self._radio_recording_schedule(connection, user_id, schedule_id)
+            if schedule["status"] != "running":
+                return
+            connection.execute(
+                """
+                UPDATE radio_recording_schedules SET recording_id = ?, updated_at = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (self._clean_id(recording_id), now_iso(), schedule_id, user_id),
+            )
+
+    def finish_radio_recording_schedule(
+        self, user_id: str, schedule_id: str, *, status: str, recording_id: str = "", error: str = ""
+    ) -> None:
+        if status not in {"completed", "failed"}:
+            raise ValidationError("Plán nahrávania má neplatný konečný stav.")
+        with self.connect() as connection:
+            schedule = self._radio_recording_schedule(connection, user_id, schedule_id)
+            if self._radio_schedule_weekdays(schedule["recurrence_weekdays_json"]):
+                self._advance_recurring_radio_schedule(connection, schedule, error=self._clean_text(error, 1_200))
+                return
+            connection.execute(
+                """
+                UPDATE radio_recording_schedules
+                SET status = ?, recording_id = ?, error = ?, updated_at = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (status, self._clean_id(recording_id), self._clean_text(error, 1_200), now_iso(), schedule_id, user_id),
+            )
+
+    def interrupt_running_radio_recording_schedules(self) -> None:
+        timestamp = now_iso()
+        with self.connect() as connection:
+            running_schedules = connection.execute(
+                "SELECT * FROM radio_recording_schedules WHERE status = 'running'"
+            ).fetchall()
+            for schedule in running_schedules:
+                if self._radio_schedule_weekdays(schedule["recurrence_weekdays_json"]):
+                    self._advance_recurring_radio_schedule(
+                        connection, schedule, error="Server sa reštartoval počas nahrávania, plán pokračuje ďalším behom."
+                    )
+                else:
+                    connection.execute(
+                        """
+                        UPDATE radio_recording_schedules
+                        SET status = 'failed', error = 'Server sa reštartoval počas nahrávania.', updated_at = ?
+                        WHERE id = ? AND user_id = ?
+                        """,
+                        (timestamp, schedule["id"], schedule["user_id"]),
+                    )
+
+    def _advance_recurring_radio_schedule(
+        self, connection: sqlite3.Connection, schedule: sqlite3.Row | dict[str, Any], *, error: str = ""
+    ) -> None:
+        schedule_data = dict(schedule)
+        weekdays = self._radio_schedule_weekdays(schedule_data["recurrence_weekdays_json"])
+        if not weekdays:
+            return
+        next_start = self._next_recurring_radio_schedule_start(
+            schedule_data["local_time"], schedule_data["timezone_name"], weekdays, datetime.now(timezone.utc)
+        )
+        connection.execute(
+            """
+            UPDATE radio_recording_schedules
+            SET start_at = ?, status = 'scheduled', recording_id = '', error = ?, updated_at = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (next_start, self._clean_text(error, 1_200), now_iso(), schedule_data["id"], schedule_data["user_id"]),
+        )
+
+    def create_radio_recording(
+        self, user_id: str, recording_id: str, station_id: str, station_title: str, filename: str
+    ) -> dict[str, Any]:
+        recording_id = self._clean_id(recording_id)
+        station_id = self._clean_id(station_id)
+        station_title = self._clean_text(station_title, 160)
+        filename = Path(self._clean_text(filename, 180)).name
+        if not recording_id or not station_id or not station_title or not filename.endswith(".mp3"):
+            raise ValidationError("Nahrávka rádia má neplatné údaje.")
+        timestamp = now_iso()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO radio_recordings(
+                    id, user_id, station_id, station_title, filename, status, started_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'recording', ?, ?)
+                """,
+                (recording_id, user_id, station_id, station_title, filename, timestamp, timestamp),
+            )
+        return self.radio_recording_file(user_id, recording_id, include_incomplete=True)
+
+    def mark_radio_recording_stopping(self, user_id: str, recording_id: str) -> None:
+        with self.connect() as connection:
+            recording = self._radio_recording(connection, user_id, recording_id)
+            if recording["status"] not in {"recording", "stopping"}:
+                raise ValidationError("Táto nahrávka už nebeží.")
+            connection.execute(
+                "UPDATE radio_recordings SET status = 'stopping', updated_at = ? WHERE id = ? AND user_id = ?",
+                (now_iso(), recording_id, user_id),
+            )
+
+    def finish_radio_recording(
+        self,
+        user_id: str,
+        recording_id: str,
+        *,
+        status: str,
+        size_bytes: int = 0,
+        duration_seconds: int = 0,
+        error: str = "",
+    ) -> None:
+        if status not in {"completed", "stopped", "failed"}:
+            raise ValidationError("Nahrávka má neplatný konečný stav.")
+        safe_size = max(0, int(size_bytes))
+        safe_duration = max(0, int(duration_seconds))
+        safe_error = self._clean_text(error, 1_200)
+        timestamp = now_iso()
+        with self.connect() as connection:
+            self._radio_recording(connection, user_id, recording_id)
+            connection.execute(
+                """
+                UPDATE radio_recordings
+                SET status = ?, size_bytes = ?, duration_seconds = ?, error = ?, finished_at = ?, updated_at = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (status, safe_size, safe_duration, safe_error, timestamp, timestamp, recording_id, user_id),
+            )
+
+    def delete_radio_recording(self, user_id: str, recording_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            recording = self._radio_recording(connection, user_id, recording_id)
+            if recording["status"] in {"recording", "stopping"}:
+                raise ValidationError("Najprv zastav prebiehajúcu nahrávku.")
+            result = dict(recording)
+            connection.execute("DELETE FROM radio_recordings WHERE id = ? AND user_id = ?", (recording_id, user_id))
+        return result
+
+    def radio_recording_file(
+        self, user_id: str, recording_id: str, *, include_incomplete: bool = False
+    ) -> dict[str, Any]:
+        with self.connect() as connection:
+            recording = self._radio_recording(connection, user_id, recording_id)
+        if not include_incomplete and recording["status"] not in {"completed", "stopped"}:
+            raise ValidationError("Nahrávka ešte nie je pripravená na prehratie.")
+        return dict(recording)
+
+    def interrupt_running_radio_recordings(self) -> None:
+        timestamp = now_iso()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE radio_recordings
+                SET status = 'failed', error = 'Server sa reštartoval počas nahrávania.',
+                    finished_at = ?, updated_at = ?
+                WHERE status IN ('recording', 'stopping')
+                """,
+                (timestamp, timestamp),
+            )
 
     def add_music_playlist_track(self, user_id: str, playlist_id: str, track_id: str) -> dict[str, Any]:
         with self.connect() as connection:
@@ -4305,6 +5440,42 @@ class Database:
         return row
 
     @staticmethod
+    def _radio_station(connection: sqlite3.Connection, user_id: str, station_id: str) -> sqlite3.Row:
+        row = connection.execute(
+            "SELECT * FROM radio_stations WHERE id = ? AND user_id = ?", (station_id, user_id)
+        ).fetchone()
+        if not row:
+            raise KeyError("Rádiová stanica neexistuje.")
+        return row
+
+    @staticmethod
+    def _podcast_feed(connection: sqlite3.Connection, user_id: str, podcast_id: str) -> sqlite3.Row:
+        row = connection.execute(
+            "SELECT * FROM podcast_feeds WHERE id = ? AND user_id = ?", (podcast_id, user_id)
+        ).fetchone()
+        if not row:
+            raise KeyError("Podcast neexistuje.")
+        return row
+
+    @staticmethod
+    def _radio_recording(connection: sqlite3.Connection, user_id: str, recording_id: str) -> sqlite3.Row:
+        row = connection.execute(
+            "SELECT * FROM radio_recordings WHERE id = ? AND user_id = ?", (recording_id, user_id)
+        ).fetchone()
+        if not row:
+            raise KeyError("Nahrávka rádia neexistuje.")
+        return row
+
+    @staticmethod
+    def _radio_recording_schedule(connection: sqlite3.Connection, user_id: str, schedule_id: str) -> sqlite3.Row:
+        row = connection.execute(
+            "SELECT * FROM radio_recording_schedules WHERE id = ? AND user_id = ?", (schedule_id, user_id)
+        ).fetchone()
+        if not row:
+            raise KeyError("Plán nahrávania rádia neexistuje.")
+        return row
+
+    @staticmethod
     def _music_playlist(connection: sqlite3.Connection, user_id: str, playlist_id: str) -> sqlite3.Row:
         row = connection.execute(
             "SELECT * FROM music_playlists WHERE id = ? AND user_id = ?", (playlist_id, user_id)
@@ -4477,3 +5648,199 @@ class Database:
             "updatedAt": playlist["updated_at"],
             "trackCount": int(playlist.get("track_count") or 0),
         }
+
+    def _radio_station_fields(self, data: dict[str, Any], current: sqlite3.Row | None = None) -> tuple[str, str, str, str]:
+        title = self._clean_text(data.get("title", current["title"] if current else ""), 160)
+        if not title:
+            raise ValidationError("Stanica potrebuje názov.")
+        stream_url = self._external_http_url(
+            data.get("streamUrl", current["stream_url"] if current else ""),
+            "Stream stanice",
+            required=True,
+        )
+        website_url = self._external_http_url(
+            data.get("websiteUrl", current["website_url"] if current else ""), "Web stanice"
+        )
+        note = self._clean_text(data.get("note", current["note"] if current else ""), 2_000)
+        return title, stream_url, website_url, note
+
+    @staticmethod
+    def _radio_station_row(row: sqlite3.Row) -> dict[str, Any]:
+        station = dict(row)
+        return {
+            "id": station["id"],
+            "title": station["title"],
+            "streamUrl": station["stream_url"],
+            "websiteUrl": station["website_url"],
+            "note": station["note"],
+            "createdAt": station["created_at"],
+            "updatedAt": station["updated_at"],
+        }
+
+    @staticmethod
+    def _podcast_feed_row(row: sqlite3.Row) -> dict[str, Any]:
+        podcast = dict(row)
+        return {
+            "id": podcast["id"],
+            "title": podcast["title"],
+            "feedUrl": podcast["feed_url"],
+            "websiteUrl": podcast["website_url"],
+            "description": podcast["description"],
+            "imageUrl": podcast["image_url"],
+            "refreshedAt": podcast["refreshed_at"],
+            "createdAt": podcast["created_at"],
+            "updatedAt": podcast["updated_at"],
+            "episodeCount": int(podcast.get("episode_count") or 0),
+        }
+
+    @staticmethod
+    def _podcast_episode_row(row: sqlite3.Row) -> dict[str, Any]:
+        episode = dict(row)
+        return {
+            "id": episode["id"],
+            "feedId": episode["feed_id"],
+            "feedTitle": episode.get("feed_title", ""),
+            "title": episode["title"],
+            "description": episode["description"],
+            "mediaUrl": episode["media_url"],
+            "mediaType": episode["media_type"],
+            "publishedAt": episode["published_at"],
+            "durationSeconds": int(episode["duration_seconds"]),
+            "imageUrl": episode["image_url"],
+            "position": int(episode["position"]),
+            "createdAt": episode["created_at"],
+            "updatedAt": episode["updated_at"],
+        }
+
+    @staticmethod
+    def _radio_recording_row(row: sqlite3.Row) -> dict[str, Any]:
+        recording = dict(row)
+        return {
+            "id": recording["id"],
+            "stationId": recording["station_id"],
+            "stationTitle": recording["station_title"],
+            "filename": recording["filename"],
+            "mimeType": recording["mime_type"],
+            "sizeBytes": int(recording["size_bytes"]),
+            "durationSeconds": int(recording["duration_seconds"]),
+            "status": recording["status"],
+            "error": recording["error"],
+            "startedAt": recording["started_at"],
+            "finishedAt": recording["finished_at"],
+            "updatedAt": recording["updated_at"],
+        }
+
+    @staticmethod
+    def _radio_recording_schedule_row(row: sqlite3.Row) -> dict[str, Any]:
+        schedule = dict(row)
+        recurrence_weekdays = Database._radio_schedule_weekdays(schedule["recurrence_weekdays_json"])
+        return {
+            "id": schedule["id"],
+            "stationId": schedule["station_id"],
+            "stationTitle": schedule["station_title"],
+            "startAt": schedule["start_at"],
+            "durationSeconds": int(schedule["duration_seconds"]),
+            "status": schedule["status"],
+            "recordingId": schedule["recording_id"],
+            "error": schedule["error"],
+            "recurrenceWeekdays": recurrence_weekdays,
+            "timeZone": schedule["timezone_name"],
+            "localTime": schedule["local_time"],
+            "createdAt": schedule["created_at"],
+            "updatedAt": schedule["updated_at"],
+        }
+
+    @staticmethod
+    def _radio_schedule_weekdays(value: Any) -> list[int]:
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError as error:
+                raise ValidationError("Opakovanie nahrávania má neplatný formát.") from error
+        if value is None:
+            value = []
+        if not isinstance(value, list):
+            raise ValidationError("Dni opakovania musia byť zoznam.")
+        weekdays: set[int] = set()
+        for item in value:
+            if isinstance(item, bool):
+                raise ValidationError("Deň opakovania má neplatnú hodnotu.")
+            try:
+                weekday = int(item)
+            except (TypeError, ValueError) as error:
+                raise ValidationError("Deň opakovania má neplatnú hodnotu.") from error
+            if weekday < 0 or weekday > 6:
+                raise ValidationError("Deň opakovania je mimo rozsahu.")
+            weekdays.add(weekday)
+        return sorted(weekdays)
+
+    @staticmethod
+    def _radio_schedule_timezone_and_time(
+        timezone_name: Any, local_time: Any, recurrence_weekdays: list[int]
+    ) -> tuple[str, str]:
+        if not recurrence_weekdays:
+            return "", ""
+        name = str(timezone_name or "").strip()
+        if not name or len(name) > 80:
+            raise ValidationError("Opakovaný plán potrebuje platné časové pásmo.")
+        try:
+            ZoneInfo(name)
+        except ZoneInfoNotFoundError as error:
+            raise ValidationError("Opakovaný plán obsahuje neznáme časové pásmo.") from error
+        if not isinstance(local_time, str):
+            raise ValidationError("Opakovaný plán potrebuje miestny čas.")
+        try:
+            parsed_time = clock_time.fromisoformat(local_time.strip())
+        except ValueError as error:
+            raise ValidationError("Miestny čas nahrávania nemá platný formát.") from error
+        return name, parsed_time.strftime("%H:%M")
+
+    @classmethod
+    def _first_recurring_radio_schedule_start(
+        cls, start_date_value: Any, local_time: str, timezone_name: str, weekdays: list[int], now: datetime
+    ) -> str:
+        if not isinstance(start_date_value, str):
+            raise ValidationError("Opakovaný plán potrebuje počiatočný dátum.")
+        try:
+            requested_date = date.fromisoformat(start_date_value)
+        except ValueError as error:
+            raise ValidationError("Počiatočný dátum nahrávania nemá platný formát.") from error
+        zone = ZoneInfo(timezone_name)
+        local_now = now.astimezone(zone)
+        candidate_date = max(requested_date, local_now.date())
+        parsed_time = clock_time.fromisoformat(local_time)
+        for _ in range(RADIO_RECORDING_SCHEDULE_MAX_AHEAD_DAYS + 8):
+            if candidate_date.weekday() in weekdays:
+                candidate = datetime.combine(candidate_date, parsed_time, tzinfo=zone)
+                if candidate.astimezone(timezone.utc) > now:
+                    return candidate.astimezone(timezone.utc).isoformat(timespec="seconds")
+            candidate_date += timedelta(days=1)
+        raise ValidationError("Pre opakovaný plán sa nepodarilo nájsť budúci termín.")
+
+    @classmethod
+    def _next_recurring_radio_schedule_start(
+        cls, local_time: str, timezone_name: str, weekdays: list[int], after: datetime
+    ) -> str:
+        zone = ZoneInfo(timezone_name)
+        local_after = after.astimezone(zone)
+        candidate_date = local_after.date()
+        parsed_time = clock_time.fromisoformat(local_time)
+        for _ in range(8):
+            if candidate_date.weekday() in weekdays:
+                candidate = datetime.combine(candidate_date, parsed_time, tzinfo=zone)
+                if candidate.astimezone(timezone.utc) > after:
+                    return candidate.astimezone(timezone.utc).isoformat(timespec="seconds")
+            candidate_date += timedelta(days=1)
+        raise ValidationError("Pre opakovaný plán sa nepodarilo nájsť ďalší termín.")
+
+    @staticmethod
+    def _schedule_timestamp(value: Any) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValidationError("Termín nahrávania chýba.")
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValidationError("Termín nahrávania nemá platný formát.") from error
+        if parsed.tzinfo is None:
+            raise ValidationError("Termín nahrávania musí obsahovať časové pásmo.")
+        return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")

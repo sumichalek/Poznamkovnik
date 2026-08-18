@@ -1,14 +1,15 @@
 <!DOCTYPE html>
-<html lang="sk" data-app-version="0.31.2">
+<html lang="sk" data-app-version="0.42.0">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Poznámkovník</title>
     <script>
-      document.documentElement.dataset.theme = localStorage.getItem('knowledge-theme') || 'focus';
+      const savedTheme = localStorage.getItem('knowledge-theme') || 'focus';
+      document.documentElement.dataset.theme = savedTheme === 'contrast' ? 'contrast-light' : savedTheme;
     </script>
-    <link rel="stylesheet" href="style.css?v=0.31.2" />
-    <link rel="stylesheet" href="assets/app.css?v=0.31.2" />
+    <link rel="stylesheet" href="style.css?v=0.42.0" />
+    <link rel="stylesheet" href="assets/app.css?v=0.42.0" />
   </head>
   <body>
     <main id="login-screen" class="login-screen" aria-labelledby="login-title">
@@ -50,6 +51,15 @@
           <button id="search-button" class="icon-button" type="button" aria-controls="search-dialog" aria-haspopup="dialog" aria-label="Hľadať" title="Hľadať (Ctrl+Shift+F)">
             <span data-app-icon="search"></span>
           </button>
+          <div id="music-mini-player" class="music-mini-player" hidden>
+            <button id="music-mini-player-open" class="music-mini-player-open" type="button" aria-label="Obnoviť pripnutý prehrávač" title="Obnoviť pripnutý prehrávač">
+              <span data-app-icon="music" aria-hidden="true"></span>
+              <span id="music-mini-player-title">Bez vybranej skladby</span>
+            </button>
+            <button id="music-mini-player-unpin" class="music-mini-player-unpin" type="button" aria-label="Odopnúť prehrávač" title="Odopnúť prehrávač">
+              <span data-app-icon="pin-off"></span>
+            </button>
+          </div>
           <button id="music-button" class="icon-button music-topbar-button" type="button" aria-controls="music-dock" aria-expanded="false" aria-label="Otvoriť prehrávač" title="Prehrávač">
             <span data-app-icon="music"></span>
           </button>
@@ -65,28 +75,31 @@
         <div id="music-resize-handle" class="music-resize-handle" role="separator" aria-label="Zmeniť šírku prehrávača" aria-orientation="vertical" aria-hidden="true" tabindex="-1"></div>
         <section class="music-panel">
           <header class="music-panel-head">
-            <div>
-              <p class="music-kicker">Prehrávač</p>
-              <h2 id="music-now-title">Bez vybranej skladby</h2>
-              <p id="music-now-meta" class="music-now-meta">Pridaj hudbu do vlastnej knižnice.</p>
-            </div>
             <div class="music-panel-head-actions">
-              <label class="music-panel-transparency" title="Priehľadnosť prehrávača">
-                <span data-app-icon="opacity" aria-hidden="true"></span>
-                <input id="music-panel-transparency" type="range" min="0" max="65" value="12" step="1" aria-label="Priehľadnosť prehrávača" />
-                <output id="music-panel-transparency-output" for="music-panel-transparency">12 %</output>
-              </label>
+              <div id="music-panel-transparency-control" class="music-panel-transparency">
+                <button id="music-panel-transparency-toggle" class="panel-icon-button" type="button" aria-label="Nastaviť priehľadnosť prehrávača" title="Priehľadnosť prehrávača" aria-expanded="false" aria-controls="music-panel-transparency-popover"><span data-app-icon="opacity"></span></button>
+                <section id="music-panel-transparency-popover" class="music-panel-transparency-popover" aria-label="Priehľadnosť prehrávača" hidden>
+                  <header><span>Priehľadnosť</span><output id="music-panel-transparency-output" for="music-panel-transparency">12 %</output></header>
+                  <input id="music-panel-transparency" type="range" min="0" max="65" value="12" step="1" aria-label="Priehľadnosť prehrávača" />
+                </section>
+              </div>
+              <button id="music-panel-pin" class="panel-icon-button" type="button" aria-pressed="false" aria-label="Pripnúť prehrávač" title="Pripnúť prehrávač"><span data-app-icon="pin"></span></button>
+              <button id="music-panel-minimize" class="panel-icon-button" type="button" aria-label="Zbaliť prehrávač do vrchnej lišty" title="Zbaliť prehrávač do vrchnej lišty" hidden><span data-app-icon="collapse-to-top"></span></button>
               <button id="music-close" class="panel-icon-button" type="button" aria-label="Zavrieť prehrávač" title="Zavrieť prehrávač"><span data-app-icon="close"></span></button>
+            </div>
+            <div class="music-now-playing">
+              <h2 id="music-now-title">Bez vybranej skladby</h2>
             </div>
           </header>
 
           <audio id="music-audio" preload="metadata"></audio>
 
           <section class="music-transport" aria-label="Ovládanie prehrávania">
-            <div class="music-progress-row">
+            <div id="music-progress-row" class="music-progress-row">
               <output id="music-current-time" for="music-progress">0:00</output>
               <input id="music-progress" type="range" min="0" max="0" value="0" step="0.1" aria-label="Pozícia skladby" />
               <output id="music-duration" for="music-progress">0:00</output>
+              <span id="music-live-status" class="music-live-status" hidden>Naživo</span>
             </div>
             <div class="music-transport-actions">
               <button id="music-previous" class="panel-icon-button" type="button" aria-label="Predchádzajúca skladba" title="Predchádzajúca skladba"><span data-app-icon="skip-back"></span></button>
@@ -94,35 +107,57 @@
               <button id="music-next" class="panel-icon-button" type="button" aria-label="Nasledujúca skladba" title="Nasledujúca skladba"><span data-app-icon="skip-forward"></span></button>
               <button id="music-shuffle" class="panel-icon-button" type="button" aria-label="Náhodné prehrávanie" title="Náhodné prehrávanie" aria-pressed="false"><span data-app-icon="shuffle"></span></button>
               <button id="music-repeat" class="panel-icon-button" type="button" aria-label="Opakovať zoznam" title="Opakovať zoznam" data-mode="all"><span data-app-icon="repeat"></span></button>
+              <button id="music-record" class="panel-icon-button music-record-button" type="button" aria-label="Nahrať vysielanie" title="Nahrať vysielanie" hidden><span data-app-icon="record"></span></button>
               <label class="music-volume" title="Hlasitosť">
                 <span data-app-icon="volume-2" aria-hidden="true"></span>
                 <input id="music-volume" type="range" min="0" max="1" value="0.7" step="0.01" aria-label="Hlasitosť" />
               </label>
-              <label class="music-sleep-timer" title="Časovač vypnutia prehrávania">
-                <span data-app-icon="timer" aria-hidden="true"></span>
-                <select id="music-sleep-timer" aria-label="Časovač vypnutia prehrávania">
-                  <option value="0">Vyp.</option>
-                  <option value="5">5 min</option>
-                  <option value="10">10 min</option>
-                  <option value="15">15 min</option>
-                  <option value="30">30 min</option>
-                  <option value="45">45 min</option>
-                  <option value="60">60 min</option>
-                  <option value="90">90 min</option>
-                </select>
-              </label>
+              <div id="music-sleep-control" class="music-sleep-control">
+                <button id="music-sleep-toggle" class="music-sleep-toggle" type="button" aria-expanded="false" aria-controls="music-sleep-popover" title="Časovač vypnutia prehrávania">
+                  <span data-app-icon="timer" aria-hidden="true"></span>
+                  <span id="music-sleep-label">Vypnutie</span>
+                  <span data-app-icon="chevron-down" aria-hidden="true"></span>
+                </button>
+                <section id="music-sleep-popover" class="music-sleep-popover" aria-label="Časovač vypnutia prehrávania" hidden>
+                  <header>
+                    <strong>Vypnúť prehrávanie</strong>
+                    <span>Po uplynutí času sa hudba pozastaví.</span>
+                  </header>
+                  <div class="music-sleep-presets" role="group" aria-label="Predvolený čas vypnutia">
+                    <button type="button" data-music-sleep-minutes="15">15 min</button>
+                    <button type="button" data-music-sleep-minutes="30">30 min</button>
+                    <button type="button" data-music-sleep-minutes="45">45 min</button>
+                    <button type="button" data-music-sleep-minutes="60">60 min</button>
+                  </div>
+                  <form id="music-sleep-custom-form" class="music-sleep-custom-form">
+                    <label>
+                      <span>Vlastný čas</span>
+                      <input id="music-sleep-custom-minutes" type="number" min="1" max="480" step="1" inputmode="numeric" placeholder="min" aria-label="Vlastný čas v minútach" />
+                    </label>
+                    <button class="panel-icon-button primary" type="submit" aria-label="Nastaviť časovač" title="Nastaviť časovač"><span data-app-icon="check"></span></button>
+                  </form>
+                  <button id="music-sleep-cancel" class="music-sleep-cancel" type="button"><span data-app-icon="close" aria-hidden="true"></span><span>Zrušiť časovač</span></button>
+                </section>
+              </div>
             </div>
           </section>
 
           <section class="music-library" aria-label="Hudobná knižnica">
             <header class="music-library-head">
               <div class="music-library-title-row">
-                <h3 id="music-list-title">Všetky skladby</h3>
-                <span id="music-list-count" class="music-list-count"></span>
+                <div class="music-media-tabs" role="tablist" aria-label="Obsah prehrávača">
+                  <button id="music-mode-tracks" class="music-media-tab is-active" type="button" role="tab" aria-selected="true">Hudba</button>
+                  <button id="music-mode-radio" class="music-media-tab" type="button" role="tab" aria-selected="false">Rádio</button>
+                  <button id="music-mode-podcasts" class="music-media-tab" type="button" role="tab" aria-selected="false">Podcasty</button>
+                </div>
               </div>
               <div class="music-library-actions">
-                <button id="music-upload" class="panel-icon-button" type="button" aria-label="Pridať skladby" title="Pridať skladby"><span data-app-icon="upload"></span></button>
-                <button id="music-playlist-create" class="panel-icon-button" type="button" aria-label="Vytvoriť playlist" title="Vytvoriť playlist"><span data-app-icon="plus"></span></button>
+                <button id="music-upload" class="panel-icon-button" type="button" aria-label="Pridať skladby" title="Pridať skladby"><span data-app-icon="folder-plus"></span></button>
+                <button id="music-playlist-create" class="panel-icon-button" type="button" aria-label="Vytvoriť playlist" title="Vytvoriť playlist"><span data-app-icon="playlist-plus"></span></button>
+                <button id="music-radio-create" class="panel-icon-button" type="button" aria-label="Pridať rádiovú stanicu" title="Pridať rádiovú stanicu" hidden><span data-app-icon="radio"></span></button>
+                <button id="music-podcast-create" class="panel-icon-button" type="button" aria-label="Pridať podcast z RSS feedu" title="Pridať podcast"><span data-app-icon="podcast"></span></button>
+                <button id="music-podcast-refresh" class="panel-icon-button" type="button" aria-label="Obnoviť vybraný podcast" title="Obnoviť vybraný podcast" hidden><span data-app-icon="rotate-ccw"></span></button>
+                <button id="music-search-toggle" class="panel-icon-button" type="button" aria-label="Hľadať skladbu" title="Hľadať skladbu" aria-expanded="false" aria-controls="music-search-row"><span data-app-icon="search"></span></button>
               </div>
             </header>
             <input id="music-file-input" type="file" accept="audio/*,.m4a,.flac,.opus,.weba" multiple hidden />
@@ -131,18 +166,28 @@
               <button class="panel-icon-button primary" type="submit" aria-label="Uložiť playlist" title="Uložiť playlist"><span data-app-icon="check"></span></button>
               <button id="music-playlist-cancel" class="panel-icon-button" type="button" aria-label="Zrušiť" title="Zrušiť"><span data-app-icon="close"></span></button>
             </form>
-            <label class="music-search-field">
-              <span class="visually-hidden">Hľadať skladbu</span>
-              <input id="music-search" type="search" placeholder="Hľadať skladbu" autocomplete="off" />
-            </label>
-            <label class="music-target-playlist-field">
-              <span>Pridať do</span>
-              <select id="music-target-playlist" aria-label="Playlist pre pridanie skladby"></select>
-            </label>
-            <div class="music-playlist-strip" aria-label="Playlisty">
-              <button id="music-all-tracks" class="music-playlist-button is-active" type="button" aria-pressed="true"><span data-app-icon="music"></span><span>Všetky</span></button>
+            <div id="music-search-row" class="music-search-row">
+              <label class="music-search-field">
+                <span data-app-icon="search" aria-hidden="true"></span>
+                <span class="visually-hidden">Hľadať skladbu</span>
+                <input id="music-search" type="search" placeholder="Hľadať skladbu" autocomplete="off" />
+              </label>
+              <button id="music-search-clear" class="panel-icon-button" type="button" aria-label="Vyčistiť filter" title="Vyčistiť filter" hidden><span data-app-icon="eraser"></span></button>
+              <button id="music-search-descriptions" class="panel-icon-button music-search-descriptions" type="button" aria-label="Hľadať aj v opisoch" title="Hľadať aj v opisoch" aria-pressed="false"><span data-app-icon="article"></span></button>
+            </div>
+            <div id="music-playlist-strip" class="music-playlist-strip" aria-label="Playlisty">
+              <button id="music-all-tracks" class="music-playlist-button is-active" type="button" aria-pressed="true"><span>Všetky</span><small id="music-all-tracks-count">0</small></button>
               <div id="music-playlists" class="music-playlists"></div>
             </div>
+            <section id="music-selection-bar" class="music-selection-bar" aria-label="Pridanie označených skladieb do playlistu" hidden>
+              <span id="music-selection-count"></span>
+              <label>
+                <span class="visually-hidden">Pridať označené skladby do playlistu</span>
+                <select id="music-target-playlist" aria-label="Playlist pre pridanie označených skladieb"></select>
+              </label>
+              <button id="music-add-selected" class="panel-icon-button primary" type="button" aria-label="Pridať označené skladby do playlistu" title="Pridať označené skladby do playlistu"><span data-app-icon="plus"></span></button>
+              <button id="music-selection-clear" class="panel-icon-button" type="button" aria-label="Zrušiť výber skladieb" title="Zrušiť výber skladieb"><span data-app-icon="close"></span></button>
+            </section>
             <p id="music-status" class="music-status" aria-live="polite"></p>
             <div id="music-tracks" class="music-tracks" aria-live="polite"></div>
           </section>
@@ -235,6 +280,10 @@
                 <header>
                   <div class="source-detail-title-row">
                     <button id="source-detail-back" class="panel-icon-button" type="button" aria-label="Späť na obsah zbierky" title="Späť na obsah zbierky"><span data-app-icon="arrow-left"></span></button>
+                    <button id="source-return-button" class="source-return-button" type="button" hidden>
+                      <span data-app-icon="arrow-left"></span>
+                      <span id="source-return-label"></span>
+                    </button>
                     <h3 id="source-form-title">Nový zdroj</h3>
                   </div>
                   <div class="source-detail-actions">
@@ -454,6 +503,7 @@
               </div>
               <div class="task-detail-actions">
                 <button id="task-relationships-button" class="panel-icon-button" type="button" aria-label="Zobraziť prepojenia úlohy" title="Prepojenia" hidden><span data-app-icon="link"></span></button>
+                <button id="task-markdown-export" class="panel-icon-button" type="button" aria-label="Exportovať úlohu do Markdownu" title="Exportovať do Markdownu" hidden><span data-app-icon="download"></span></button>
                 <button id="task-delete-button" class="panel-icon-button danger" type="button" aria-label="Zmazať úlohu" title="Zmazať úlohu" hidden><span data-app-icon="trash"></span></button>
               </div>
             </header>
@@ -743,6 +793,7 @@
               <input id="library-editor-title" class="library-editor-title" type="text" maxlength="120" aria-label="Názov prvku" />
               <div class="library-editor-actions">
                 <button id="library-editor-relationships" class="panel-icon-button" type="button" aria-label="Zobraziť prepojenia otvoreného prvku" title="Prepojenia"><span data-app-icon="link"></span></button>
+                <button id="library-editor-markdown-export" class="panel-icon-button" type="button" aria-label="Exportovať do Markdownu" title="Exportovať do Markdownu"><span data-app-icon="download"></span></button>
                 <button id="library-editor-fullscreen" class="panel-icon-button editor-fullscreen-button" type="button" aria-label="Otvoriť editor na celej ploche" title="Celá plocha" data-mode="maximize"><span data-app-icon="maximize"></span></button>
                 <button id="library-editor-delete" class="panel-icon-button danger editor-delete-button" type="button" aria-label="Zmazať prvok" title="Zmazať prvok"><span data-app-icon="trash"></span></button>
               </div>
@@ -821,6 +872,7 @@
             <button id="settings-tab-appearance" class="settings-nav-button is-active" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-appearance" data-settings-tab="appearance"><span data-app-icon="palette"></span>Vzhľad</button>
             <button id="settings-tab-shortcuts" class="settings-nav-button" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-shortcuts" data-settings-tab="shortcuts"><span data-app-icon="keyboard"></span>Skratky</button>
             <button id="settings-tab-account" class="settings-nav-button" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-account" data-settings-tab="account"><span data-app-icon="user"></span>Účet a dáta</button>
+            <button id="settings-tab-security" class="settings-nav-button" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-security" data-settings-tab="security"><span data-app-icon="shield"></span>Bezpečnosť</button>
           </nav>
           <div class="settings-content">
             <section id="settings-panel-appearance" class="settings-section" role="tabpanel" aria-labelledby="settings-tab-appearance" data-settings-panel="appearance">
@@ -831,7 +883,8 @@
                   <option value="focus">Sústredenie</option>
                   <option value="paper">Papier</option>
                   <option value="dark">Tmavá</option>
-                  <option value="contrast">Kontrastná</option>
+                  <option value="contrast-dark">Kontrastná tmavá</option>
+                  <option value="contrast-light">Kontrastná svetlá</option>
                 </select>
               </label>
               <section class="settings-transparency" aria-labelledby="transparency-title">
@@ -922,6 +975,28 @@
                   </span>
                 </label>
               </section>
+              <section class="settings-file-limit" aria-labelledby="radio-recording-limit-title">
+                <div>
+                  <h4 id="radio-recording-limit-title">Nahrávanie rádia</h4>
+                  <p id="radio-recording-limit-status" class="settings-inline-status" aria-live="polite"></p>
+                </div>
+                <div class="settings-file-limit-grid">
+                  <label class="settings-number-field">
+                    <span>Maximálna dĺžka</span>
+                    <span class="settings-number-control">
+                      <input id="radio-recording-limit-minutes" type="number" min="1" max="720" step="1" inputmode="numeric" value="120" />
+                      <span>min</span>
+                    </span>
+                  </label>
+                  <label class="settings-number-field">
+                    <span>Maximálna veľkosť</span>
+                    <span class="settings-number-control">
+                      <input id="radio-recording-limit-mb" type="number" min="10" max="4096" step="1" inputmode="numeric" value="500" />
+                      <span>MB</span>
+                    </span>
+                  </label>
+                </div>
+              </section>
               <section class="settings-backups" aria-labelledby="backup-title">
                 <div>
                   <h4 id="backup-title">Zálohovanie</h4>
@@ -949,21 +1024,82 @@
                   </label>
                 </div>
                 <p id="backup-automatic-status" class="settings-inline-status" aria-live="polite"></p>
-                <input id="backup-restore-input" type="file" accept=".zip,application/zip" hidden />
+                <p id="backup-storage-status" class="settings-inline-status" aria-live="polite"></p>
+                <p class="backup-portable-hint">ZIP je kompatibilný, ale nešifrovaný. Šifrovanú zálohu môže obnoviť iba ten, kto pozná zvolené heslo.</p>
+                <input id="backup-restore-input" type="file" accept=".zip,.pznbackup,application/zip,application/octet-stream" hidden />
                 <div class="settings-backup-actions">
-                  <button id="backup-download-button" class="settings-background-button" type="button">Stiahnuť zálohu</button>
+                  <button id="backup-download-button" class="settings-background-button" type="button">Stiahnuť ZIP</button>
+                  <button id="backup-encrypted-download-button" class="settings-background-button primary" type="button">Stiahnuť šifrovanú</button>
                   <button id="backup-restore-button" class="settings-background-button danger" type="button">Obnoviť zo súboru</button>
                   <a id="backup-safety-download" class="settings-background-button" href="#" hidden>Ochranná kópia</a>
                 </div>
                 <div class="backup-snapshot-section" aria-labelledby="backup-snapshot-title">
                   <h4 id="backup-snapshot-title">Automatické kópie</h4>
+                  <p class="backup-portable-hint">Automatické kópie zostávajú nešifrované na tomto serveri, aby ich server vedel vytvárať bez uloženého hesla.</p>
                   <div id="backup-snapshot-list" class="backup-snapshot-list" aria-live="polite"></div>
                 </div>
               </section>
               <div class="settings-account-actions">
                 <button id="logout-button" class="settings-logout-button" type="button">Odhlásiť</button>
               </div>
-              <p id="app-version" class="app-version">Verzia 0.31.2</p>
+              <p id="app-version" class="app-version">Verzia 0.35.5</p>
+            </section>
+
+            <section id="settings-panel-security" class="settings-section settings-security" role="tabpanel" aria-labelledby="settings-tab-security" data-settings-panel="security" hidden>
+              <h3>Bezpečnosť</h3>
+              <section class="security-summary" aria-labelledby="security-summary-title">
+                <div>
+                  <h4 id="security-summary-title">Ochrana pracovnej plochy</h4>
+                  <p>Heslo je uložené iba ako bezpečný hash. Relácia je obmedzená a funguje len pre lokálnu pracovnú plochu.</p>
+                </div>
+                <dl class="security-facts">
+                  <div><dt>Heslo</dt><dd>scrypt hash</dd></div>
+                  <div><dt>Relácia</dt><dd>maximálne 14 dní</dd></div>
+                  <div><dt>Server</dt><dd>iba tento počítač</dd></div>
+                </dl>
+              </section>
+
+              <section class="settings-security-block" aria-labelledby="security-lock-title">
+                <div>
+                  <h4 id="security-lock-title">Zamknutie</h4>
+                  <p id="security-lock-status" class="settings-inline-status" aria-live="polite"></p>
+                </div>
+                <label class="settings-field">
+                  Automaticky zamknúť po nečinnosti
+                  <select id="security-auto-lock-minutes">
+                    <option value="0">Nevypínať reláciu automaticky</option>
+                    <option value="5">5 minútach</option>
+                    <option value="10">10 minútach</option>
+                    <option value="15">15 minútach</option>
+                    <option value="30">30 minútach</option>
+                    <option value="60">60 minútach</option>
+                  </select>
+                </label>
+                <button id="security-lock-button" class="settings-security-action" type="button"><span data-app-icon="lock"></span><span>Zamknúť teraz</span></button>
+              </section>
+
+              <form id="security-password-form" class="settings-security-block security-password-form">
+                <div>
+                  <h4>Zmeniť heslo</h4>
+                  <p id="security-password-status" class="settings-inline-status" aria-live="polite"></p>
+                </div>
+                <label class="settings-field">
+                  Súčasné heslo
+                  <input id="security-current-password" type="password" autocomplete="current-password" required />
+                </label>
+                <label class="settings-field">
+                  Nové heslo
+                  <input id="security-new-password" type="password" minlength="10" autocomplete="new-password" required />
+                </label>
+                <label class="settings-field">
+                  Potvrdiť nové heslo
+                  <input id="security-new-password-confirmation" type="password" minlength="10" autocomplete="new-password" required />
+                </label>
+                <footer>
+                  <p>Po zmene hesla sa zrušia všetky staršie prihlásenia.</p>
+                  <button class="settings-security-action primary" type="submit">Zmeniť heslo</button>
+                </footer>
+              </form>
             </section>
           </div>
         </div>
@@ -1000,6 +1136,13 @@
               <option value="calendar_event">Kalendár</option>
             </select>
             <select id="relationship-target" aria-label="Prepojený prvok"></select>
+            <select id="relationship-relation-type" aria-label="Význam prepojenia">
+              <option value="related">Súvisí s</option>
+              <option value="reference">Referenčná väzba</option>
+              <option value="comparison">Porovnanie</option>
+              <option value="study">Na štúdium</option>
+            </select>
+            <input id="relationship-note" class="relationship-note-input" type="text" maxlength="500" placeholder="Prečo je táto väzba užitočná? (nepovinné)" aria-label="Poznámka k prepojeniu" />
             <button id="relationship-create-save" class="panel-icon-button primary" type="submit" aria-label="Uložiť prepojenie" title="Pripojiť"><span data-app-icon="check"></span></button>
             <button id="relationship-create-cancel" class="panel-icon-button" type="button" aria-label="Zrušiť" title="Zrušiť"><span data-app-icon="close"></span></button>
           </form>
@@ -1022,7 +1165,7 @@
       </section>
     </dialog>
 
-    <dialog id="music-track-dialog" class="music-track-dialog">
+    <dialog id="music-track-dialog" class="music-track-dialog" data-music-owned-dialog>
       <form id="music-track-form" class="music-track-form">
         <header>
           <div>
@@ -1062,6 +1205,149 @@
           <button class="panel-icon-button primary" type="submit" aria-label="Uložiť skladbu" title="Uložiť skladbu"><span data-app-icon="save"></span></button>
         </footer>
       </form>
+    </dialog>
+
+    <dialog id="radio-station-dialog" class="music-track-dialog radio-station-dialog" data-music-owned-dialog>
+      <form id="radio-station-form" class="music-track-form">
+        <header>
+          <div>
+            <h2 id="radio-station-dialog-title">Pridať stanicu</h2>
+            <p class="music-track-filename">Priama adresa zvukového streamu.</p>
+          </div>
+          <button id="radio-station-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+        </header>
+        <label>
+          Názov stanice
+          <input id="radio-station-title" type="text" maxlength="160" required autocomplete="off" />
+        </label>
+        <label>
+          Priamy stream
+          <input id="radio-station-stream-url" type="url" maxlength="2000" required inputmode="url" placeholder="https://..." autocomplete="off" />
+        </label>
+        <label>
+          Web stanice
+          <input id="radio-station-website-url" type="url" maxlength="2000" inputmode="url" placeholder="https://..." autocomplete="off" />
+        </label>
+        <label>
+          Poznámka
+          <textarea id="radio-station-note" maxlength="2000" rows="3"></textarea>
+        </label>
+        <footer>
+          <button id="radio-station-delete" class="panel-icon-button danger" type="button" aria-label="Zmazať stanicu" title="Zmazať stanicu" hidden><span data-app-icon="trash"></span></button>
+          <button class="panel-icon-button primary" type="submit" aria-label="Uložiť stanicu" title="Uložiť stanicu"><span data-app-icon="save"></span></button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="radio-schedule-dialog" class="music-track-dialog radio-schedule-dialog" data-music-owned-dialog>
+      <form id="radio-schedule-form" class="music-track-form">
+        <header>
+          <div>
+            <h2>Naplánovať nahrávanie</h2>
+            <p id="radio-schedule-station" class="music-track-filename"></p>
+          </div>
+          <button id="radio-schedule-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+        </header>
+        <div class="music-track-form-row radio-schedule-date-row">
+          <label>
+            Dátum
+            <input id="radio-schedule-date" type="date" required />
+          </label>
+          <label>
+            Čas
+            <input id="radio-schedule-time" type="time" required step="60" />
+          </label>
+        </div>
+        <fieldset class="radio-schedule-repeat">
+          <legend>Opakovať v dňoch</legend>
+          <div class="radio-schedule-days">
+            <label class="radio-schedule-day"><input type="checkbox" value="0" data-radio-schedule-weekday />Po</label>
+            <label class="radio-schedule-day"><input type="checkbox" value="1" data-radio-schedule-weekday />Ut</label>
+            <label class="radio-schedule-day"><input type="checkbox" value="2" data-radio-schedule-weekday />St</label>
+            <label class="radio-schedule-day"><input type="checkbox" value="3" data-radio-schedule-weekday />Št</label>
+            <label class="radio-schedule-day"><input type="checkbox" value="4" data-radio-schedule-weekday />Pi</label>
+            <label class="radio-schedule-day"><input type="checkbox" value="5" data-radio-schedule-weekday />So</label>
+            <label class="radio-schedule-day"><input type="checkbox" value="6" data-radio-schedule-weekday />Ne</label>
+          </div>
+          <p class="music-form-hint">Bez vybraného dňa sa vytvorí jednorazový termín.</p>
+        </fieldset>
+        <label>
+          Dĺžka v minútach
+          <input id="radio-schedule-duration" type="number" min="1" max="720" step="1" inputmode="numeric" value="30" required />
+        </label>
+        <p class="music-form-hint">Nahrávanie spustí server aj bez otvoreného Poznámkovníka. Jeho dĺžku a veľkosť obmedzujú nastavenia prehrávača.</p>
+        <footer>
+          <span></span>
+          <button class="panel-icon-button primary" type="submit" aria-label="Uložiť termín nahrávania" title="Uložiť termín nahrávania"><span data-app-icon="save"></span></button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="podcast-dialog" class="music-track-dialog podcast-dialog" data-music-owned-dialog>
+      <form id="podcast-form" class="music-track-form">
+        <header>
+          <div>
+            <h2>Pridať podcast</h2>
+            <p class="music-track-filename">Vlož verejnú adresu RSS alebo Atom feedu podcastu.</p>
+          </div>
+          <button id="podcast-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+        </header>
+        <label>
+          Adresa feedu
+          <input id="podcast-feed-url" type="url" maxlength="2000" required inputmode="url" placeholder="https://.../feed.xml" autocomplete="off" />
+        </label>
+        <p class="music-form-hint">Názov a epizódy sa prečítajú z feedu. Prihlásené alebo platené služby bez verejného feedu sa nepridávajú.</p>
+        <footer>
+          <span></span>
+          <button class="panel-icon-button primary" type="submit" aria-label="Pridať podcast" title="Pridať podcast"><span data-app-icon="save"></span></button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="backup-password-dialog" class="backup-password-dialog" aria-labelledby="backup-password-title">
+      <form id="backup-password-form" class="backup-password-panel">
+        <header>
+          <div>
+            <h2 id="backup-password-title">Stiahnuť šifrovanú zálohu</h2>
+            <p id="backup-password-description">Heslo zostane iba v tomto prehliadači a nebude uložené na serveri.</p>
+          </div>
+          <button id="backup-password-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+        </header>
+        <label>
+          Heslo k zálohe
+          <input id="backup-password" type="password" minlength="10" autocomplete="new-password" required />
+        </label>
+        <label id="backup-password-confirmation-field">
+          Zopakovať heslo
+          <input id="backup-password-confirmation" type="password" minlength="10" autocomplete="new-password" required />
+        </label>
+        <p id="backup-password-status" class="settings-inline-status" aria-live="polite"></p>
+        <footer>
+          <button id="backup-password-submit" class="settings-background-button primary" type="submit">Šifrovať a stiahnuť</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="backup-preview-dialog" class="backup-preview-dialog" aria-labelledby="backup-preview-title">
+      <section class="backup-preview-panel">
+        <header>
+          <div>
+            <h2 id="backup-preview-title">Náhľad obnovy</h2>
+            <p id="backup-preview-description">Záloha prešla kontrolou integrity. Obnova nahradí aktuálne údaje ochrannou kópiou.</p>
+          </div>
+          <button id="backup-preview-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+        </header>
+        <div class="backup-preview-table-wrap">
+          <table class="backup-preview-table">
+            <thead><tr><th scope="col">Obsah</th><th scope="col">V zálohe</th><th scope="col">Teraz</th></tr></thead>
+            <tbody id="backup-preview-summary"></tbody>
+          </table>
+        </div>
+        <p id="backup-preview-status" class="settings-inline-status" aria-live="polite"></p>
+        <footer>
+          <button id="backup-preview-restore" class="settings-background-button danger" type="button">Obnoviť túto zálohu</button>
+        </footer>
+      </section>
     </dialog>
 
     <dialog id="search-dialog" class="search-dialog">
@@ -1190,6 +1476,6 @@
         }
       }, true);
     </script>
-    <script type="module" src="assets/app.js?v=0.31.2"></script>
+    <script type="module" src="assets/app.js?v=0.42.0"></script>
   </body>
 </html>

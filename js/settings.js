@@ -1,9 +1,11 @@
 import { clearAppliedBackground, initializeBackgroundSettings } from './background.js';
 import { initializeBackups } from './backups.js';
+import { installDialogBackdropClose } from './dialogs.js';
 import { dom } from './dom.js';
 import { logout } from './login.js';
 import { stopMusicPlayback } from './music.js';
 import { clearWorkspacePreferences, initializeWorkspacePreferences } from './preferences.js';
+import { initializeSecurity, stopSecuritySession } from './security.js';
 import { applyTheme, disableWorkspaceSync } from './storage.js';
 import { updateTopbarVisibility } from './topbar.js';
 
@@ -71,6 +73,7 @@ export function initializeSettings() {
     });
   });
   dom.logoutButton.addEventListener('click', async () => {
+    stopSecuritySession();
     disableWorkspaceSync();
     stopMusicPlayback();
     clearAppliedBackground();
@@ -79,11 +82,10 @@ export function initializeSettings() {
     await logout();
   });
   dom.themeSelect.addEventListener('change', () => applyTheme(dom.themeSelect.value));
-  dom.settingsDialog.addEventListener('click', (event) => {
-    if (event.target === dom.settingsDialog) closeSettings();
-  });
+  installDialogBackdropClose(dom.settingsDialog, closeSettings);
   dom.settingsDialog.addEventListener('close', updateTopbarVisibility);
   initializeBackgroundSettings();
   initializeWorkspacePreferences();
   initializeBackups();
+  initializeSecurity();
 }

@@ -1,4 +1,4 @@
-export const APP_VERSION = '0.31.2';
+export const APP_VERSION = '0.42.0';
 
 export const HORIZONTAL_EDITOR_MIN_WIDTH = 1120;
 export const HORIZONTAL_EDITOR_MIN_RATIO = 1.15;
@@ -19,17 +19,22 @@ export const storageKeys = {
   musicVolume: 'knowledge-music-volume',
   musicTrackId: 'knowledge-music-track-id',
   musicPosition: 'knowledge-music-position',
+  musicPodcastEpisodeId: 'knowledge-music-podcast-episode-id',
+  musicPodcastPosition: 'knowledge-music-podcast-position',
+  musicPodcastId: 'knowledge-music-podcast-id',
   musicPlaylistId: 'knowledge-music-playlist-id',
+  musicMediaView: 'knowledge-music-media-view',
   musicShuffle: 'knowledge-music-shuffle',
   musicRepeat: 'knowledge-music-repeat',
   musicDockInlineSize: 'knowledge-music-dock-inline-size',
+  musicSearchDescriptions: 'knowledge-music-search-descriptions',
   musicSleepTimerMinutes: 'knowledge-music-sleep-timer-minutes',
   musicSleepTimerEndsAt: 'knowledge-music-sleep-timer-ends-at'
 };
 
 export const TOPBAR_REVEAL_DISTANCE = 72;
 export const LEFT_PANEL_REVEAL_DISTANCE = 18;
-export const themes = new Set(['focus', 'paper', 'dark', 'contrast']);
+export const themes = new Set(['focus', 'paper', 'dark', 'contrast-dark', 'contrast-light']);
 export const elementTypes = new Set(['folder', 'note', 'article']);
 export const elementTypeLabels = {
   folder: 'Priečinok',

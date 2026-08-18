@@ -106,18 +106,70 @@ class AuthService:
         if not token:
             return None
         token_hash = self._token_hash(token)
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now_value = datetime.now(timezone.utc)
+        now = now_value.isoformat(timespec="seconds")
         with self.database.connect() as connection:
             connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
             row = connection.execute(
                 """
-                SELECT u.id, u.username FROM sessions s
+                SELECT u.id, u.username, s.last_active_at,
+                       COALESCE(p.auto_lock_minutes, 0) AS auto_lock_minutes
+                FROM sessions s
                 JOIN users u ON u.id = s.user_id
+                LEFT JOIN user_preferences p ON p.user_id = u.id
                 WHERE s.token_hash = ? AND s.expires_at > ?
                 """,
                 (token_hash, now),
             ).fetchone()
-        return {"id": row["id"], "username": row["username"]} if row else None
+            if not row:
+                return None
+            auto_lock_minutes = max(0, int(row["auto_lock_minutes"] or 0))
+            last_active_at = self._session_timestamp(row["last_active_at"], now_value)
+            if auto_lock_minutes and now_value - last_active_at >= timedelta(minutes=auto_lock_minutes):
+                connection.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+                return None
+        return {"id": row["id"], "username": row["username"]}
+
+    def touch_session(self, token: str | None) -> dict[str, str] | None:
+        user = self.session_user(token)
+        if not user or not token:
+            return None
+        self.mark_session_active(token)
+        return user
+
+    def mark_session_active(self, token: str | None) -> bool:
+        if not token:
+            return False
+        now = now_iso()
+        with self.database.connect() as connection:
+            result = connection.execute(
+                "UPDATE sessions SET last_active_at = ? WHERE token_hash = ? AND expires_at > ?",
+                (now, self._token_hash(token), now),
+            )
+        return result.rowcount == 1
+
+    def change_password(
+        self,
+        user_id: str,
+        current_password_value: Any,
+        next_password_value: Any,
+    ) -> tuple[dict[str, str], str]:
+        current_password = str(current_password_value or "")
+        next_password = _clean_password(next_password_value)
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT id, username, password_hash FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            if not row or not verify_password(current_password, row["password_hash"]):
+                raise AuthError("Súčasné heslo nie je správne.")
+            connection.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (hash_password(next_password), user_id),
+            )
+            connection.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            token = self._create_session(connection, user_id)
+        return {"id": row["id"], "username": row["username"]}, token
 
     def logout(self, token: str | None) -> None:
         if not token:
@@ -131,9 +183,23 @@ class AuthService:
 
     def _create_session(self, connection: sqlite3.Connection, user_id: str) -> str:
         token = secrets.token_urlsafe(32)
+        created_at = now_iso()
         expires_at = (datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS)).isoformat(timespec="seconds")
         connection.execute(
-            "INSERT INTO sessions(id, user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), user_id, self._token_hash(token), now_iso(), expires_at),
+            """
+            INSERT INTO sessions(id, user_id, token_hash, created_at, last_active_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (str(uuid.uuid4()), user_id, self._token_hash(token), created_at, created_at, expires_at),
         )
         return token
+
+    @staticmethod
+    def _session_timestamp(value: Any, fallback: datetime) -> datetime:
+        try:
+            timestamp = datetime.fromisoformat(str(value))
+            if timestamp.tzinfo is None:
+                return timestamp.replace(tzinfo=timezone.utc)
+            return timestamp.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            return fallback

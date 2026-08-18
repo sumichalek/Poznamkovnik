@@ -25,6 +25,7 @@ MAX_BACKUP_MEMBERS = 60_000
 SNAPSHOT_RETENTION = 5
 AUTOMATIC_BACKUP_POLL_SECONDS = 60
 AUTOMATIC_BACKUP_RETRY_DELAY = timedelta(minutes=15)
+LOW_DISK_SPACE_BYTES = 512 * 1024 * 1024
 
 
 class BackupError(ValidationError):
@@ -93,6 +94,39 @@ class BackupManager:
                 upload_path.unlink(missing_ok=True)
                 shutil.rmtree(staging_dir, ignore_errors=True)
 
+    def preview_upload(self, user_id: str, stream: BinaryIO) -> dict[str, Any]:
+        with self._lock:
+            upload_path = self._temporary_path(".zip")
+            try:
+                self._copy_stream(stream, upload_path, MAX_BACKUP_ARCHIVE_BYTES)
+                return self._preview_archive_for_user(user_id, upload_path)
+            finally:
+                upload_path.unlink(missing_ok=True)
+
+    def preview_automatic_snapshot(self, user_id: str, snapshot_id: str) -> dict[str, Any]:
+        with self._lock:
+            path = self._snapshot_path(self._automatic_snapshot_directory(user_id), snapshot_id, "automatickej zálohy")
+            return self._preview_archive_for_user(user_id, path)
+
+    def verify_automatic_snapshot(self, user_id: str, snapshot_id: str) -> dict[str, Any]:
+        with self._lock:
+            directory = self._automatic_snapshot_directory(user_id)
+            path = self._snapshot_path(directory, snapshot_id, "automatickej zálohy")
+            verified_at = self._timestamp()
+            try:
+                preview = self._preview_archive_for_user(user_id, path)
+                verification = {
+                    "status": "verified",
+                    "verifiedAt": verified_at,
+                    "summary": preview["backup"],
+                }
+            except BackupError as error:
+                verification = {"status": "error", "verifiedAt": verified_at, "error": str(error)}
+                self._write_verification(directory, snapshot_id, verification)
+                raise
+            self._write_verification(directory, snapshot_id, verification)
+            return verification
+
     def snapshot_for_download(self, user_id: str, snapshot_id: str) -> BackupArtifact:
         with self._lock:
             path = self._snapshot_path(self._snapshot_directory(user_id), snapshot_id, "ochrannej kópie")
@@ -101,7 +135,9 @@ class BackupManager:
     def automatic_overview(self, user_id: str) -> dict[str, Any]:
         with self._lock:
             snapshots = []
-            for path in self._automatic_snapshot_paths(user_id):
+            paths = self._automatic_snapshot_paths(user_id)
+            directory = self._automatic_snapshot_directory(user_id)
+            for path in paths:
                 identifier = path.stem
                 created_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).replace(microsecond=0).isoformat()
                 snapshots.append(
@@ -110,13 +146,25 @@ class BackupManager:
                         "filename": f"Poznamkovnik-automaticka-zaloha-{identifier}.zip",
                         "createdAt": created_at,
                         "sizeBytes": path.stat().st_size,
+                        "verification": self._read_verification(directory, identifier),
                     }
                 )
-            return {"settings": self.database.automatic_backup_preferences(user_id), "snapshots": snapshots}
+            disk = shutil.disk_usage(self.root)
+            return {
+                "settings": self.database.automatic_backup_preferences(user_id),
+                "snapshots": snapshots,
+                "storage": {
+                    "snapshotCount": len(paths),
+                    "usedBytes": sum(path.stat().st_size for path in paths),
+                    "freeBytes": disk.free,
+                    "lowSpace": disk.free < LOW_DISK_SPACE_BYTES,
+                },
+            }
 
     def create_automatic_snapshot(self, user_id: str, username: str, retention_count: int) -> BackupArtifact:
         with self._lock:
             artifact = self._create_archive(user_id, username, directory=self._automatic_snapshot_directory(user_id))
+            self.verify_automatic_snapshot(user_id, artifact.identifier)
             self._prune_automatic_snapshots(user_id, retention_count)
             return artifact
 
@@ -137,8 +185,10 @@ class BackupManager:
 
     def delete_automatic_snapshot(self, user_id: str, snapshot_id: str) -> None:
         with self._lock:
-            path = self._snapshot_path(self._automatic_snapshot_directory(user_id), snapshot_id, "automatickej zálohy")
+            directory = self._automatic_snapshot_directory(user_id)
+            path = self._snapshot_path(directory, snapshot_id, "automatickej zálohy")
             path.unlink()
+            self._verification_path(directory, snapshot_id).unlink(missing_ok=True)
 
     def discard_temporary(self, artifact: BackupArtifact) -> None:
         if artifact.temporary:
@@ -247,6 +297,38 @@ class BackupManager:
                 raise BackupError("Záloha obsahuje neočakávané vlastné pozadie.")
 
         return snapshot, blob_paths, background_path
+
+    def _preview_archive_for_user(self, user_id: str, archive_path: Path) -> dict[str, Any]:
+        staging_dir = Path(tempfile.mkdtemp(prefix="backup-check-", dir=self.tmp_dir))
+        try:
+            snapshot, _, _ = self._read_archive(archive_path, staging_dir)
+            return {
+                "backup": self._snapshot_summary(snapshot),
+                "current": self._snapshot_summary(self.database.backup_snapshot(user_id)),
+            }
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+    def _snapshot_summary(self, snapshot: dict[str, Any]) -> dict[str, int]:
+        def count(key: str) -> int:
+            value = snapshot.get(key, [])
+            return len(value) if isinstance(value, list) else 0
+
+        elements = snapshot.get("elements", [])
+        if not isinstance(elements, list):
+            elements = []
+        return {
+            "libraries": count("libraries"),
+            "folders": sum(1 for item in elements if isinstance(item, dict) and item.get("type") == "folder"),
+            "notes": sum(1 for item in elements if isinstance(item, dict) and item.get("type") == "note"),
+            "articles": sum(1 for item in elements if isinstance(item, dict) and item.get("type") == "article"),
+            "sources": count("sources"),
+            "files": len(self._snapshot_blob_hashes(snapshot)),
+            "musicTracks": count("musicTracks"),
+            "tasks": count("tasks"),
+            "calendarEvents": count("calendarEvents"),
+            "tutorialPages": count("tutorialPages"),
+        }
 
     def _prepare_background(self, snapshot: dict[str, Any], user_id: str) -> None:
         preferences = snapshot.get("preferences")
@@ -434,6 +516,35 @@ class BackupManager:
     def _prune_automatic_snapshots(self, user_id: str, retention_count: int) -> None:
         for path in self._automatic_snapshot_paths(user_id)[max(1, retention_count):]:
             path.unlink(missing_ok=True)
+            self._verification_path(path.parent, path.stem).unlink(missing_ok=True)
+
+    @staticmethod
+    def _timestamp() -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+    @staticmethod
+    def _verification_path(directory: Path, snapshot_id: str) -> Path:
+        return directory / f"{snapshot_id}.verification.json"
+
+    def _read_verification(self, directory: Path, snapshot_id: str) -> dict[str, Any] | None:
+        path = self._verification_path(directory, snapshot_id)
+        try:
+            with path.open("r", encoding="utf-8") as source:
+                value = json.load(source)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(value, dict) or value.get("status") not in {"verified", "error"}:
+            return None
+        return value
+
+    def _write_verification(self, directory: Path, snapshot_id: str, verification: dict[str, Any]) -> None:
+        destination = self._verification_path(directory, snapshot_id)
+        temporary = destination.with_suffix(".tmp")
+        try:
+            temporary.write_text(json.dumps(verification, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def _temporary_path(self, suffix: str) -> Path:
         descriptor, filename = tempfile.mkstemp(prefix="backup-", suffix=suffix, dir=self.tmp_dir)

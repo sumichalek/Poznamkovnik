@@ -64,7 +64,8 @@ export function normalizeLibraryElements(value) {
 }
 
 export function applyTheme(theme) {
-  const nextTheme = themes.has(theme) ? theme : 'focus';
+  const requestedTheme = theme === 'contrast' ? 'contrast-light' : theme;
+  const nextTheme = themes.has(requestedTheme) ? requestedTheme : 'focus';
   document.documentElement.dataset.theme = nextTheme;
   dom.themeSelect.value = nextTheme;
   localStorage.setItem(storageKeys.theme, nextTheme);

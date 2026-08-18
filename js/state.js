@@ -15,6 +15,7 @@ export const state = {
   sourceDetailInlineSize: 0,
   sourceDetailBlockSize: 0,
   sourcePreviewInlineSize: 0,
+  sourceReturnTarget: null,
   tutorialPlaygroundInlineSize: 0,
   tutorialPlaygroundBlockSize: 0,
   musicDockInlineSize: 0,

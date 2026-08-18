@@ -1,4 +1,5 @@
 import { dom } from './dom.js';
+import { hasOpenApplicationDialog, installDialogBackdropClose } from './dialogs.js';
 import { state } from './state.js';
 import {
   discardFolderRenameDraft,
@@ -68,6 +69,7 @@ let switchInProgress = false;
 let pendingDecision = null;
 let pinnedSection = '';
 let temporarySection = '';
+let workspaceHistory = [];
 let hoverCloseTimer = 0;
 let hoverRequestId = 0;
 
@@ -159,6 +161,9 @@ function sectionHasFocus(section) {
 function syncSectionState() {
   if (pinnedSection && !sectionIsOpen(pinnedSection)) pinnedSection = '';
   if (temporarySection && !sectionIsOpen(temporarySection)) temporarySection = '';
+  workspaceHistory = workspaceHistory.filter(
+    (section, index) => section !== pinnedSection && sectionIsOpen(section) && workspaceHistory.indexOf(section) === index
+  );
   if (!pinnedSection && !temporarySection) {
     const activeSections = sectionNames.filter((section) => sectionIsOpen(section) && sectionIsActive(section));
     if (activeSections.length === 1) pinnedSection = activeSections[0];
@@ -168,16 +173,20 @@ function syncSectionState() {
 function updateSectionLayers() {
   syncSectionState();
   const hasTemporary = Boolean(temporarySection);
+  const suspendedSections = new Set(workspaceHistory);
   document.body.classList.toggle('has-temporary-top-section', hasTemporary);
+  document.body.classList.toggle('has-suspended-workspace', suspendedSections.size > 0);
   if (hasTemporary) document.body.dataset.temporaryTopSection = temporarySection;
   else delete document.body.dataset.temporaryTopSection;
 
   sectionNames.forEach((section) => {
     const temporary = section === temporarySection;
-    const underlay = hasTemporary && !temporary && sectionIsOpen(section);
+    const underlay = (hasTemporary && !temporary && sectionIsOpen(section)) || suspendedSections.has(section);
+    const workspace = section === pinnedSection;
     sectionRoots(section).forEach((root) => {
       root.classList.toggle('is-top-section-temporary', temporary);
       root.classList.toggle('is-top-section-underlay', underlay);
+      root.classList.toggle('is-top-section-workspace', workspace);
     });
   });
 }
@@ -359,6 +368,43 @@ function clearTemporaryLayer() {
   updateSectionLayers();
 }
 
+function restorePreviousWorkspace(closedSection) {
+  workspaceHistory = workspaceHistory.filter((section) => section !== closedSection && sectionIsOpen(section));
+  if (pinnedSection === closedSection) pinnedSection = workspaceHistory.pop() || '';
+  updateSectionLayers();
+}
+
+export function promoteTopSectionToWorkspace(section) {
+  if (!sectionNames.includes(section) || !sectionIsOpen(section)) return;
+  window.clearTimeout(hoverCloseTimer);
+  hoverRequestId += 1;
+  syncSectionState();
+
+  if (pinnedSection && pinnedSection !== section && sectionIsOpen(pinnedSection)) {
+    workspaceHistory = workspaceHistory.filter((item) => item !== pinnedSection && item !== section);
+    workspaceHistory.push(pinnedSection);
+  } else {
+    workspaceHistory = workspaceHistory.filter((item) => item !== section);
+  }
+
+  pinnedSection = section;
+  if (temporarySection === section) temporarySection = '';
+  updateSectionLayers();
+}
+
+export async function closeWorkingTopSection(section) {
+  if (!sectionNames.includes(section)) return false;
+  if (temporarySection === section) return closeTemporarySection();
+  if (!sectionIsOpen(section)) {
+    restorePreviousWorkspace(section);
+    return true;
+  }
+  if (!(await leaveSectionSafely(section))) return false;
+  closeSection(section, { force: true });
+  restorePreviousWorkspace(section);
+  return true;
+}
+
 async function closeTemporarySection() {
   if (!temporarySection) return true;
   const section = temporarySection;
@@ -405,6 +451,7 @@ function scheduleSectionClose(section) {
   window.clearTimeout(hoverCloseTimer);
   hoverCloseTimer = window.setTimeout(() => {
     if (sectionHasPointer(section) || sectionHasFocus(section)) return;
+    if (hasOpenApplicationDialog()) return;
     if (temporarySection === section) {
       hoverRequestId += 1;
       void closeTemporarySection();
@@ -452,12 +499,19 @@ export async function switchTopSection(section) {
       if (!(await closeTemporarySection())) return false;
     }
 
+    if (targetWasPinned && sectionIsOpen(section) && !targetWasTemporary) {
+      if (!(await closeWorkingTopSection(section))) return false;
+      sectionButton(section).blur();
+      return true;
+    }
+
     for (const otherSection of sectionNames) {
       if (otherSection === section || !sectionIsOpen(otherSection)) continue;
       if (!(await leaveSectionSafely(otherSection))) return false;
       closeSection(otherSection, { force: true });
       if (pinnedSection === otherSection) pinnedSection = '';
     }
+    workspaceHistory = [];
 
     if (targetWasTemporary) {
       await openSection(section, { pinned: true });
@@ -507,6 +561,7 @@ export async function closeTopSections() {
       if (temporarySection === section) clearTemporaryLayer();
     }
     pinnedSection = '';
+    workspaceHistory = [];
     clearTemporaryLayer();
     return true;
   } finally {
@@ -547,7 +602,8 @@ export function initializeTopSections() {
     event.preventDefault();
     resolvePendingDecision('stay');
   });
-  dom.sectionSwitchDialog.addEventListener('click', (event) => {
-    if (event.target === dom.sectionSwitchDialog) resolvePendingDecision('stay');
+  installDialogBackdropClose(dom.sectionSwitchDialog, () => resolvePendingDecision('stay'));
+  window.addEventListener('workspace-activate', (event) => {
+    promoteTopSectionToWorkspace(event.detail?.section || '');
   });
 }

@@ -45,6 +45,7 @@ export function showLibraryForm(library = null) {
   libraryFormBaseline = libraryFormSnapshot();
   dom.libraryForm.hidden = false;
   openLibrariesPanel({ pinned: true });
+  window.dispatchEvent(new CustomEvent('workspace-activate', { detail: { section: 'libraries' } }));
   renderLibraries();
   dom.libraryNameInput.focus();
 }

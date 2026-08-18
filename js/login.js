@@ -31,18 +31,32 @@ async function activate(user, onAuthenticated) {
   await onAuthenticated?.(user);
 }
 
+function deactivate({ message = '', preserveUsername = false } = {}) {
+  const username = preserveUsername ? dom.topbarUsername.textContent.trim() : '';
+  authenticated = false;
+  delete document.body.dataset.authenticated;
+  dom.appShell.hidden = true;
+  dom.appShell.setAttribute('aria-hidden', 'true');
+  dom.loginForm.reset();
+  if (username) dom.loginUsername.value = username;
+  dom.loginScreen.hidden = false;
+  setMessage(message);
+  requestAnimationFrame(() => (preserveUsername ? dom.loginPassword : dom.loginUsername).focus());
+}
+
 export async function logout() {
   try {
     await apiRequest('/auth/logout', { method: 'POST', body: {} });
   } finally {
-    authenticated = false;
-    delete document.body.dataset.authenticated;
-    dom.appShell.hidden = true;
-    dom.appShell.setAttribute('aria-hidden', 'true');
-    dom.loginForm.reset();
-    dom.loginScreen.hidden = false;
-    setMessage('');
-    requestAnimationFrame(() => dom.loginUsername.focus());
+    deactivate();
+  }
+}
+
+export async function lockWorkspace(message = 'Pracovná plocha je zamknutá.') {
+  try {
+    await apiRequest('/auth/logout', { method: 'POST', body: {} });
+  } finally {
+    deactivate({ message, preserveUsername: true });
   }
 }
 

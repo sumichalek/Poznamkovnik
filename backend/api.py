@@ -12,6 +12,8 @@ from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.parse import parse_qs, urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from .audio_metadata import read_audio_metadata
 from .auth import AuthError, AuthService, SESSION_DAYS
@@ -19,12 +21,17 @@ from .backups import AutomaticBackupScheduler, BackupArtifact, BackupManager, MA
 from .code_runner import CCodeRunner, CodeRunnerError
 from .database import Database, ValidationError
 from .files import BackgroundStore, FileStore, MAX_BACKGROUND_BYTES, UploadError
+from .podcast import PodcastFeedError, fetch_podcast_feed
+from .radio_recording import RadioRecordingManager
+from .radio_schedule import RadioRecordingScheduler
 
 
 MAX_MULTIPART_HEADER_BYTES = 64 * 1024
 MULTIPART_CHUNK_BYTES = 64 * 1024
 MULTIPART_MEMORY_THRESHOLD = 2 * 1024 * 1024
 MUSIC_FILE_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".weba", ".webm"}
+RADIO_STREAM_TIMEOUT_SECONDS = 20
+RADIO_STREAM_CHUNK_BYTES = 64 * 1024
 
 
 @dataclass
@@ -51,6 +58,9 @@ class AppContext:
         self.files = FileStore(data_dir / "files")
         self.backgrounds = BackgroundStore(data_dir / "backgrounds")
         self.backups = BackupManager(data_dir / "backups", self.database, self.files, self.backgrounds)
+        self.radio_recordings = RadioRecordingManager(data_dir / "radio-recordings", self.database)
+        self.radio_schedules = RadioRecordingScheduler(self.database, self.radio_recordings)
+        self.radio_schedules.start()
         self.automatic_backups = AutomaticBackupScheduler(self.database, self.backups)
         self.automatic_backups.start()
         self.c_runner = CCodeRunner()
@@ -134,7 +144,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                 self._write_json(HTTPStatus.OK, result)
         except ApiError as error:
             self._write_json(error.status, {"error": error.message})
-        except (ValidationError, UploadError, CodeRunnerError) as error:
+        except (ValidationError, UploadError, CodeRunnerError, PodcastFeedError) as error:
             self._write_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
         except AuthError as error:
             self._write_json(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
@@ -173,8 +183,28 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.context.auth.logout(self._session_token())
             self._clear_session_cookie()
             return {"authenticated": False}
+        if route == ["auth", "activity"] and method == "POST":
+            user = self.context.auth.touch_session(self._session_token())
+            if not user:
+                self._clear_session_cookie()
+                raise ApiError(HTTPStatus.UNAUTHORIZED, "Pracovná plocha je zamknutá.")
+            return {"authenticated": True, "user": user}
 
         user = self._require_user()
+        if route == ["auth", "security"] and method == "GET":
+            return self.context.database.security_preferences(user["id"])
+        if route == ["auth", "security"] and method == "POST":
+            preferences = self.context.database.save_security_preferences(user["id"], self._read_json())
+            self.context.auth.mark_session_active(self._session_token())
+            return preferences
+        if route == ["auth", "password"] and method == "POST":
+            data = self._read_json()
+            next_password = data.get("newPassword")
+            if next_password != data.get("newPasswordConfirmation"):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "Nové heslá sa nezhodujú.")
+            user, token = self.context.auth.change_password(user["id"], data.get("currentPassword"), next_password)
+            self._set_session_cookie(token)
+            return {"authenticated": True, "user": user, "sessionsRevoked": True}
         if route == ["tags"] and method == "GET":
             query = parse_qs(request_url.query).get("q", [""])[0]
             return {"tags": self.context.database.list_tags(user["id"], query)}
@@ -192,12 +222,22 @@ class AppHandler(SimpleHTTPRequestHandler):
             archive = self.context.backups.create_download(user["id"], user["username"])
             self._send_backup_archive(archive)
             return None
+        if route == ["backups", "preview"] and method == "POST":
+            uploaded = self._read_upload(MAX_BACKUP_ARCHIVE_BYTES + 512 * 1024)
+            try:
+                return self.context.backups.preview_upload(user["id"], uploaded.file)
+            finally:
+                uploaded.file.close()
         if route == ["backups", "restore"] and method == "POST":
             uploaded = self._read_upload(MAX_BACKUP_ARCHIVE_BYTES + 512 * 1024)
             try:
                 return self.context.backups.restore_upload(user["id"], user["username"], uploaded.file)
             finally:
                 uploaded.file.close()
+        if len(route) == 5 and route[:3] == ["backups", "snapshots", "automatic"] and route[4] == "preview" and method == "POST":
+            return self.context.backups.preview_automatic_snapshot(user["id"], route[3])
+        if len(route) == 5 and route[:3] == ["backups", "snapshots", "automatic"] and route[4] == "verify" and method == "POST":
+            return self.context.backups.verify_automatic_snapshot(user["id"], route[3])
         if len(route) == 5 and route[:3] == ["backups", "snapshots", "automatic"] and route[4] == "restore" and method == "POST":
             return self.context.backups.restore_automatic_snapshot(user["id"], user["username"], route[3])
         if len(route) == 4 and route[:3] == ["backups", "snapshots", "automatic"] and method == "GET":
@@ -289,6 +329,9 @@ class AppHandler(SimpleHTTPRequestHandler):
             return {"links": self.context.database.semantic_links_for_target(user["id"], route[1], route[2])}
         if len(route) == 3 and route[0] == "semantic-links" and method == "POST":
             return {"target": self.context.database.create_semantic_link(user["id"], route[1], route[2], self._read_json())}
+        if len(route) == 2 and route[0] == "semantic-links" and method == "PATCH":
+            self.context.database.update_semantic_link(user["id"], route[1], self._read_json())
+            return {"ok": True}
         if len(route) == 2 and route[0] == "semantic-links" and method == "DELETE":
             self.context.database.delete_semantic_link(user["id"], route[1])
             return {"ok": True}
@@ -345,6 +388,14 @@ class AppHandler(SimpleHTTPRequestHandler):
             data = self._read_json()
             data.setdefault("id", str(uuid.uuid4()))
             return self.context.database.create_music_playlist(user["id"], data)
+        if route == ["music", "stations"] and method == "POST":
+            data = self._read_json()
+            data.setdefault("id", str(uuid.uuid4()))
+            return self.context.database.create_radio_station(user["id"], data)
+        if route == ["music", "podcasts"] and method == "POST":
+            data = self._read_json()
+            feed = fetch_podcast_feed(data.get("feedUrl"))
+            return self.context.database.create_podcast_feed(user["id"], str(uuid.uuid4()), feed)
         if len(route) >= 2 and route[0] == "music":
             return self._route_music(method, user["id"], route)
 
@@ -421,6 +472,31 @@ class AppHandler(SimpleHTTPRequestHandler):
         if len(route) == 4 and route[1] == "tracks" and route[3] == "audio" and method in {"GET", "HEAD"}:
             self._send_music_track(user_id, route[2], head_only=method == "HEAD")
             return None
+        if len(route) == 4 and route[1] == "stations" and route[3] == "stream" and method in {"GET", "HEAD"}:
+            self._send_radio_station_stream(user_id, route[2], head_only=method == "HEAD")
+            return None
+        if len(route) == 4 and route[1] == "recordings" and route[3] == "file" and method in {"GET", "HEAD"}:
+            download = parse_qs(urlsplit(self.path).query).get("download", [""])[0] == "1"
+            self._send_radio_recording(user_id, route[2], download=download, head_only=method == "HEAD")
+            return None
+        if len(route) == 4 and route[1] == "stations" and route[3] == "recordings" and method == "POST":
+            return self.context.radio_recordings.start(user_id, route[2])
+        if len(route) == 4 and route[1] == "stations" and route[3] == "recording-schedules" and method == "POST":
+            data = self._read_json()
+            data.setdefault("id", str(uuid.uuid4()))
+            return self.context.database.create_radio_recording_schedule(user_id, route[2], data)
+        if len(route) == 4 and route[1] == "recording-schedules" and route[3] == "cancel" and method == "POST":
+            return self.context.database.cancel_radio_recording_schedule(user_id, route[2])
+        if len(route) == 4 and route[1] == "recording-schedules" and route[3] == "pause" and method == "POST":
+            return self.context.database.pause_radio_recording_schedule(user_id, route[2])
+        if len(route) == 4 and route[1] == "recording-schedules" and route[3] == "resume" and method == "POST":
+            return self.context.database.resume_radio_recording_schedule(user_id, route[2])
+        if len(route) == 4 and route[1] == "recordings" and route[3] == "stop" and method == "POST":
+            return self.context.radio_recordings.stop(user_id, route[2])
+        if len(route) == 3 and route[1] == "recordings" and method == "DELETE":
+            return self.context.radio_recordings.delete(user_id, route[2])
+        if len(route) == 3 and route[1] == "recording-schedules" and method == "DELETE":
+            return self.context.database.delete_radio_recording_schedule(user_id, route[2])
         if len(route) == 3 and route[1] == "tracks":
             if method == "PATCH":
                 return self.context.database.update_music_track(user_id, route[2], self._read_json())
@@ -434,6 +510,16 @@ class AppHandler(SimpleHTTPRequestHandler):
                 return self.context.database.update_music_playlist(user_id, route[2], self._read_json())
             if method == "DELETE":
                 return self.context.database.delete_music_playlist(user_id, route[2])
+        if len(route) == 3 and route[1] == "stations":
+            if method == "PATCH":
+                return self.context.database.update_radio_station(user_id, route[2], self._read_json())
+            if method == "DELETE":
+                return self.context.database.delete_radio_station(user_id, route[2])
+        if len(route) == 4 and route[1] == "podcasts" and route[3] == "refresh" and method == "POST":
+            feed_url = self.context.database.podcast_feed_url(user_id, route[2])
+            return self.context.database.refresh_podcast_feed(user_id, route[2], fetch_podcast_feed(feed_url))
+        if len(route) == 3 and route[1] == "podcasts" and method == "DELETE":
+            return self.context.database.delete_podcast_feed(user_id, route[2])
         if len(route) == 4 and route[1] == "playlists" and route[3] == "order" and method == "PUT":
             return self.context.database.reorder_music_playlist(user_id, route[2], self._read_json())
         if len(route) == 5 and route[1] == "playlists" and route[3] == "tracks":
@@ -709,7 +795,57 @@ class AppHandler(SimpleHTTPRequestHandler):
         mime_type = str(track["mime_type"] or mimetypes.guess_type(str(track["original_name"]))[0] or "audio/mpeg")
         self._send_streamed_file(path, mime_type, str(track["original_name"]), head_only=head_only)
 
-    def _send_streamed_file(self, path: Path, mime_type: str, filename: str, *, head_only: bool = False) -> None:
+    def _send_radio_recording(self, user_id: str, recording_id: str, *, download: bool, head_only: bool = False) -> None:
+        recording = self.context.database.radio_recording_file(user_id, recording_id)
+        path = self.context.radio_recordings.path_for_recording(user_id, recording)
+        if not path.is_file():
+            raise ApiError(HTTPStatus.NOT_FOUND, "Súbor nahrávky sa nenašiel.")
+        title = str(recording["station_title"]).strip() or "nahrávka-rádia"
+        filename = f"{title}.mp3"
+        self._send_streamed_file(path, str(recording["mime_type"]), filename, download=download, head_only=head_only)
+
+    def _send_radio_station_stream(self, user_id: str, station_id: str, *, head_only: bool = False) -> None:
+        station = self.context.database.radio_station_stream(user_id, station_id)
+        request = Request(
+            str(station["stream_url"]),
+            headers={
+                "Accept": "audio/*,application/ogg;q=0.9,*/*;q=0.2",
+                "Accept-Encoding": "identity",
+                "Icy-MetaData": "0",
+                "User-Agent": "Poznamkovnik/1.0 radio player",
+            },
+        )
+        try:
+            response = urlopen(request, timeout=RADIO_STREAM_TIMEOUT_SECONDS)
+        except HTTPError as error:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"Stanica odpovedala chybou {error.code}.") from error
+        except (URLError, TimeoutError, OSError) as error:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "K streamu stanice sa nepodarilo pripojiť.") from error
+
+        try:
+            mime_type = response.headers.get_content_type() or "audio/mpeg"
+            if not mime_type.startswith("audio/") and mime_type not in {"application/ogg", "video/webm"}:
+                raise ApiError(HTTPStatus.BAD_GATEWAY, "Adresa stanice nevracia zvukový stream.")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", mime_type)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            if head_only:
+                return
+            while True:
+                chunk = response.read(RADIO_STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+        finally:
+            response.close()
+
+    def _send_streamed_file(
+        self, path: Path, mime_type: str, filename: str, *, download: bool = False, head_only: bool = False
+    ) -> None:
         size = path.stat().st_size
         start = 0
         end = max(0, size - 1)
@@ -747,7 +883,8 @@ class AppHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", mime_type)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(length))
-        self.send_header("Content-Disposition", f'inline; filename="{safe_name}"')
+        disposition = "attachment" if download else "inline"
+        self.send_header("Content-Disposition", f'{disposition}; filename="{safe_name}"')
         self.send_header("X-Content-Type-Options", "nosniff")
         if status == HTTPStatus.PARTIAL_CONTENT:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")

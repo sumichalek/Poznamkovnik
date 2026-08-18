@@ -35,6 +35,7 @@ import {
 } from './tasks.js';
 import { loadBackgroundPreference } from './background.js';
 import { loadBackupOverview } from './backups.js';
+import { hasOpenApplicationDialog, installDialogBackdropClose } from './dialogs.js';
 import { dom } from './dom.js';
 import { initializeLogin, isAuthenticated } from './login.js';
 import { closeMusicPanel, initializeMusic, isMusicPanelOpen, openMusicPanel } from './music.js';
@@ -45,6 +46,7 @@ import {
   closeLibraryElementEditor,
   createLibraryElement,
   deleteLibraryElement,
+  exportActiveLibraryElementMarkdown,
   exitEditorFullscreen,
   handleLibraryItemClick,
   openLibraryElement,
@@ -87,11 +89,13 @@ import {
   isSourcePreviewOpen,
   isSourcesPanelOpen,
   openSourcesPanel,
-  refreshElementSourceLinks
+  refreshElementSourceLinks,
+  setSourceReturnTarget
 } from './sources.js';
 import { hideTopbarImmediately, updateTopbarVisibility } from './topbar.js';
 import {
   closeTemporaryTopSection,
+  closeWorkingTopSection,
   closeTopSections,
   initializeTopSections,
   isTemporaryTopSectionOpen,
@@ -102,6 +106,7 @@ import { initializeGlobalSearch, openGlobalSearch } from './search.js';
 import { initializeRelationships, openRelationships } from './relationships.js';
 import { wireTagInput } from './tags.js';
 import { loadWorkspacePreferences } from './preferences.js';
+import { loadSecuritySettings, startSecuritySession } from './security.js';
 import {
   closeTutorialPlayground,
   initializeTutorial,
@@ -137,15 +142,27 @@ dom.topbar.addEventListener('pointerleave', () => {
 dom.topbar.addEventListener('focusin', updateTopbarVisibility);
 dom.topbar.addEventListener('focusout', updateTopbarVisibility);
 
-async function openSourceTarget(libraryId, elementId = '') {
+function openLibraryTarget(libraryId, elementId = '') {
   if (!state.libraries.some((library) => library.id === libraryId)) return;
-  if (!(await switchTopSection('libraries'))) return;
   state.activeLibraryId = libraryId;
   saveLibraries();
   openLibrariesPanel({ pinned: true });
   openLibraryDetailPanel(libraryId, { pinned: true });
   if (elementId) openLibraryElement(elementId);
   renderLibraries();
+}
+
+async function openSourceTarget(libraryId, elementId = '') {
+  if (!state.libraries.some((library) => library.id === libraryId)) return;
+  if (!(await switchTopSection('libraries'))) return;
+  openLibraryTarget(libraryId, elementId);
+}
+
+async function openRequestedSource(detail = {}) {
+  const sourceId = String(detail.sourceId || '');
+  if (!sourceId || !(await switchTopSection('sources'))) return;
+  setSourceReturnTarget(detail.returnTarget);
+  await openSourcesPanel({ sourceId, pinned: true });
 }
 
 dom.libraryDetailPanel.addEventListener('pointerenter', () => {
@@ -161,6 +178,19 @@ window.addEventListener('source-open-library', (event) => {
 
 window.addEventListener('source-open-element', (event) => {
   void openSourceTarget(event.detail?.libraryId || '', event.detail?.elementId || '');
+});
+
+window.addEventListener('source-open-request', (event) => {
+  void openRequestedSource(event.detail || {});
+});
+
+window.addEventListener('source-return-request', (event) => {
+  const target = event.detail || {};
+  void (async () => {
+    if (!target.libraryId || !(await switchTopSection('libraries'))) return;
+    setSourceReturnTarget();
+    openLibraryTarget(target.libraryId, target.elementId || '');
+  })();
 });
 
 window.addEventListener('task-open', (event) => {
@@ -282,6 +312,18 @@ window.addEventListener('global-search-open', (event) => {
       await openMusicPanel({ playlistId: targetId });
       return;
     }
+    if (result.type === 'radio_station') {
+      await openMusicPanel({ stationId: targetId });
+      return;
+    }
+    if (result.type === 'podcast_feed') {
+      await openMusicPanel({ podcastId: targetId });
+      return;
+    }
+    if (result.type === 'podcast_episode') {
+      await openMusicPanel({ podcastEpisodeId: targetId });
+      return;
+    }
     if (result.type === 'tutorial_language') {
       if (await switchTopSection('tutorial')) await openTutorialPanel({ languageId: targetId, pinned: true });
       return;
@@ -324,6 +366,7 @@ dom.libraryEditorDelete.addEventListener('click', () => deleteLibraryElement());
 dom.libraryEditorRelationships.addEventListener('click', () => {
   if (state.activeLibraryElementId) void openRelationships({ targetType: 'element', targetId: state.activeLibraryElementId });
 });
+dom.libraryEditorMarkdownExport.addEventListener('click', exportActiveLibraryElementMarkdown);
 dom.libraryEditorTitle.addEventListener('input', () => updateActiveElementFromEditor({ renderItems: true }));
 dom.libraryEditorTitle.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter') return;
@@ -440,26 +483,19 @@ dom.citationForm.addEventListener('submit', (event) => {
     }
   }
 });
-dom.citationDialog.addEventListener('click', (event) => {
-  if (event.target === dom.citationDialog) dom.citationDialog.close();
-});
+installDialogBackdropClose(dom.citationDialog, () => dom.citationDialog.close());
 dom.mathCancelButton.addEventListener('click', closeMathDialog);
 dom.mathLatex.addEventListener('input', updateMathPreview);
 dom.mathForm.addEventListener('submit', (event) => {
   event.preventDefault();
   if (submitMathDialog()) updateActiveElementFromEditor();
 });
-dom.mathDialog.addEventListener('click', (event) => {
-  if (event.target === dom.mathDialog) closeMathDialog();
-});
+installDialogBackdropClose(dom.mathDialog, closeMathDialog);
 dom.mathDialog.addEventListener('close', resetMathDialog);
 
 document.addEventListener('pointerdown', (event) => {
   if (!isAuthenticated()) return;
-  if (
-    dom.settingsDialog.open || dom.relationshipsDialog.open || dom.citationDialog.open || dom.mathDialog.open || dom.sectionSwitchDialog.open ||
-    dom.tutorialPageDialog.open || dom.musicTrackDialog.open || dom.searchDialog.open
-  ) return;
+  if (hasOpenApplicationDialog()) return;
   if (!state.librariesPanelPinned && !state.libraryDetailPanelPinned && !isSourcesPanelOpen() && !isTasksPanelOpen() && !isCalendarPanelOpen() && !isTutorialPanelOpen()) return;
   if (
     dom.topbar.contains(event.target) ||
@@ -487,18 +523,14 @@ document.addEventListener('keydown', (event) => {
   if (!isAuthenticated()) return;
   if (
     event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === 'f' &&
-    !dom.settingsDialog.open && !dom.relationshipsDialog.open && !dom.citationDialog.open && !dom.mathDialog.open && !dom.sectionSwitchDialog.open &&
-    !dom.tutorialPageDialog.open && !dom.musicTrackDialog.open
+    !hasOpenApplicationDialog()
   ) {
     event.preventDefault();
     openGlobalSearch();
     return;
   }
   if (event.key === 'Escape') {
-    if (
-      dom.settingsDialog.open || dom.relationshipsDialog.open || dom.citationDialog.open || dom.mathDialog.open || dom.sectionSwitchDialog.open ||
-      dom.tutorialPageDialog.open || dom.musicTrackDialog.open || dom.searchDialog.open
-    ) return;
+    if (hasOpenApplicationDialog()) return;
 
     if (isTemporaryTopSectionOpen()) {
       event.preventDefault();
@@ -539,7 +571,7 @@ document.addEventListener('keydown', (event) => {
 
     if (isSourcesPanelOpen()) {
       event.preventDefault();
-      closeSourcesPanel({ force: true });
+      void closeWorkingTopSection('sources');
       return;
     }
 
@@ -551,7 +583,7 @@ document.addEventListener('keydown', (event) => {
 
     if (isTutorialPanelOpen()) {
       event.preventDefault();
-      void closeTopSections();
+      void closeWorkingTopSection('tutorial');
       return;
     }
 
@@ -563,7 +595,7 @@ document.addEventListener('keydown', (event) => {
 
     if (isCalendarPanelOpen()) {
       event.preventDefault();
-      closeCalendarPanel({ force: true });
+      void closeWorkingTopSection('calendar');
       return;
     }
 
@@ -575,12 +607,18 @@ document.addEventListener('keydown', (event) => {
 
     if (isTasksPanelOpen()) {
       event.preventDefault();
-      closeTasksPanel({ force: true });
+      void closeWorkingTopSection('tasks');
       return;
     }
 
     if (exitEditorFullscreen()) {
       event.preventDefault();
+      return;
+    }
+
+    if (state.activeLibraryElementId) {
+      event.preventDefault();
+      closeLibraryElementEditor();
       return;
     }
 
@@ -593,14 +631,13 @@ document.addEventListener('keydown', (event) => {
 
     if (dom.libraryDetailPanel.classList.contains('is-open')) {
       event.preventDefault();
-      closeLibraryDetailPanel({ force: true });
+      void closeWorkingTopSection('libraries');
       return;
     }
 
     if (dom.librariesPanel.classList.contains('is-open')) {
       event.preventDefault();
-      closeLibrariesPanel({ force: true });
-      hideTopbarImmediately();
+      void closeWorkingTopSection('libraries');
       return;
     }
 
@@ -665,7 +702,14 @@ dom.librariesButton.setAttribute('aria-expanded', 'false');
 updateTopbarVisibility();
 initializeLogin({
   onAuthenticated: async (user) => {
-    await Promise.all([hydrateWorkspace(user), loadBackgroundPreference(), loadWorkspacePreferences(), loadBackupOverview()]);
+    await Promise.all([
+      hydrateWorkspace(user),
+      loadBackgroundPreference(),
+      loadWorkspacePreferences(),
+      loadBackupOverview(),
+      loadSecuritySettings()
+    ]);
+    startSecuritySession();
     renderLibraries();
     state.pointerNearTop = true;
     updateTopbarVisibility();

@@ -16,6 +16,7 @@ let calendarView = 'month';
 let cursorDate = today();
 let calendarEvents = [];
 let calendarTasks = [];
+let calendarLoadRequestId = 0;
 let selectedEvent = null;
 let panelPinned = false;
 let eventFormBaseline = '';
@@ -239,6 +240,7 @@ function setView(view) {
     button.classList.toggle('is-active', active);
     button.setAttribute('aria-pressed', String(active));
   });
+  renderCalendar();
   void loadCalendarData();
 }
 
@@ -258,26 +260,31 @@ function periodTitle() {
 function moveCursor(direction) {
   if (calendarView === 'week') cursorDate = addDays(cursorDate, direction * 7);
   else cursorDate = new Date(cursorDate.getFullYear(), cursorDate.getMonth() + direction, 1, 12);
+  renderCalendar();
   void loadCalendarData();
 }
 
 function resetCursorToToday() {
   cursorDate = today();
+  renderCalendar();
   void loadCalendarData();
 }
 
 async function loadCalendarData() {
   if (!isCalendarPanelOpen()) return;
   const { start, end } = dateRange();
+  const currentRequest = ++calendarLoadRequestId;
   try {
     const [eventsResult, tasksResult] = await Promise.all([
       apiRequest(`/calendar-events?from=${encodeURIComponent(isoDate(start))}&to=${encodeURIComponent(isoDate(end))}`),
       apiRequest('/tasks')
     ]);
+    if (currentRequest !== calendarLoadRequestId || !isCalendarPanelOpen()) return;
     calendarEvents = eventsResult.events;
     calendarTasks = tasksResult.tasks.filter((task) => task.dueDate && isWithinRange(task.dueDate, start, end));
     renderCalendar();
   } catch {
+    if (currentRequest !== calendarLoadRequestId || !isCalendarPanelOpen()) return;
     calendarEvents = [];
     calendarTasks = [];
     renderCalendar('Kalendár sa nepodarilo načítať.');
@@ -457,6 +464,7 @@ function showCalendarEventDetail() {
   dom.calendarEventDetail.hidden = false;
   panelPinned = true;
   setCalendarEventDetailOpen(true);
+  window.dispatchEvent(new CustomEvent('workspace-activate', { detail: { section: 'calendar' } }));
 }
 
 export function closeCalendarEventDetail() {

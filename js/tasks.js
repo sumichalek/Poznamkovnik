@@ -6,6 +6,7 @@ import { flushWorkspaceSync } from './storage.js';
 import { updateTopbarVisibility } from './topbar.js';
 import { readTagField, refreshTagSuggestions, setTagField } from './tags.js';
 import { openRelationships } from './relationships.js';
+import { downloadTaskMarkdown } from './markdown-export.js';
 
 const statusLabels = {
   open: 'Otvorená',
@@ -57,6 +58,19 @@ function taskFormSnapshot() {
     description: dom.taskDescription.value.trim(),
     tags: readTagField(dom.taskTags)
   });
+}
+
+function taskExportSnapshot() {
+  if (!selectedTask) return null;
+  return {
+    ...selectedTask,
+    title: dom.taskTitle.value.trim(),
+    status: dom.taskStatus.value,
+    priority: dom.taskPriority.value,
+    dueDate: dom.taskDueDate.value,
+    description: dom.taskDescription.value.trim(),
+    tags: readTagField(dom.taskTags)
+  };
 }
 
 function rememberTaskForm() {
@@ -229,6 +243,7 @@ function showTaskDetail() {
   dom.taskDetail.hidden = false;
   panelPinned = true;
   setTaskDetailOpen(true);
+  window.dispatchEvent(new CustomEvent('workspace-activate', { detail: { section: 'tasks' } }));
 }
 
 function showTaskList() {
@@ -351,6 +366,7 @@ function renderTaskDetail() {
   setTagField(dom.taskTags, dom.taskTagChips, selectedTask.tags || []);
   dom.taskDeleteButton.hidden = false;
   dom.taskRelationshipsButton.hidden = false;
+  dom.taskMarkdownExport.hidden = false;
   dom.taskLinksSection.hidden = false;
   renderTaskLinks();
   void renderTaskTargetOptions();
@@ -379,6 +395,7 @@ function startNewTask() {
   dom.taskFormTitle.textContent = 'Nová úloha';
   dom.taskDeleteButton.hidden = true;
   dom.taskRelationshipsButton.hidden = true;
+  dom.taskMarkdownExport.hidden = true;
   dom.taskLinksSection.hidden = true;
   dom.taskLinksList.replaceChildren();
   void renderTaskTargetOptions();
@@ -498,6 +515,10 @@ export function initializeTasks() {
   dom.taskDeleteButton.addEventListener('click', () => void deleteSelectedTask());
   dom.taskRelationshipsButton.addEventListener('click', () => {
     if (selectedTask) void openRelationships({ targetType: 'task', targetId: selectedTask.id });
+  });
+  dom.taskMarkdownExport.addEventListener('click', () => {
+    const task = taskExportSnapshot();
+    if (task) downloadTaskMarkdown(task);
   });
   dom.taskForm.addEventListener('submit', (event) => {
     event.preventDefault();

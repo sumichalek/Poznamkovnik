@@ -1,5 +1,6 @@
 import { apiRequest } from './api.js';
 import { createAppIcon } from './app-icons.js';
+import { installDialogBackdropClose } from './dialogs.js';
 import { dom } from './dom.js';
 
 const SEARCH_DELAY = 180;
@@ -16,6 +17,9 @@ const typeDetails = {
   calendar_event: { group: 'Kalendár', label: 'Udalosť', icon: 'calendar' },
   music_track: { group: 'Hudba', label: 'Skladba', icon: 'music' },
   music_playlist: { group: 'Hudba', label: 'Playlist', icon: 'music' },
+  radio_station: { group: 'Hudba', label: 'Rádiová stanica', icon: 'radio' },
+  podcast_feed: { group: 'Hudba', label: 'Podcast', icon: 'podcast' },
+  podcast_episode: { group: 'Hudba', label: 'Epizóda podcastu', icon: 'podcast' },
   tutorial_language: { group: 'Učebnica', label: 'Jazyk', icon: 'book-open' },
   tutorial_page: { group: 'Učebnica', label: 'Časť učebnice', icon: 'article' },
   tutorial_example: { group: 'Učebnica', label: 'Príklad', icon: 'code' },
@@ -137,9 +141,7 @@ export function initializeGlobalSearch() {
   dom.searchButton.addEventListener('click', openGlobalSearch);
   dom.searchClose.addEventListener('click', closeGlobalSearch);
   dom.searchQuery.addEventListener('input', scheduleSearch);
-  dom.searchDialog.addEventListener('click', (event) => {
-    if (event.target === dom.searchDialog) closeGlobalSearch();
-  });
+  installDialogBackdropClose(dom.searchDialog, closeGlobalSearch);
   dom.searchDialog.addEventListener('close', () => {
     window.clearTimeout(searchTimer);
     searchTimer = 0;

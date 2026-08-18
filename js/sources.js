@@ -73,6 +73,27 @@ function activeElementTitle() {
   return '';
 }
 
+function syncSourceReturnButton() {
+  const target = state.sourceReturnTarget;
+  const visible = Boolean(target?.libraryId && target?.title);
+  dom.sourceReturnButton.hidden = !visible;
+  dom.sourceReturnLabel.textContent = visible ? `Späť na: ${target.title}` : '';
+  dom.sourceReturnButton.title = visible ? `Vrátiť sa na ${target.title}` : '';
+  dom.sourceReturnButton.setAttribute('aria-label', visible ? `Vrátiť sa na ${target.title}` : '');
+}
+
+export function setSourceReturnTarget(target = null) {
+  const libraryId = String(target?.libraryId || '');
+  const elementId = String(target?.elementId || '');
+  const title = String(target?.title || '').trim();
+  state.sourceReturnTarget = libraryId && title ? { libraryId, elementId, title } : null;
+  syncSourceReturnButton();
+}
+
+export function clearSourceReturnTarget() {
+  setSourceReturnTarget();
+}
+
 function sourceFormSnapshot() {
   return JSON.stringify({
     title: dom.sourceTitle.value.trim(),
@@ -553,6 +574,7 @@ async function openSourceFile(file) {
   dom.sourcePreviewDownload.href = sourceFileUrl(file, { download: true });
   dom.sourcePreviewDownload.download = file.originalName;
   setSourcePreviewOpen(true);
+  window.dispatchEvent(new CustomEvent('workspace-activate', { detail: { section: 'sources' } }));
   hideSourcePreviewViews();
   previewSelectedText = '';
   clearSourcePreviewAnnotationForm();
@@ -629,6 +651,7 @@ export function isSourcesPanelPinned() {
 export function closeSourcesPanel({ force = false } = {}) {
   if (panelPinned && !force) return;
   panelPinned = false;
+  clearSourceReturnTarget();
   dom.sourceDetail.hidden = true;
   setSourceDetailOpen(false);
   setPanelOpen(false);
@@ -941,6 +964,7 @@ function showSourceDetail() {
   dom.sourceDetail.hidden = false;
   panelPinned = true;
   setSourceDetailOpen(true);
+  window.dispatchEvent(new CustomEvent('workspace-activate', { detail: { section: 'sources' } }));
 }
 
 export function closeSourceDetail() {
@@ -1646,7 +1670,20 @@ export async function refreshElementSourceLinks() {
       }
       button.append(createAppIcon(isAnnotation ? 'quote' : 'link', 'editor-source-chip-icon'), copy);
       button.title = isAnnotation ? 'Otvoriť anotovaný zdroj' : 'Otvoriť detail zdroja';
-      button.addEventListener('click', () => void openSourcesPanel({ sourceId: source.id, pinned: true }));
+      button.addEventListener('click', () => {
+        const libraryId = state.activeDetailLibraryId || state.activeLibraryId;
+        const elementId = state.activeLibraryElementId;
+        const title = activeElementTitle();
+        closeEditorSourceMenu();
+        window.dispatchEvent(
+          new CustomEvent('source-open-request', {
+            detail: {
+              sourceId: source.id,
+              returnTarget: libraryId && elementId && title ? { libraryId, elementId, title } : null
+            }
+          })
+        );
+      });
       dom.editorSourceMenu.append(button);
     });
     dom.editorSourceLinks.hidden = false;
@@ -1657,6 +1694,7 @@ export async function refreshElementSourceLinks() {
 }
 
 export function initializeSources() {
+  syncSourceReturnButton();
   dom.sourcePreviewCloseButton.addEventListener('click', closeSourcePreview);
   dom.sourcePreviewFullscreen.addEventListener('click', toggleSourcePreviewFullscreen);
   dom.sourcePreviewAnnotateButton.addEventListener('pointerdown', captureSourcePreviewSelection);
@@ -1699,6 +1737,10 @@ export function initializeSources() {
   dom.sourceBrowserList.addEventListener('click', handleSourceBrowserAction);
   dom.sourceDetailBack.addEventListener('click', () => {
     closeSourceDetail();
+  });
+  dom.sourceReturnButton.addEventListener('click', () => {
+    if (!state.sourceReturnTarget) return;
+    window.dispatchEvent(new CustomEvent('source-return-request', { detail: state.sourceReturnTarget }));
   });
   dom.sourceTitle.addEventListener('input', () => dom.sourceTitle.setCustomValidity(''));
   dom.sourceCollectionName.addEventListener('input', () => dom.sourceCollectionName.setCustomValidity(''));
