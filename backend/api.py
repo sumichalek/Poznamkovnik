@@ -300,6 +300,8 @@ class AppHandler(SimpleHTTPRequestHandler):
             return {"languages": self.context.database.list_tutorial_languages(user["id"])}
         if len(route) == 3 and route[:2] == ["tutorial", "languages"] and method == "GET":
             return self.context.database.tutorial_language_detail(user["id"], route[2])
+        if len(route) == 4 and route[:2] == ["tutorial", "languages"] and route[3] == "import" and method == "POST":
+            return self.context.database.import_tutorial_pages(user["id"], route[2], self._read_json())
         if len(route) == 4 and route[:2] == ["tutorial", "languages"] and route[3] == "pages" and method == "POST":
             data = self._read_json()
             data.setdefault("id", str(uuid.uuid4()))

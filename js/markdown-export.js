@@ -1,3 +1,16 @@
+import {
+  addSourceAssets,
+  createAssetCollector,
+  downloadMarkdownArchive,
+  downloadMarkdownBundle,
+  extractEmbeddedAssets,
+  loadElementSources,
+  loadLibrarySources,
+  loadTaskSources,
+  rebaseAssetLinks,
+  sourceMarkdown
+} from './markdown-archive.js';
+
 function inlineMarkdown(node) {
   if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || '';
   if (node.nodeType !== Node.ELEMENT_NODE) return '';
@@ -117,16 +130,96 @@ function filenameFor(title) {
   return `${safe || 'poznamka'}.md`;
 }
 
-function downloadMarkdown(filename, markdown) {
-  const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+function archiveSegment(value, fallback = 'polozka') {
+  return filenameFor(value || fallback).replace(/\.md$/i, '');
+}
+
+function uniqueArchivePath(path, usedPaths) {
+  const slash = path.lastIndexOf('/');
+  const directory = slash === -1 ? '' : path.slice(0, slash + 1);
+  const filename = slash === -1 ? path : path.slice(slash + 1);
+  const extensionIndex = filename.lastIndexOf('.');
+  const stem = extensionIndex === -1 ? filename : filename.slice(0, extensionIndex);
+  const extension = extensionIndex === -1 ? '' : filename.slice(extensionIndex);
+  let candidate = path;
+  let counter = 2;
+  while (usedPaths.has(candidate.toLocaleLowerCase('sk'))) {
+    candidate = `${directory}${stem}-${counter}${extension}`;
+    counter += 1;
+  }
+  usedPaths.add(candidate.toLocaleLowerCase('sk'));
+  return candidate;
+}
+
+function mergeAssetStatus(statuses) {
+  return (Array.isArray(statuses) ? statuses : []).reduce(
+    (summary, status) => {
+      summary.missing.push(...(status?.missing || []));
+      summary.skipped.push(...(status?.skipped || []));
+      return summary;
+    },
+    { missing: [], skipped: [] }
+  );
+}
+
+function manifestText(value, maximum = 2_000) {
+  return String(value || '').trim().slice(0, maximum);
+}
+
+function sourceLinkManifest(sources) {
+  return (Array.isArray(sources) ? sources : [])
+    .map((source) => ({
+      sourceId: manifestText(source?.id, 160),
+      title: manifestText(source?.title, 300),
+      sourceFileId: manifestText(source?.sourceFileId, 160),
+      relationType: manifestText(source?.relationType, 40) || 'reference',
+      locator: manifestText(source?.locator, 300),
+      label: manifestText(source?.label, 300),
+      note: manifestText(source?.note, 2_000)
+    }))
+    .filter((source) => source.sourceId);
+}
+
+function librarySourceManifest(sources) {
+  return (Array.isArray(sources) ? sources : [])
+    .map((source) => ({
+      sourceId: manifestText(source?.id, 160),
+      title: manifestText(source?.title, 300),
+      note: manifestText(source?.note, 2_000)
+    }))
+    .filter((source) => source.sourceId);
+}
+
+function libraryFolderDirectories(elements) {
+  const foldersById = new Map(elements.filter((item) => item.type === 'folder').map((item) => [item.id, item]));
+  const segmentByFolderId = new Map();
+  const siblingNames = new Map();
+  elements.filter((item) => item.type === 'folder').forEach((folder) => {
+    const parentKey = foldersById.has(folder.parentId) ? folder.parentId : '';
+    const used = siblingNames.get(parentKey) || new Set();
+    const base = archiveSegment(folder.title, 'priecinok');
+    let candidate = base;
+    let counter = 2;
+    while (used.has(candidate.toLocaleLowerCase('sk'))) {
+      candidate = `${base}-${counter}`;
+      counter += 1;
+    }
+    used.add(candidate.toLocaleLowerCase('sk'));
+    siblingNames.set(parentKey, used);
+    segmentByFolderId.set(folder.id, candidate);
+  });
+  const directories = new Map();
+  const resolveDirectory = (folderId, seen = new Set()) => {
+    if (!folderId || !foldersById.has(folderId) || seen.has(folderId)) return '';
+    if (directories.has(folderId)) return directories.get(folderId);
+    const folder = foldersById.get(folderId);
+    const parent = resolveDirectory(folder.parentId, new Set([...seen, folderId]));
+    const directory = [parent, segmentByFolderId.get(folderId)].filter(Boolean).join('/');
+    directories.set(folderId, directory);
+    return directory;
+  };
+  foldersById.forEach((_, folderId) => resolveDirectory(folderId));
+  return directories;
 }
 
 export function libraryElementMarkdown(element, library) {
@@ -148,8 +241,224 @@ export function libraryElementMarkdown(element, library) {
   return `${metadata.join('\n')}\n\n# ${title}\n${body ? `\n${body}` : ''}\n`;
 }
 
-export function downloadLibraryElementMarkdown(element, library) {
-  downloadMarkdown(filenameFor(element?.title), libraryElementMarkdown(element, library));
+function taskLinksMarkdown(links) {
+  if (!links.length) return '';
+  const labels = {
+    library: 'Knižnica',
+    element: 'Poznámka alebo článok',
+    source: 'Zdroj'
+  };
+  const rows = links.map((link) => {
+    const type = labels[link?.targetType] || 'Prepojený prvok';
+    const title = String(link?.title || 'Bez názvu');
+    const subtitle = String(link?.subtitle || '').trim();
+    return '- **' + type + ':** ' + title + (subtitle ? ' (' + subtitle + ')' : '');
+  });
+  return '## Prepojenia\n\n' + rows.join('\n');
+}
+
+function reportBundleResult(result) {
+  if (result?.tooLarge) {
+    window.alert('Prílohy presahujú 512 MB. Stiahol sa iba Markdown so zoznamom zdrojov.');
+  }
+  if (result?.skippedFiles?.length) {
+    window.alert('Tieto prílohy neboli pridané, aby export neprekročil 512 MB: ' + result.skippedFiles.join(', ') + '.');
+  }
+  if (result?.missingFiles?.length) {
+    window.alert('Export sa stiahol, ale tieto prílohy sa nepodarilo pridať: ' + result.missingFiles.join(', ') + '.');
+  }
+}
+
+export async function downloadLibraryElementMarkdown(element, library) {
+  const collector = createAssetCollector();
+  const content = extractEmbeddedAssets(element?.content || '', collector);
+  const sources = await loadElementSources(element?.id);
+  const assetStatus = await addSourceAssets(sources, collector);
+  const markdown = [libraryElementMarkdown({ ...element, content }, library).trim(), sourceMarkdown(sources)]
+    .filter(Boolean)
+    .join('\n\n')
+    .concat('\n');
+  reportBundleResult(await downloadMarkdownBundle(filenameFor(element?.title), markdown, collector, assetStatus));
+}
+
+export async function downloadLibraryMarkdownArchive(library, elements) {
+  if (!library) return;
+  const collector = createAssetCollector();
+  const statuses = [];
+  const files = [];
+  const documentSources = [];
+  const usedPaths = new Set(['readme.md']);
+  const items = Array.isArray(elements) ? elements.filter((item) => item && ['folder', 'note', 'article'].includes(item.type)) : [];
+  const directories = libraryFolderDirectories(items);
+  const librarySources = await loadLibrarySources(library.id);
+  statuses.push(await addSourceAssets(librarySources, collector));
+
+  for (const element of items) {
+    if (element.type === 'folder') continue;
+    const folderPath = directories.get(element.parentId) || '';
+    const path = uniqueArchivePath([folderPath, filenameFor(element.title)].filter(Boolean).join('/'), usedPaths);
+    const content = extractEmbeddedAssets(element.content || '', collector);
+    const sources = await loadElementSources(element.id, { preserveLinks: true });
+    statuses.push(await addSourceAssets(sources, collector));
+    const sourceSection = sourceMarkdown(sources);
+    const markdown = [libraryElementMarkdown({ ...element, content }, library).trim(), sourceSection]
+      .filter(Boolean)
+      .join('\n\n')
+      .concat('\n');
+    const exportedSourceSection = rebaseAssetLinks(sourceSection, path);
+    files.push({ name: path, content: rebaseAssetLinks(markdown, path), title: element.title, type: element.type });
+    documentSources.push({ path, sourceSection: exportedSourceSection, links: sourceLinkManifest(sources) });
+  }
+
+  const contentList = files.length
+    ? files.map((file) => `- [${file.title}](${file.name}) (${file.type === 'article' ? 'článok' : 'poznámka'})`).join('\n')
+    : '- Knižnica zatiaľ neobsahuje žiadne poznámky ani články.';
+  const readme = [
+    `# ${library.name}`,
+    '',
+    'Export z Poznámkovníka vo formáte Markdown.',
+    '',
+    '## Obsah',
+    '',
+    contentList,
+    sourceMarkdown(librarySources)
+  ].filter(Boolean).join('\n') + '\n';
+  const manifest = JSON.stringify({
+    format: 'poznamkovnik-markdown-export',
+    version: 2,
+    folders: items
+      .filter((item) => item.type === 'folder')
+      .map((folder) => ({ path: directories.get(folder.id), title: String(folder.title || 'Priečinok') }))
+      .filter((folder) => folder.path),
+    librarySources: librarySourceManifest(librarySources),
+    documents: documentSources
+  }, null, 2) + '\n';
+  const archiveFiles = [
+    { name: 'README.md', content: readme },
+    { name: '.poznamkovnik-export.json', content: manifest },
+    ...files.map(({ name, content }) => ({ name, content }))
+  ];
+  reportBundleResult(await downloadMarkdownArchive(
+    `${archiveSegment(library.name, 'kniznica')}-markdown-export.zip`,
+    archiveFiles,
+    collector,
+    mergeAssetStatus(statuses)
+  ));
+}
+
+function markdownFence(code, language = '') {
+  const fence = String(code || '').includes('```') ? '````' : '```';
+  return `${fence}${language}\n${String(code || '')}\n${fence}`;
+}
+
+function tutorialPageMarkdown(page, language, examples) {
+  const content = page?.content && typeof page.content === 'object' ? page.content : {};
+  const metadata = [
+    '---',
+    `title: ${yamlString(page?.title || 'Časť učebnice')}`,
+    'type: "tutorial_page"',
+    `language: ${yamlString(language?.title || '')}`,
+    `kind: ${yamlString(page?.kind || 'lesson')}`,
+    `created: ${yamlString(String(page?.createdAt || '').slice(0, 10))}`,
+    `updated: ${yamlString(String(page?.updatedAt || '').slice(0, 10))}`,
+    '---'
+  ];
+  const sections = (content.sections || []).flatMap((section) => {
+    const rows = [];
+    if (section?.title) rows.push(`## ${section.title}`);
+    rows.push(...(Array.isArray(section?.paragraphs) ? section.paragraphs : []).filter(Boolean));
+    if (Array.isArray(section?.bullets) && section.bullets.length) rows.push(section.bullets.map((item) => `- ${item}`).join('\n'));
+    if (section?.callout) rows.push(`> ${section.callout}`);
+    return rows.length ? [rows.join('\n\n')] : [];
+  });
+  const exampleSection = examples.length
+    ? [
+        '## Skúšobné príklady',
+        ...examples.map((example) => {
+          const rows = [`### ${example.title}`];
+          if (example.description) rows.push(example.description);
+          rows.push(markdownFence(example.draftSource ?? example.source, language?.code || 'text'));
+          if (example.draftStdin ?? example.stdin) {
+            rows.push('#### Vstup');
+            rows.push(markdownFence(example.draftStdin ?? example.stdin, 'text'));
+          }
+          return rows.join('\n\n');
+        })
+      ].join('\n\n')
+    : '';
+  const personalNote = String(page?.note || '').trim()
+    ? `## Moje poznámky\n\n${String(page.note).trim()}`
+    : '';
+  return [
+    metadata.join('\n'),
+    `# ${page?.title || 'Časť učebnice'}`,
+    page?.summary ? `_${page.summary}_` : '',
+    content.lead || '',
+    ...sections,
+    exampleSection,
+    personalNote
+  ].filter(Boolean).join('\n\n') + '\n';
+}
+
+function tutorialArchivePaths(pages) {
+  const pagesById = new Map(pages.map((page) => [page.id, page]));
+  const children = new Map();
+  pages.forEach((page) => {
+    const parentId = pagesById.has(page.parentId) ? page.parentId : '';
+    if (!children.has(parentId)) children.set(parentId, []);
+    children.get(parentId).push(page);
+  });
+  children.forEach((items) => items.sort((first, second) => Number(first.position) - Number(second.position) || String(first.title).localeCompare(String(second.title), 'sk')));
+  const paths = new Map();
+  const appendChildren = (parentId, directory) => {
+    (children.get(parentId) || []).forEach((page, index) => {
+      const ordinal = String(index + 1).padStart(2, '0');
+      const base = `${ordinal}-${archiveSegment(page.title, 'cast')}`;
+      if (page.kind === 'chapter') {
+        const chapterDirectory = [directory, base].filter(Boolean).join('/');
+        paths.set(page.id, `${chapterDirectory}/README.md`);
+        appendChildren(page.id, chapterDirectory);
+        return;
+      }
+      paths.set(page.id, [directory, `${base}.md`].filter(Boolean).join('/'));
+      appendChildren(page.id, directory);
+    });
+  };
+  appendChildren('', '');
+  return paths;
+}
+
+export async function downloadTutorialMarkdownArchive(tutorial) {
+  const language = tutorial?.language;
+  const pages = Array.isArray(tutorial?.pages) ? tutorial.pages : [];
+  if (!language || !pages.length) return;
+  const paths = tutorialArchivePaths(pages);
+  const examples = Array.isArray(tutorial.examples) ? tutorial.examples : [];
+  const files = pages
+    .map((page) => {
+      const path = paths.get(page.id);
+      if (!path) return null;
+      return {
+        name: path,
+        content: tutorialPageMarkdown(page, language, examples.filter((example) => example.pageId === page.id)),
+        title: page.title
+      };
+    })
+    .filter(Boolean);
+  const readme = [
+    `# ${language.title}`,
+    '',
+    language.summary || 'Export učebnice z Poznámkovníka vo formáte Markdown.',
+    '',
+    '## Obsah',
+    '',
+    ...files.map((file) => `- [${file.title}](${file.name})`)
+  ].join('\n') + '\n';
+  await downloadMarkdownArchive(
+    `${archiveSegment(language.title, 'ucebnica')}-markdown-export.zip`,
+    [{ name: 'README.md', content: readme }, ...files],
+    createAssetCollector()
+  );
 }
 
 const taskStatusLabels = {
@@ -193,6 +502,14 @@ export function taskMarkdown(task) {
   return `${metadata.join('\n')}\n\n# [${checkbox}] ${title}\n\n${details.join(hardBreak)}${description ? `\n\n${description}` : ''}\n`;
 }
 
-export function downloadTaskMarkdown(task) {
-  downloadMarkdown(filenameFor(`${task?.title || 'uloha'}-uloha`), taskMarkdown(task));
+export async function downloadTaskMarkdown(task) {
+  const links = Array.isArray(task?.links) ? task.links : [];
+  const sources = await loadTaskSources(links);
+  const collector = createAssetCollector();
+  const assetStatus = await addSourceAssets(sources, collector);
+  const markdown = [taskMarkdown(task).trim(), taskLinksMarkdown(links), sourceMarkdown(sources)]
+    .filter(Boolean)
+    .join('\n\n')
+    .concat('\n');
+  reportBundleResult(await downloadMarkdownBundle(filenameFor(String(task?.title || 'uloha') + '-uloha'), markdown, collector, assetStatus));
 }

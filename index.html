@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sk" data-app-version="0.42.0">
+<html lang="sk" data-app-version="0.50.8">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,8 +8,8 @@
       const savedTheme = localStorage.getItem('knowledge-theme') || 'focus';
       document.documentElement.dataset.theme = savedTheme === 'contrast' ? 'contrast-light' : savedTheme;
     </script>
-    <link rel="stylesheet" href="style.css?v=0.42.0" />
-    <link rel="stylesheet" href="assets/app.css?v=0.42.0" />
+    <link rel="stylesheet" href="style.css?v=0.50.8" />
+    <link rel="stylesheet" href="assets/app.css?v=0.50.8" />
   </head>
   <body>
     <main id="login-screen" class="login-screen" aria-labelledby="login-title">
@@ -689,6 +689,8 @@
               </div>
               <div class="tutorial-reader-actions">
                 <p id="tutorial-runtime-status" class="tutorial-runtime-status" aria-live="polite"></p>
+                <button id="tutorial-markdown-import" class="panel-icon-button" type="button" aria-label="Importovať Markdown do učebnice" title="Importovať Markdown"><span data-app-icon="upload"></span></button>
+                <button id="tutorial-markdown-export" class="panel-icon-button" type="button" aria-label="Exportovať učebnicu do Markdownu" title="Exportovať učebnicu do Markdownu"><span data-app-icon="download"></span></button>
                 <button id="tutorial-relationships-button" class="panel-icon-button" type="button" aria-label="Zobraziť prepojenia stránky učebnice" title="Prepojenia" hidden><span data-app-icon="link"></span></button>
               </div>
             </header>
@@ -762,6 +764,8 @@
             </div>
             <div class="library-detail-toolbar" aria-label="Tvorba prvkov knižnice">
               <button id="library-relationships-button" class="panel-icon-button" type="button" aria-label="Zobraziť prepojenia knižnice" title="Prepojenia"><span data-app-icon="link"></span></button>
+              <button id="library-markdown-import" class="panel-icon-button" type="button" aria-label="Importovať Markdown do knižnice" title="Importovať Markdown"><span data-app-icon="upload"></span></button>
+              <button id="library-markdown-export" class="panel-icon-button" type="button" aria-label="Exportovať knižnicu do Markdownu" title="Exportovať knižnicu do Markdownu"><span data-app-icon="download"></span></button>
               <button id="create-folder-button" class="library-tool-button" type="button" aria-label="Vytvoriť priečinok" title="Vytvoriť priečinok">
                 <span class="tool-icon folder-icon" data-app-icon="folder"></span>
               </button>
@@ -1350,6 +1354,37 @@
       </section>
     </dialog>
 
+    <input id="markdown-import-input" type="file" accept=".md,.markdown,.mdown,.mkdn,.zip,text/markdown,application/zip" hidden />
+    <dialog id="markdown-import-dialog" class="markdown-import-dialog" aria-labelledby="markdown-import-title">
+      <section class="markdown-import-panel">
+        <header>
+          <div>
+            <h2 id="markdown-import-title">Importovať Markdown</h2>
+            <p id="markdown-import-description">Vyber súbor Markdown alebo ZIP archív.</p>
+          </div>
+          <button id="markdown-import-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+        </header>
+        <p id="markdown-import-summary" class="markdown-import-summary" aria-live="polite"></p>
+        <div id="markdown-import-items" class="markdown-import-items" data-dialog-resizable-section data-dialog-section-min-height="112" data-dialog-section-max-height="520" aria-live="polite"></div>
+        <div id="markdown-import-items-resizer" class="dialog-section-resizer" data-dialog-resize-target="markdown-import-items" data-dialog-resize-peer="markdown-import-source-items" role="separator" aria-orientation="horizontal" aria-label="Zmeniť rozdelenie priestoru medzi importovanými textami a prepojeniami zdrojov" tabindex="0"></div>
+        <section id="markdown-import-source-links" class="markdown-import-source-links" hidden aria-live="polite">
+          <header>
+            <strong>Prepojenia zdrojov</strong>
+            <small id="markdown-import-source-summary"></small>
+          </header>
+          <div class="markdown-import-source-headings" aria-hidden="true">
+            <span>Pripojí sa k</span>
+            <span>Zdroj a väzba</span>
+          </div>
+          <div id="markdown-import-source-items" class="markdown-import-source-items" data-dialog-resizable-section data-dialog-section-min-height="96" data-dialog-section-max-height="420"></div>
+        </section>
+        <p id="markdown-import-status" class="settings-inline-status" aria-live="polite"></p>
+        <footer>
+          <button id="markdown-import-confirm" class="settings-background-button primary" type="button" disabled>Pridať do knižnice</button>
+        </footer>
+      </section>
+    </dialog>
+
     <dialog id="search-dialog" class="search-dialog">
       <section class="search-panel" aria-labelledby="search-title">
         <header>
@@ -1431,7 +1466,7 @@
       </form>
     </dialog>
 
-    <dialog id="section-switch-dialog" class="section-switch-dialog">
+    <dialog id="section-switch-dialog" class="section-switch-dialog" data-window-fixed="true">
       <section class="section-switch-panel" aria-labelledby="section-switch-title">
         <header>
           <h2 id="section-switch-title">Neuložené zmeny</h2>
@@ -1476,6 +1511,6 @@
         }
       }, true);
     </script>
-    <script type="module" src="assets/app.js?v=0.42.0"></script>
+    <script type="module" src="assets/app.js?v=0.50.8"></script>
   </body>
 </html>

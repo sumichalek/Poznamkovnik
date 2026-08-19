@@ -1632,6 +1632,29 @@ class Database:
             "examples": examples,
         }
 
+    def _tutorial_content(self, value: Any, fallback_lead: str) -> dict[str, Any]:
+        raw_content = value if isinstance(value, dict) else {}
+        lead = self._clean_text(raw_content.get("lead", fallback_lead), 10_000)
+        raw_sections = raw_content.get("sections", [])
+        sections = []
+        if isinstance(raw_sections, list):
+            for raw_section in raw_sections[:120]:
+                if not isinstance(raw_section, dict):
+                    continue
+                paragraphs = raw_section.get("paragraphs", [])
+                bullets = raw_section.get("bullets", [])
+                clean_paragraphs = [self._clean_text(item, 10_000) for item in paragraphs[:120]] if isinstance(paragraphs, list) else []
+                clean_bullets = [self._clean_text(item, 2_000) for item in bullets[:240]] if isinstance(bullets, list) else []
+                section = {
+                    "title": self._clean_text(raw_section.get("title"), 200),
+                    "paragraphs": [item for item in clean_paragraphs if item],
+                    "bullets": [item for item in clean_bullets if item],
+                    "callout": self._clean_text(raw_section.get("callout"), 10_000),
+                }
+                if section["title"] or section["paragraphs"] or section["bullets"] or section["callout"]:
+                    sections.append(section)
+        return {"lead": lead, "sections": sections}
+
     def create_tutorial_page(self, user_id: str, language_id: str, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise ValidationError("Nová časť učebnice má neplatný tvar.")
@@ -1670,7 +1693,7 @@ class Database:
                 (language_id, parent_id),
             ).fetchone()
             position = int(maximum["maximum"]) + 10
-            content = {"lead": lead, "sections": []}
+            content = self._tutorial_content(data.get("content"), lead)
             connection.execute(
                 """
                 INSERT INTO tutorial_pages(
@@ -1702,6 +1725,102 @@ class Database:
             "createdAt": timestamp,
             "updatedAt": timestamp,
         }
+
+    def import_tutorial_pages(self, user_id: str, language_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict) or not isinstance(data.get("pages"), list):
+            raise ValidationError("Import učebnice má neplatný tvar.")
+        raw_pages = data["pages"]
+        if not raw_pages or len(raw_pages) > 250:
+            raise ValidationError("Naraz je možné importovať najviac 250 častí učebnice.")
+
+        prepared = []
+        known_ids = set()
+        for raw_page in raw_pages:
+            if not isinstance(raw_page, dict):
+                raise ValidationError("Importovaná časť učebnice má neplatný tvar.")
+            page_id = self._clean_id(raw_page.get("id"))
+            parent_id = self._clean_id(raw_page.get("parentId")) or None
+            kind = self._clean_text(raw_page.get("kind"), 24)
+            title = self._clean_text(raw_page.get("title"), 200)
+            if not page_id or page_id in known_ids or not title or kind not in {"chapter", "lesson", "reference"}:
+                raise ValidationError("Importovaná časť učebnice nemá platný názov alebo typ.")
+            known_ids.add(page_id)
+            content = self._tutorial_content(raw_page.get("content"), self._clean_text(raw_page.get("lead"), 10_000))
+            prepared.append(
+                {
+                    "id": page_id,
+                    "parent_id": parent_id,
+                    "kind": kind,
+                    "title": title,
+                    "summary": self._clean_text(raw_page.get("summary"), 2_000),
+                    "content": content,
+                    "note": self._clean_text(raw_page.get("note"), 200_000),
+                }
+            )
+
+        timestamp = now_iso()
+        with self.connect() as connection:
+            language = connection.execute(
+                "SELECT id FROM tutorial_languages WHERE id = ? AND user_id = ?",
+                (language_id, user_id),
+            ).fetchone()
+            if not language:
+                raise KeyError("Učebnica neexistuje.")
+            existing_ids = {
+                row["id"]
+                for row in connection.execute(
+                    f"SELECT id FROM tutorial_pages WHERE language_id = ? AND id IN ({','.join('?' for _ in known_ids)})",
+                    (language_id, *known_ids),
+                )
+            }
+            if existing_ids:
+                raise ValidationError("Niektoré importované časti už existujú.")
+
+            previous_by_id: dict[str, dict[str, Any]] = {}
+            positions: dict[str | None, int] = {}
+            for page in prepared:
+                parent_id = page["parent_id"]
+                if not parent_id:
+                    if page["kind"] != "chapter":
+                        raise ValidationError("Lekciu alebo referenciu vlož do kapitoly.")
+                elif parent_id in previous_by_id:
+                    if previous_by_id[parent_id]["kind"] != "chapter":
+                        raise ValidationError("Importovanú časť možno vložiť iba do kapitoly.")
+                else:
+                    parent = connection.execute(
+                        "SELECT id, kind FROM tutorial_pages WHERE id = ? AND language_id = ?",
+                        (parent_id, language_id),
+                    ).fetchone()
+                    if not parent or parent["kind"] != "chapter":
+                        raise ValidationError("Nadradená kapitola importu neexistuje.")
+                if parent_id not in positions:
+                    row = connection.execute(
+                        "SELECT COALESCE(MAX(position), 0) AS maximum FROM tutorial_pages WHERE language_id = ? AND parent_id IS ?",
+                        (language_id, parent_id),
+                    ).fetchone()
+                    positions[parent_id] = int(row["maximum"])
+                positions[parent_id] += 10
+                page["position"] = positions[parent_id]
+                previous_by_id[page["id"]] = page
+
+            for page in prepared:
+                connection.execute(
+                    """
+                    INSERT INTO tutorial_pages(
+                        id, language_id, parent_id, origin, kind, title, summary, content_json, position, created_at, updated_at
+                    ) VALUES (?, ?, ?, 'custom', ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        page["id"], language_id, page["parent_id"], page["kind"], page["title"], page["summary"],
+                        json.dumps(page["content"], ensure_ascii=False, separators=(",", ":")), page["position"], timestamp, timestamp,
+                    ),
+                )
+                if page["note"]:
+                    connection.execute(
+                        "INSERT INTO tutorial_notes(user_id, page_id, content, updated_at) VALUES (?, ?, ?, ?)",
+                        (user_id, page["id"], page["note"], timestamp),
+                    )
+        return {"pages": [{"id": page["id"], "parentId": page["parent_id"] or "", "title": page["title"]} for page in prepared]}
 
     def save_tutorial_note(self, user_id: str, page_id: str, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):

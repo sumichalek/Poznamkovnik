@@ -518,7 +518,10 @@ export function initializeTasks() {
   });
   dom.taskMarkdownExport.addEventListener('click', () => {
     const task = taskExportSnapshot();
-    if (task) downloadTaskMarkdown(task);
+    if (!task) return;
+    void downloadTaskMarkdown(task).catch((error) => {
+      window.alert(error?.message || 'Markdown sa nepodarilo vyexportovať.');
+    });
   });
   dom.taskForm.addEventListener('submit', (event) => {
     event.preventDefault();

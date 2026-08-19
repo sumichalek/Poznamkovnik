@@ -5,6 +5,9 @@ import { dom } from './dom.js';
 import { updateTopbarVisibility } from './topbar.js';
 import { refreshTutorialPlaygroundResizeHandle } from './tutorial-playground-resize.js';
 import { openRelationships } from './relationships.js';
+import { downloadTutorialMarkdownArchive } from './markdown-export.js';
+import { requestMarkdownImport } from './markdown-import.js';
+import { tutorialMarkdownImportPlan, tutorialMarkdownPreview } from './tutorial-markdown-import.js';
 
 let languages = [];
 let tutorial = null;
@@ -129,6 +132,8 @@ function setReaderMessage(message) {
   dom.tutorialPageContent.append(notice);
   dom.tutorialExamplesSection.hidden = true;
   dom.tutorialRelationshipsButton.hidden = true;
+  dom.tutorialMarkdownImport.disabled = true;
+  dom.tutorialMarkdownExport.disabled = true;
   dom.tutorialNotesInput.disabled = true;
   dom.tutorialNotesSave.disabled = true;
 }
@@ -371,6 +376,8 @@ function renderPage() {
   dom.tutorialPageTitle.textContent = page.title;
   dom.tutorialPageSummary.textContent = page.summary;
   dom.tutorialRelationshipsButton.hidden = false;
+  dom.tutorialMarkdownImport.disabled = false;
+  dom.tutorialMarkdownExport.disabled = false;
   dom.tutorialNotesInput.value = page.note || '';
   noteBaseline = dom.tutorialNotesInput.value;
   dom.tutorialNotesStatus.textContent = page.noteUpdatedAt ? 'Uložené' : '';
@@ -707,6 +714,54 @@ export function closeTutorialPanel({ force = false } = {}) {
   return true;
 }
 
+async function exportTutorialMarkdown() {
+  if (!tutorial || !(await saveTutorialChanges())) return;
+  dom.tutorialMarkdownExport.disabled = true;
+  try {
+    await runOperation(() => downloadTutorialMarkdownArchive(tutorial));
+  } catch (error) {
+    window.alert(error?.message || 'Učebnicu sa nepodarilo vyexportovať do Markdownu.');
+  } finally {
+    dom.tutorialMarkdownExport.disabled = false;
+  }
+}
+
+async function importTutorialMarkdown() {
+  if (!tutorial || !(await saveTutorialChanges())) return;
+  const languageId = selectedLanguageId;
+  const languageTitle = tutorial.language?.title || 'učebnice';
+  requestMarkdownImport({
+    libraryName: languageTitle,
+    destinationLabel: `učebnice „${languageTitle}“`,
+    previewAdapter: tutorialMarkdownPreview,
+    onConfirm: async (preview) => {
+      const plan = tutorialMarkdownImportPlan(preview);
+      if (!plan.pages.length) throw new Error('Nenašli sa žiadne časti vhodné na import do učebnice.');
+      const idsByKey = new Map(plan.pages.map((page) => [page.key, crypto.randomUUID()]));
+      const pages = plan.pages.map((page) => ({
+        id: idsByKey.get(page.key),
+        parentId: page.parentKey ? idsByKey.get(page.parentKey) || '' : '',
+        kind: page.kind,
+        title: page.title,
+        summary: page.summary,
+        content: page.content,
+        note: page.notes
+      }));
+      if (new Blob([JSON.stringify({ pages })]).size > 2_000_000) {
+        throw new Error('Obsah importu učebnice je väčší než 2 MB. Rozdeľ ho na menšie archívy.');
+      }
+      const result = await runOperation(() => apiRequest(
+        `/tutorial/languages/${encodeURIComponent(languageId)}/import`,
+        { method: 'POST', body: { pages } }
+      ));
+      selectedPageId = result.pages?.at(-1)?.id || selectedPageId;
+      selectedExampleId = '';
+      closeTutorialPlayground();
+      await loadLanguage(languageId);
+    }
+  });
+}
+
 function handleCodeTab(event) {
   if (event.key !== 'Tab') return;
   event.preventDefault();
@@ -723,6 +778,8 @@ export function initializeTutorial() {
   dom.tutorialRelationshipsButton.addEventListener('click', () => {
     if (selectedPageId) void openRelationships({ targetType: 'tutorial_page', targetId: selectedPageId });
   });
+  dom.tutorialMarkdownImport.addEventListener('click', () => void importTutorialMarkdown());
+  dom.tutorialMarkdownExport.addEventListener('click', () => void exportTutorialMarkdown());
   dom.tutorialPageKind.addEventListener('change', syncTutorialPageForm);
   dom.tutorialPageForm.addEventListener('submit', (event) => void createTutorialPage(event));
   dom.tutorialPageCancelButton.addEventListener('click', () => dom.tutorialPageDialog.close());

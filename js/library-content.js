@@ -9,6 +9,7 @@ import { state } from './state.js';
 import {
   detailLibrary,
   elementsForLibrary,
+  flushWorkspaceSync,
   saveLibraryElements,
   setElementsForLibrary
 } from './storage.js';
@@ -27,7 +28,8 @@ import { refreshElementTaskLinks } from './tasks.js';
 import { refreshElementCalendarLinks } from './calendar.js';
 import { apiRequest } from './api.js';
 import { readTagField, setTagField } from './tags.js';
-import { downloadLibraryElementMarkdown } from './markdown-export.js';
+import { downloadLibraryElementMarkdown, downloadLibraryMarkdownArchive } from './markdown-export.js';
+import { importedLibraryPlan, requestMarkdownImport } from './markdown-import.js';
 
 window.addEventListener('sources-changed', () => renderLibraryDetailPanel());
 window.addEventListener('tasks-changed', () => renderLibraryDetailPanel());
@@ -512,9 +514,13 @@ export function renderLibraryDetailPanel() {
     dom.folderHomeButton.disabled = true;
     dom.folderUpButton.disabled = true;
     dom.libraryRelationshipsButton.disabled = true;
+    dom.libraryMarkdownImport.disabled = true;
+    dom.libraryMarkdownExport.disabled = true;
     return;
   }
   dom.libraryRelationshipsButton.disabled = false;
+  dom.libraryMarkdownImport.disabled = false;
+  dom.libraryMarkdownExport.disabled = false;
   normalizeActiveFolderPath();
   updateLibraryPathControls();
   if (state.activeLibraryElementId && !activeLibraryElement()) {
@@ -613,13 +619,113 @@ export function updateActiveElementFromEditor({ renderItems = false } = {}) {
   if (renderItems) renderLibraryItems();
 }
 
-export function exportActiveLibraryElementMarkdown() {
+export async function exportActiveLibraryElementMarkdown() {
   const library = detailLibrary();
   if (!library || !state.activeLibraryElementId) return;
   updateActiveElementFromEditor();
   const element = activeLibraryElement();
   if (!element || !['article', 'note'].includes(element.type)) return;
-  downloadLibraryElementMarkdown(element, library);
+  try {
+    await downloadLibraryElementMarkdown(element, library);
+  } catch (error) {
+    window.alert(error?.message || 'Markdown sa nepodarilo vyexportovať.');
+  }
+}
+
+export async function exportLibraryMarkdownArchive() {
+  const library = detailLibrary();
+  if (!library) return;
+  updateActiveElementFromEditor();
+  dom.libraryMarkdownExport.disabled = true;
+  try {
+    await flushWorkspaceSync();
+    await downloadLibraryMarkdownArchive(library, elementsForLibrary(library.id));
+  } catch (error) {
+    window.alert(error?.message || 'Knižnicu sa nepodarilo vyexportovať do Markdownu.');
+  } finally {
+    dom.libraryMarkdownExport.disabled = false;
+  }
+}
+
+export function importMarkdownIntoLibrary() {
+  const library = detailLibrary();
+  if (!library) return;
+  updateActiveElementFromEditor();
+  const parentId = currentFolderId();
+  requestMarkdownImport({
+    libraryName: library.name,
+    parentId,
+    onConfirm: async (preview) => {
+      const plan = importedLibraryPlan(preview, parentId);
+      if (!plan.items.length && !plan.librarySourceLinks.length) {
+        throw new Error('Nenašli sa žiadne položky ani zdrojové väzby vhodné na import.');
+      }
+      if (plan.items.length) {
+        setElementsForLibrary(library.id, [...plan.items, ...elementsForLibrary(library.id)]);
+        saveLibraryElements();
+        await flushWorkspaceSync();
+      }
+      const warnings = await restoreImportedSourceLinks(library.id, plan);
+      if (plan.sourceManifest) window.dispatchEvent(new Event('sources-changed'));
+      renderLibraryDetailPanel();
+      return { warnings };
+    }
+  });
+}
+
+async function restoreImportedSourceLinks(libraryId, plan) {
+  if (!plan?.sourceManifest) return [];
+  const warnings = [];
+  const sourceTitle = (link) => link.title ? `„${link.title}“` : 'z importu';
+
+  for (const link of plan.librarySourceLinks || []) {
+    if (link.importAvailability === 'missing-source') continue;
+    try {
+      await apiRequest(`/sources/${encodeURIComponent(link.sourceId)}/libraries/${encodeURIComponent(libraryId)}`, {
+        method: 'PUT',
+        body: { note: link.note || '' }
+      });
+    } catch {
+      warnings.push(`Zdroj ${sourceTitle(link)} sa nepodarilo pripojiť ku knižnici.`);
+    }
+  }
+
+  for (const link of plan.elementSourceLinks || []) {
+    if (link.importAvailability === 'missing-source' || link.importAvailability === 'missing-file') continue;
+    try {
+      if (link.relationType === 'annotation') {
+        if (!link.sourceFileId) throw new Error('Chýba súbor anotácie.');
+        await apiRequest(`/sources/${encodeURIComponent(link.sourceId)}/files/${encodeURIComponent(link.sourceFileId)}/annotations`, {
+          method: 'POST',
+          body: {
+            id: crypto.randomUUID(),
+            elementId: link.elementId,
+            quote: link.label || '',
+            locator: link.locator || '',
+            note: link.note || ''
+          }
+        });
+      } else {
+        await apiRequest(`/sources/${encodeURIComponent(link.sourceId)}/element-links`, {
+          method: 'POST',
+          body: {
+            id: crypto.randomUUID(),
+            elementId: link.elementId,
+            sourceFileId: link.sourceFileId || '',
+            relationType: link.relationType,
+            locator: link.locator || '',
+            label: link.label || '',
+            note: link.note || ''
+          }
+        });
+      }
+    } catch {
+      warnings.push(`Zdroj ${sourceTitle(link)} sa nepodarilo pripojiť k textu.`);
+    }
+  }
+
+  await refreshElementSourceLinks();
+  return [...new Set(warnings)];
 }
 
 export function deleteLibraryElement(elementId = state.activeLibraryElementId) {

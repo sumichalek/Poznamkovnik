@@ -2191,6 +2191,8 @@ body[data-task-detail-open="true"][data-editor-axis="vertical"] .tasks-panel {
 .tutorial-reader-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: var(--space-2);
 }
 
@@ -6768,6 +6770,82 @@ body[data-editor-layout="fullscreen"] .library-detail-panel {
   background: var(--panel-muted);
 }
 
+dialog.app-window-dialog {
+  box-sizing: border-box;
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  min-width: min(320px, calc(100vw - 24px));
+  min-height: min(180px, calc(100dvh - 24px));
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px);
+  resize: both;
+  overflow: hidden;
+}
+
+dialog.app-window-dialog > :first-child {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+}
+
+[data-dialog-resizable-section] {
+  box-sizing: border-box;
+  min-height: var(--dialog-section-min-height, 96px);
+  max-height: var(--dialog-section-max-height, min(520px, 55dvh));
+  overflow: auto;
+}
+
+.dialog-section-resizer {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: row-resize;
+  touch-action: none;
+  padding: 0;
+}
+
+.dialog-section-resizer::before {
+  width: 100%;
+  height: 1px;
+  background: color-mix(in srgb, var(--line) 82%, transparent);
+  content: '';
+}
+
+.dialog-section-resizer::after {
+  position: absolute;
+  width: 28px;
+  height: 4px;
+  border-top: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  border-radius: 1px;
+  background: var(--panel);
+  content: '';
+}
+
+.dialog-section-resizer:hover,
+.dialog-section-resizer:focus-visible {
+  color: var(--accent);
+  outline: 0;
+}
+
+.dialog-window-drag-handle {
+  cursor: move;
+  user-select: none;
+}
+
+.dialog-window-drag-handle button {
+  cursor: pointer;
+}
+
 .relationships-dialog {
   width: min(1040px, calc(100vw - 32px));
   max-height: min(760px, calc(100dvh - 32px));
@@ -8299,6 +8377,280 @@ body[data-editor-layout="fullscreen"] .library-detail-panel {
   justify-content: flex-end;
   border-top: 1px solid var(--line);
   padding-top: var(--space-4);
+}
+
+.markdown-import-dialog {
+  width: min(680px, calc(100vw - 24px));
+  height: min(720px, calc(100dvh - 24px));
+  min-width: min(540px, calc(100vw - 24px));
+  min-height: min(440px, calc(100dvh - 24px));
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px);
+  border: 0;
+  border-radius: var(--radius-lg);
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+}
+
+.markdown-import-dialog::backdrop {
+  background: var(--backdrop);
+}
+
+.markdown-import-panel {
+  display: flex;
+  flex-direction: column;
+  align-content: start;
+  gap: var(--space-4);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: var(--space-5);
+}
+
+.markdown-import-panel > header,
+.markdown-import-panel > footer {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.markdown-import-panel > header > div {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.markdown-import-panel h2,
+.markdown-import-panel p {
+  margin: 0;
+}
+
+.markdown-import-panel h2 {
+  font-size: 1rem;
+}
+
+.markdown-import-panel header p,
+.markdown-import-summary {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.markdown-import-summary {
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: var(--panel-muted);
+  padding: var(--space-3);
+}
+
+.markdown-import-items {
+  --dialog-section-min-height: 112px;
+  --dialog-section-max-height: min(520px, 55dvh);
+  display: grid;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+}
+
+.markdown-import-source-links {
+  display: grid;
+  gap: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: color-mix(in srgb, var(--panel-muted) 72%, transparent);
+  padding: var(--space-3);
+}
+
+.markdown-import-source-links > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.markdown-import-source-headings {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: var(--space-3);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.markdown-import-source-links strong {
+  font-size: 0.82rem;
+}
+
+.markdown-import-source-links small {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.markdown-import-source-items {
+  --dialog-section-min-height: 96px;
+  --dialog-section-max-height: min(420px, 48dvh);
+  display: grid;
+  overflow: auto;
+  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+}
+
+.markdown-import-source-item {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  align-items: center;
+  gap: 0 var(--space-3);
+  min-height: 54px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 66%, transparent);
+  padding: var(--space-2) 0;
+}
+
+.markdown-import-source-item:last-child {
+  border-bottom: 0;
+}
+
+.markdown-import-source-item > span {
+  grid-row: span 3;
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 750;
+}
+
+.markdown-import-source-item strong,
+.markdown-import-source-item small,
+.markdown-import-source-item em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markdown-import-source-item em {
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 750;
+}
+
+.markdown-import-source-item.is-missing-source em,
+.markdown-import-source-item.is-missing-file em {
+  color: var(--danger);
+}
+
+.markdown-import-source-item.is-unchecked em {
+  color: var(--text-muted);
+}
+
+.markdown-import-item {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  align-items: center;
+  gap: 0 var(--space-3);
+  min-height: 48px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  padding: var(--space-2) var(--space-3);
+}
+
+.markdown-import-item:last-child {
+  border-bottom: 0;
+}
+
+.markdown-import-item > span {
+  grid-row: span 2;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.markdown-import-item strong,
+.markdown-import-item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markdown-import-item small,
+.markdown-import-more {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.markdown-import-more {
+  margin: 0;
+  padding: var(--space-3);
+}
+
+.markdown-import-panel > footer {
+  margin-top: 0;
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-4);
+}
+
+#markdown-import-status {
+  margin-top: auto;
+}
+
+@media (max-width: 520px) {
+  .markdown-import-panel {
+    padding: var(--space-4);
+  }
+
+  .markdown-import-item {
+    grid-template-columns: 1fr;
+    gap: var(--space-1);
+  }
+
+  .markdown-import-item > span {
+    grid-row: auto;
+  }
+
+  .markdown-import-source-links > header {
+    align-items: start;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .markdown-import-source-item {
+    grid-template-columns: 1fr;
+    gap: var(--space-1);
+  }
+
+  .markdown-import-source-item > span {
+    grid-row: auto;
+  }
+
+  .markdown-import-source-headings {
+    grid-template-columns: 1fr;
+    gap: var(--space-1);
+  }
+}
+
+@media (max-width: 640px) {
+  dialog.app-window-dialog {
+    position: fixed;
+    inset: 12px;
+    width: auto !important;
+    height: auto !important;
+    min-width: 0;
+    min-height: 0;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    resize: none;
+  }
+
+  [data-dialog-resizable-section] {
+    resize: none;
+  }
+
+  .dialog-section-resizer {
+    display: none;
+  }
 }
 
 .settings-account-actions {
