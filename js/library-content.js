@@ -28,12 +28,26 @@ import { refreshElementTaskLinks } from './tasks.js';
 import { refreshElementCalendarLinks } from './calendar.js';
 import { apiRequest } from './api.js';
 import { readTagField, setTagField } from './tags.js';
-import { downloadLibraryElementMarkdown, downloadLibraryMarkdownArchive } from './markdown-export.js';
+import {
+  downloadLibraryElementMarkdown,
+  downloadLibraryElementPackage,
+  downloadLibraryMarkdownArchive,
+  downloadLibraryPackage
+} from './markdown-export.js';
 import { importedLibraryPlan, requestMarkdownImport } from './markdown-import.js';
+import { installDialogBackdropClose } from './dialogs.js';
+import {
+  copyImportedSources,
+  importedSourceFileName,
+  resolvedImportedSourceFileId,
+  resolvedImportedSourceId
+} from './imported-sources.js';
 
 window.addEventListener('sources-changed', () => renderLibraryDetailPanel());
 window.addEventListener('tasks-changed', () => renderLibraryDetailPanel());
 window.addEventListener('calendar-changed', () => renderLibraryDetailPanel());
+
+let libraryExportTarget = null;
 
 export function currentFolderId() {
   return state.activeFolderPath.at(-1) || '';
@@ -619,32 +633,118 @@ export function updateActiveElementFromEditor({ renderItems = false } = {}) {
   if (renderItems) renderLibraryItems();
 }
 
-export async function exportActiveLibraryElementMarkdown() {
+function closeLibraryExportDialog() {
+  if (dom.libraryExportDialog.open) dom.libraryExportDialog.close();
+}
+
+function setLibraryExportBusy(busy) {
+  dom.libraryPackageExport.disabled = busy;
+  dom.libraryPortableMarkdownExport.disabled = busy;
+  dom.libraryExportCancel.disabled = busy;
+}
+
+function currentLibraryExportTarget() {
+  if (!libraryExportTarget) return null;
+  const library = state.libraries.find((item) => item.id === libraryExportTarget.libraryId);
+  if (!library) return null;
+  if (libraryExportTarget.kind === 'library') return { ...libraryExportTarget, library };
+  const element = elementsForLibrary(library.id).find((item) => item.id === libraryExportTarget.elementId);
+  if (!element || !['article', 'note'].includes(element.type)) return null;
+  return { ...libraryExportTarget, library, element };
+}
+
+function setLibraryExportDialogCopy(target) {
+  const isElement = target.kind === 'element';
+  const itemType = isElement ? elementTypeLabels[target.element.type] : 'Knižnica';
+  const itemName = isElement ? elementTitle(target.element) : target.library.name;
+  dom.libraryExportTitle.textContent = `Exportovať ${itemType.toLowerCase()}`;
+  dom.libraryExportDescription.textContent = `${itemType} „${itemName}“ sa vyexportuje až po zvolení formátu.`;
+  dom.libraryPackageExportLabel.textContent = isElement ? 'Prenosový balík prvku' : 'Prenosový balík Poznámkovníka';
+  dom.libraryPackageExportDescription.textContent = isElement
+    ? 'Zachová pôvodné formátovanie, väzby zdrojov a priložené súbory.'
+    : 'Zachová presný obsah, priečinky, zdroje, väzby a priložené súbory.';
+  dom.libraryPortableMarkdownExportLabel.textContent = isElement ? 'Prenosný Markdown' : 'Prenosný Markdown ZIP';
+  dom.libraryPortableMarkdownExportDescription.textContent = isElement
+    ? 'Čitateľný v Obsidiane, Jopline a Notesnooku; zdroje budú v závere dokumentu.'
+    : 'Čitateľný v Obsidiane, Jopline a Notesnooku; obsahuje aj údaje na opätovný import.';
+}
+
+export function openLibraryExportDialog() {
+  const library = detailLibrary();
+  if (!library) return;
+  updateActiveElementFromEditor();
+  libraryExportTarget = { kind: 'library', libraryId: library.id };
+  setLibraryExportDialogCopy({ ...libraryExportTarget, library });
+  if (!dom.libraryExportDialog.open) dom.libraryExportDialog.showModal();
+}
+
+export function openActiveLibraryElementExportDialog() {
   const library = detailLibrary();
   if (!library || !state.activeLibraryElementId) return;
   updateActiveElementFromEditor();
   const element = activeLibraryElement();
   if (!element || !['article', 'note'].includes(element.type)) return;
+  libraryExportTarget = { kind: 'element', libraryId: library.id, elementId: element.id };
+  setLibraryExportDialogCopy({ ...libraryExportTarget, library, element });
+  if (!dom.libraryExportDialog.open) dom.libraryExportDialog.showModal();
+}
+
+async function exportCurrentLibraryTarget(format) {
+  const target = currentLibraryExportTarget();
+  if (!target) throw new Error('Prvok určený na export už nie je dostupný.');
+  updateActiveElementFromEditor();
+  await flushWorkspaceSync();
+  if (target.kind === 'library') {
+    if (format === 'package') {
+      await downloadLibraryPackage(target.library, elementsForLibrary(target.library.id));
+    } else {
+      await downloadLibraryMarkdownArchive(target.library, elementsForLibrary(target.library.id));
+    }
+    return;
+  }
+  const currentElement = elementsForLibrary(target.library.id).find((item) => item.id === target.elementId);
+  if (!currentElement) throw new Error('Otvorený prvok už nie je dostupný.');
+  if (format === 'package') await downloadLibraryElementPackage(currentElement, target.library);
+  else await downloadLibraryElementMarkdown(currentElement, target.library);
+}
+
+async function exportLibraryPackage() {
+  const library = detailLibrary();
+  if (!libraryExportTarget || !library) return;
+  setLibraryExportBusy(true);
   try {
-    await downloadLibraryElementMarkdown(element, library);
+    await exportCurrentLibraryTarget('package');
+    closeLibraryExportDialog();
   } catch (error) {
-    window.alert(error?.message || 'Markdown sa nepodarilo vyexportovať.');
+    window.alert(error?.message || 'Prenosový balík sa nepodarilo vytvoriť.');
+  } finally {
+    setLibraryExportBusy(false);
   }
 }
 
-export async function exportLibraryMarkdownArchive() {
+async function exportPortableMarkdown() {
   const library = detailLibrary();
-  if (!library) return;
-  updateActiveElementFromEditor();
-  dom.libraryMarkdownExport.disabled = true;
+  if (!libraryExportTarget || !library) return;
+  setLibraryExportBusy(true);
   try {
-    await flushWorkspaceSync();
-    await downloadLibraryMarkdownArchive(library, elementsForLibrary(library.id));
+    await exportCurrentLibraryTarget('markdown');
+    closeLibraryExportDialog();
   } catch (error) {
-    window.alert(error?.message || 'Knižnicu sa nepodarilo vyexportovať do Markdownu.');
+    window.alert(error?.message || 'Markdown sa nepodarilo vyexportovať.');
   } finally {
-    dom.libraryMarkdownExport.disabled = false;
+    setLibraryExportBusy(false);
   }
+}
+
+export function initializeLibraryExport() {
+  dom.libraryExportCancel.addEventListener('click', closeLibraryExportDialog);
+  dom.libraryPackageExport.addEventListener('click', () => void exportLibraryPackage());
+  dom.libraryPortableMarkdownExport.addEventListener('click', () => void exportPortableMarkdown());
+  dom.libraryExportDialog.addEventListener('close', () => {
+    libraryExportTarget = null;
+    setLibraryExportBusy(false);
+  });
+  installDialogBackdropClose(dom.libraryExportDialog, closeLibraryExportDialog);
 }
 
 export function importMarkdownIntoLibrary() {
@@ -673,15 +773,37 @@ export function importMarkdownIntoLibrary() {
   });
 }
 
-async function restoreImportedSourceLinks(libraryId, plan) {
+export async function restoreImportedSourceLinks(libraryId, plan) {
   if (!plan?.sourceManifest) return [];
-  const warnings = [];
+  const links = [
+    ...(plan.librarySourceLinks || []),
+    ...(plan.elementSourceLinks || [])
+  ];
+  const copyResult = await copyImportedSources({
+    links,
+    sourceSnapshots: plan.sourceSnapshots,
+    sourceAssets: plan.sourceAssets,
+    sourceActions: plan.sourceActions
+  });
+  const warnings = [...copyResult.warnings];
   const sourceTitle = (link) => link.title ? `„${link.title}“` : 'z importu';
+  const resolvedSourceId = (link) => {
+    return resolvedImportedSourceId(link, plan.sourceActions, copyResult);
+  };
+  const resolvedSourceFileId = (link) => {
+    return resolvedImportedSourceFileId(link, plan.sourceActions, copyResult);
+  };
+  const sourceFileWarning = (link) => {
+    const snapshot = copyResult.snapshots.get(link.sourceId);
+    const name = importedSourceFileName(snapshot, link.sourceFileId);
+    return `Väzba zdroja ${sourceTitle(link)} vyžaduje súbor „${name}“, ktorý sa nepodarilo obnoviť.`;
+  };
 
   for (const link of plan.librarySourceLinks || []) {
-    if (link.importAvailability === 'missing-source') continue;
+    const sourceId = resolvedSourceId(link);
+    if (!sourceId) continue;
     try {
-      await apiRequest(`/sources/${encodeURIComponent(link.sourceId)}/libraries/${encodeURIComponent(libraryId)}`, {
+      await apiRequest(`/sources/${encodeURIComponent(sourceId)}/libraries/${encodeURIComponent(libraryId)}`, {
         method: 'PUT',
         body: { note: link.note || '' }
       });
@@ -691,11 +813,17 @@ async function restoreImportedSourceLinks(libraryId, plan) {
   }
 
   for (const link of plan.elementSourceLinks || []) {
-    if (link.importAvailability === 'missing-source' || link.importAvailability === 'missing-file') continue;
+    const sourceId = resolvedSourceId(link);
+    if (!sourceId) continue;
+    const sourceFileId = resolvedSourceFileId(link);
+    if (link.sourceFileId && !sourceFileId) {
+      warnings.push(sourceFileWarning(link));
+      continue;
+    }
     try {
       if (link.relationType === 'annotation') {
-        if (!link.sourceFileId) throw new Error('Chýba súbor anotácie.');
-        await apiRequest(`/sources/${encodeURIComponent(link.sourceId)}/files/${encodeURIComponent(link.sourceFileId)}/annotations`, {
+        if (!sourceFileId) throw new Error('Chýba súbor anotácie.');
+        await apiRequest(`/sources/${encodeURIComponent(sourceId)}/files/${encodeURIComponent(sourceFileId)}/annotations`, {
           method: 'POST',
           body: {
             id: crypto.randomUUID(),
@@ -706,12 +834,12 @@ async function restoreImportedSourceLinks(libraryId, plan) {
           }
         });
       } else {
-        await apiRequest(`/sources/${encodeURIComponent(link.sourceId)}/element-links`, {
+        await apiRequest(`/sources/${encodeURIComponent(sourceId)}/element-links`, {
           method: 'POST',
           body: {
             id: crypto.randomUUID(),
             elementId: link.elementId,
-            sourceFileId: link.sourceFileId || '',
+            sourceFileId,
             relationType: link.relationType,
             locator: link.locator || '',
             label: link.label || '',

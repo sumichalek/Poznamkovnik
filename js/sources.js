@@ -9,6 +9,8 @@ import { refreshSourceDetailResizeHandle } from './source-detail-resize.js';
 import { refreshSourcePreviewResizeHandle } from './source-preview-resize.js';
 import { readTagField, refreshTagSuggestions, setTagField } from './tags.js';
 import { openRelationships } from './relationships.js';
+import { initializeSourceTransfer, openSourceExportDialog } from './source-transfer.js';
+import { exportSourceCollectionPackage, initializeSourceCollectionTransfer } from './source-collection-transfer.js';
 
 const kindLabels = {
   source: 'Zdroj',
@@ -900,6 +902,7 @@ function renderSourceBrowser() {
   dom.sourceBrowserTitle.title = title;
   dom.sourceCatalogHomeButton.disabled = !activeSourceCollectionId && !query;
   dom.sourceCatalogUpButton.disabled = !activeSourceCollectionId;
+  dom.sourceCollectionTransferExportButton.hidden = !activeCollection;
   dom.sourceCollectionRenameButton.hidden = !activeCollection;
   dom.sourceCollectionDeleteButton.hidden = !activeCollection;
   dom.sourceBrowserList.replaceChildren();
@@ -1106,6 +1109,7 @@ function startNewSource() {
   dom.sourceFormTitle.textContent = 'Nový zdroj';
   dom.sourceDeleteButton.hidden = true;
   dom.sourceRelationshipsButton.hidden = true;
+  dom.sourceTransferExportButton.hidden = true;
   dom.sourceDetailEmpty.hidden = true;
   dom.sourceForm.hidden = false;
   hideSourceSections();
@@ -1136,6 +1140,7 @@ function renderSourceDetail() {
   dom.sourceFormTitle.textContent = selectedSource.title;
   dom.sourceDeleteButton.hidden = false;
   dom.sourceRelationshipsButton.hidden = false;
+  dom.sourceTransferExportButton.hidden = false;
   dom.sourceTitle.value = selectedSource.title;
   dom.sourceKind.value = selectedSource.kind in kindLabels ? selectedSource.kind : 'source';
   dom.sourceYear.value = metadata.year || '';
@@ -1695,6 +1700,24 @@ export async function refreshElementSourceLinks() {
 
 export function initializeSources() {
   syncSourceReturnButton();
+  initializeSourceTransfer({
+    saveCurrent: saveSourceDraft,
+    onImported: async (sourceId) => {
+      await refreshSourceCatalog();
+      await selectSource(sourceId);
+      refreshTagSuggestions();
+      notifySourcesChanged();
+    }
+  });
+  initializeSourceCollectionTransfer({
+    saveCurrent: saveSourceDraft,
+    onImported: async (collectionId) => {
+      await refreshSourceCatalog();
+      await openSourceCollection(collectionId);
+      refreshTagSuggestions();
+      notifySourcesChanged();
+    }
+  });
   dom.sourcePreviewCloseButton.addEventListener('click', closeSourcePreview);
   dom.sourcePreviewFullscreen.addEventListener('click', toggleSourcePreviewFullscreen);
   dom.sourcePreviewAnnotateButton.addEventListener('pointerdown', captureSourcePreviewSelection);
@@ -1726,6 +1749,9 @@ export function initializeSources() {
   dom.sourceCatalogRoot.addEventListener('click', () => void openSourceCatalogRoot());
   dom.sourceCatalogHomeButton.addEventListener('click', () => void openSourceCatalogRoot());
   dom.sourceCatalogUpButton.addEventListener('click', () => void openParentSourceCollection());
+  dom.sourceCollectionTransferExportButton.addEventListener('click', () => {
+    exportSourceCollectionPackage(sourceCollectionById(activeSourceCollectionId));
+  });
   dom.sourceCollectionRenameButton.addEventListener('click', () => showSourceCollectionForm('rename'));
   dom.sourceCollectionDeleteButton.addEventListener('click', () => void deleteActiveSourceCollection());
   dom.sourceCollectionCancelButton.addEventListener('click', hideSourceCollectionForm);
@@ -1758,6 +1784,9 @@ export function initializeSources() {
   });
   dom.sourceRelationshipsButton.addEventListener('click', () => {
     if (selectedSource) void openRelationships({ targetType: 'source', targetId: selectedSource.id });
+  });
+  dom.sourceTransferExportButton.addEventListener('click', () => {
+    if (selectedSource) openSourceExportDialog(selectedSource);
   });
   dom.sourceUploadButton.addEventListener('click', () => dom.sourceFileInput.click());
   dom.sourceFileDropzone.addEventListener('click', () => {

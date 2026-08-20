@@ -3,15 +3,20 @@ import { state } from './state.js';
 import {
   cancelFolderRename,
   closeLibraryElementEditor,
-  renderLibraryDetailPanel
+  renderLibraryDetailPanel,
+  restoreImportedSourceLinks,
+  updateActiveElementFromEditor
 } from './library-content.js';
 import {
   currentLibrary,
+  flushWorkspaceSync,
   saveLibraries,
-  saveLibraryElements
+  saveLibraryElements,
+  setElementsForLibrary
 } from './storage.js';
 import { updateTopbarVisibility } from './topbar.js';
 import { readTagField, setTagField } from './tags.js';
+import { importedLibraryPlan, requestMarkdownImport } from './markdown-import.js';
 
 let libraryFormBaseline = '';
 
@@ -160,6 +165,62 @@ export function upsertLibrary(name, tags = []) {
   hideLibraryForm();
   renderLibraries();
   return true;
+}
+
+function importedLibraryName(preview) {
+  const sourceName = String(preview?.libraryName || preview?.sourceName || 'Importovaná knižnica')
+    .replace(/\.(zip|md|markdown|mdown|mkdn)$/i, '')
+    .replace(/[-_]+/g, ' ')
+    .trim()
+    .slice(0, 80) || 'Importovaná knižnica';
+  const names = new Set(state.libraries.map((library) => library.name.toLocaleLowerCase('sk')));
+  if (!names.has(sourceName.toLocaleLowerCase('sk'))) return sourceName;
+
+  let index = 1;
+  while (index < 1_000) {
+    const suffix = index === 1 ? ' (import)' : ` (import ${index})`;
+    const candidate = `${sourceName.slice(0, Math.max(1, 80 - suffix.length)).trim()}${suffix}`;
+    if (!names.has(candidate.toLocaleLowerCase('sk'))) return candidate;
+    index += 1;
+  }
+  return `Import ${crypto.randomUUID().slice(0, 8)}`;
+}
+
+export function importMarkdownAsNewLibrary() {
+  requestMarkdownImport({
+    destinationLabel: 'novej knižnice',
+    confirmLabel: 'Vytvoriť knižnicu',
+    onConfirm: async (preview) => {
+      if (!saveLibraryFormDraft()) {
+        throw new Error('Pred importom doplň alebo zruš rozpracovanú úpravu knižnice.');
+      }
+      updateActiveElementFromEditor();
+      const plan = importedLibraryPlan(preview);
+      if (!plan.items.length && !plan.librarySourceLinks.length) {
+        throw new Error('Nenašli sa žiadne položky ani zdrojové väzby vhodné na import.');
+      }
+
+      const library = {
+        id: crypto.randomUUID(),
+        name: importedLibraryName(preview),
+        tags: Array.isArray(preview.libraryTags) ? preview.libraryTags : [],
+        createdAt: new Date().toISOString()
+      };
+      state.libraries = [library, ...state.libraries];
+      state.activeLibraryId = library.id;
+      if (plan.items.length) setElementsForLibrary(library.id, plan.items);
+      saveLibraries();
+      saveLibraryElements();
+      await flushWorkspaceSync();
+
+      const warnings = await restoreImportedSourceLinks(library.id, plan);
+      if (plan.sourceManifest) window.dispatchEvent(new Event('sources-changed'));
+      openLibrariesPanel({ pinned: true });
+      openLibraryDetailPanel(library.id, { pinned: true });
+      renderLibraries();
+      return { warnings };
+    }
+  });
 }
 
 export function deleteLibrary(id) {

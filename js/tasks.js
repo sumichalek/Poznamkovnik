@@ -6,7 +6,15 @@ import { flushWorkspaceSync } from './storage.js';
 import { updateTopbarVisibility } from './topbar.js';
 import { readTagField, refreshTagSuggestions, setTagField } from './tags.js';
 import { openRelationships } from './relationships.js';
-import { downloadTaskMarkdown } from './markdown-export.js';
+import { downloadTaskMarkdown, downloadTaskPackage } from './markdown-export.js';
+import { prepareTaskMarkdownImport, requestMarkdownImport } from './markdown-import.js';
+import { installDialogBackdropClose } from './dialogs.js';
+import {
+  copyImportedSources,
+  importedSourceAction,
+  importedSourceTitle,
+  resolvedImportedSourceId
+} from './imported-sources.js';
 
 const statusLabels = {
   open: 'Otvorená',
@@ -36,6 +44,7 @@ let taskOperationCount = 0;
 let taskIdleResolvers = [];
 let targetSources = null;
 let editorTaskMenuOpen = false;
+let taskExportTargetId = '';
 
 function notifyTasksChanged() {
   window.dispatchEvent(new Event('tasks-changed'));
@@ -71,6 +80,43 @@ function taskExportSnapshot() {
     description: dom.taskDescription.value.trim(),
     tags: readTagField(dom.taskTags)
   };
+}
+
+function closeTaskExportDialog() {
+  if (dom.taskExportDialog.open) dom.taskExportDialog.close();
+  else taskExportTargetId = '';
+}
+
+function setTaskExportBusy(busy) {
+  dom.taskPackageExport.disabled = busy;
+  dom.taskPortableMarkdownExport.disabled = busy;
+  dom.taskExportCancel.disabled = busy;
+}
+
+function openTaskExportDialog() {
+  const task = taskExportSnapshot();
+  if (!task?.id) return;
+  taskExportTargetId = task.id;
+  dom.taskExportDescription.textContent = `Úloha „${task.title || 'Nová úloha'}“ sa vyexportuje až po zvolení formátu.`;
+  if (!dom.taskExportDialog.open) dom.taskExportDialog.showModal();
+}
+
+async function exportTask(format) {
+  const task = taskExportSnapshot();
+  if (!task?.id || task.id !== taskExportTargetId) {
+    closeTaskExportDialog();
+    return;
+  }
+  setTaskExportBusy(true);
+  try {
+    if (format === 'package') await downloadTaskPackage(task);
+    else await downloadTaskMarkdown(task);
+    closeTaskExportDialog();
+  } catch (error) {
+    window.alert(error?.message || 'Úlohu sa nepodarilo vyexportovať.');
+  } finally {
+    setTaskExportBusy(false);
+  }
 }
 
 function rememberTaskForm() {
@@ -509,20 +555,116 @@ export async function openTasksPanel({ taskId = '', pinned = false } = {}) {
   if (taskId) await selectTask(taskId);
 }
 
+function importedTaskPreview(preview) {
+  return {
+    summary: '1 úloha',
+    items: [{
+      type: 'Úloha',
+      title: preview.task.title,
+      path: preview.sourceManifest ? 'Prenosový balík Poznámkovníka' : preview.sourceName
+    }]
+  };
+}
+
+function taskImportSourceReference(link) {
+  return link?.sourceImportLink || {
+    sourceId: link?.targetId || '',
+    title: link?.title || '',
+    relationType: 'reference',
+    locator: '',
+    label: '',
+    note: ''
+  };
+}
+
+function taskImportLinkTitle(link) {
+  return link?.title || (link?.targetType === 'library' ? 'knižnica' : link?.targetType === 'element' ? 'text' : 'zdroj');
+}
+
+async function importTaskFromMarkdown(preview) {
+  if (!(await saveTaskDraft())) throw new Error('Pred importom sa nepodarilo uložiť rozpracovanú úlohu.');
+  await flushWorkspaceSync();
+
+  return runTaskOperation(async () => {
+    const created = await apiRequest('/tasks', {
+      method: 'POST',
+      body: { ...preview.task, id: crypto.randomUUID() }
+    });
+    let importedTask = created.task;
+    const warnings = [];
+    const taskLinks = Array.isArray(preview.taskLinks) ? preview.taskLinks : [];
+    const sourceLinks = taskLinks
+      .filter((link) => link.targetType === 'source')
+      .map(taskImportSourceReference);
+    const copyResult = await copyImportedSources({
+      links: sourceLinks,
+      sourceSnapshots: preview.sourceSnapshots,
+      sourceAssets: preview.sourceAssets,
+      sourceActions: preview.sourceActions
+    });
+    warnings.push(...copyResult.warnings);
+
+    for (const link of taskLinks) {
+      let targetId = String(link.targetId || '');
+      if (link.targetType === 'source') {
+        const sourceLink = taskImportSourceReference(link);
+        const action = importedSourceAction(preview.sourceActions, sourceLink);
+        targetId = resolvedImportedSourceId(sourceLink, preview.sourceActions, copyResult);
+        if (!targetId) {
+          if (action !== 'skip') {
+            warnings.push(`Väzba na zdroj „${importedSourceTitle(sourceLink)}“ sa nepodarilo obnoviť.`);
+          }
+          continue;
+        }
+      }
+      try {
+        const result = await apiRequest(`/tasks/${encodeURIComponent(importedTask.id)}/links`, {
+          method: 'POST',
+          body: { id: crypto.randomUUID(), targetType: link.targetType, targetId }
+        });
+        importedTask = result.task;
+      } catch {
+        warnings.push(`Väzba na „${taskImportLinkTitle(link)}“ nebola obnovená, pretože jej cieľ v tomto Poznámkovníku neexistuje.`);
+      }
+    }
+
+    selectedTask = importedTask;
+    targetSources = null;
+    renderTaskDetail();
+    await loadTasks();
+    refreshTagSuggestions();
+    notifyTasksChanged();
+    return { warnings: [...new Set(warnings)] };
+  });
+}
+
+function requestTaskMarkdownImport() {
+  requestMarkdownImport({
+    destinationLabel: 'novej úlohy',
+    confirmLabel: 'Vytvoriť úlohu',
+    previewAdapter: importedTaskPreview,
+    prepareImport: prepareTaskMarkdownImport,
+    onConfirm: importTaskFromMarkdown
+  });
+}
+
 export function initializeTasks() {
   dom.taskCreateButton.addEventListener('click', startNewTask);
+  dom.taskImportButton.addEventListener('click', requestTaskMarkdownImport);
   dom.taskDetailBack.addEventListener('click', closeTaskDetail);
   dom.taskDeleteButton.addEventListener('click', () => void deleteSelectedTask());
   dom.taskRelationshipsButton.addEventListener('click', () => {
     if (selectedTask) void openRelationships({ targetType: 'task', targetId: selectedTask.id });
   });
-  dom.taskMarkdownExport.addEventListener('click', () => {
-    const task = taskExportSnapshot();
-    if (!task) return;
-    void downloadTaskMarkdown(task).catch((error) => {
-      window.alert(error?.message || 'Markdown sa nepodarilo vyexportovať.');
-    });
+  dom.taskMarkdownExport.addEventListener('click', openTaskExportDialog);
+  dom.taskExportCancel.addEventListener('click', closeTaskExportDialog);
+  dom.taskPackageExport.addEventListener('click', () => void exportTask('package'));
+  dom.taskPortableMarkdownExport.addEventListener('click', () => void exportTask('markdown'));
+  dom.taskExportDialog.addEventListener('close', () => {
+    taskExportTargetId = '';
+    setTaskExportBusy(false);
   });
+  installDialogBackdropClose(dom.taskExportDialog, closeTaskExportDialog);
   dom.taskForm.addEventListener('submit', (event) => {
     event.preventDefault();
     void saveTaskDraft();

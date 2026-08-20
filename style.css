@@ -3882,6 +3882,12 @@ body.is-source-preview-resizing .source-preview-resize-handle::after {
   gap: var(--space-3);
 }
 
+.tasks-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .tasks-panel h2,
 .task-detail h3,
 .task-detail p {
@@ -6783,6 +6789,21 @@ dialog.app-window-dialog {
   overflow: hidden;
 }
 
+dialog.app-window-dialog::-webkit-resizer {
+  width: 24px;
+  height: 24px;
+  background:
+    linear-gradient(135deg,
+      transparent 0 42%,
+      color-mix(in srgb, var(--accent) 72%, var(--line)) 42% 47%,
+      transparent 47% 57%,
+      color-mix(in srgb, var(--accent) 72%, var(--line)) 57% 62%,
+      transparent 62% 72%,
+      color-mix(in srgb, var(--accent) 72%, var(--line)) 72% 77%,
+      transparent 77%);
+  cursor: nwse-resize;
+}
+
 dialog.app-window-dialog > :first-child {
   box-sizing: border-box;
   width: 100%;
@@ -8397,6 +8418,120 @@ dialog.app-window-dialog > :first-child {
   background: var(--backdrop);
 }
 
+.library-export-dialog {
+  width: min(560px, calc(100vw - 24px));
+  min-width: min(360px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  border: 0;
+  border-radius: var(--radius-lg);
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+}
+
+.library-export-dialog::backdrop {
+  background: var(--backdrop);
+}
+
+.library-export-panel {
+  display: grid;
+  gap: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: var(--space-5);
+}
+
+.library-export-panel > header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.library-export-panel > header > div {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.library-export-panel h2,
+.library-export-panel p {
+  margin: 0;
+}
+
+.library-export-panel h2 {
+  font-size: 1rem;
+}
+
+.library-export-panel header p,
+.library-export-note {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.library-export-options {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.library-export-option {
+  min-width: 0;
+  min-height: 68px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: var(--panel-muted);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  padding: var(--space-3);
+}
+
+.library-export-option:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel-muted));
+}
+
+.library-export-option:disabled {
+  cursor: wait;
+  opacity: 0.64;
+}
+
+.library-export-option > .app-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--accent);
+}
+
+.library-export-option > span:last-child {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.library-export-option strong,
+.library-export-option small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-export-option strong {
+  font-size: 0.84rem;
+}
+
+.library-export-option small {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
 .markdown-import-panel {
   display: flex;
   flex-direction: column;
@@ -8451,6 +8586,7 @@ dialog.app-window-dialog > :first-child {
   --dialog-section-min-height: 112px;
   --dialog-section-max-height: min(520px, 55dvh);
   display: grid;
+  grid-auto-rows: 66px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--control-radius);
@@ -8458,11 +8594,273 @@ dialog.app-window-dialog > :first-child {
 
 .markdown-import-source-links {
   display: grid;
+  flex: 1 1 0;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 0;
   gap: var(--space-2);
   border: 1px solid var(--line);
   border-radius: var(--control-radius);
   background: color-mix(in srgb, var(--panel-muted) 72%, transparent);
   padding: var(--space-3);
+}
+
+.markdown-import-source-links[hidden] {
+  display: none;
+}
+
+.source-transfer-import-panel {
+  min-height: 0;
+}
+
+.source-transfer-import-dialog {
+  height: auto;
+  min-height: min(260px, calc(100dvh - 24px));
+}
+
+.source-transfer-import-item {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 68px;
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: var(--panel-muted);
+  padding: var(--space-3);
+}
+
+.source-transfer-import-item > span {
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 760;
+}
+
+.source-transfer-import-item > span:last-child {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.source-transfer-import-item strong,
+.source-transfer-import-item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-transfer-import-item small,
+.source-transfer-import-relations small {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.source-transfer-import-relations {
+  display: grid;
+  flex: 0 1 auto;
+  min-height: 124px;
+  max-height: min(390px, 46dvh);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: color-mix(in srgb, var(--panel-muted) 72%, transparent);
+  padding: var(--space-3);
+}
+
+.source-transfer-import-relations[hidden] {
+  display: none;
+}
+
+.source-transfer-import-relations > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.source-transfer-import-relation-list {
+  display: grid;
+  align-content: start;
+  max-height: min(320px, 38dvh);
+  overflow: auto;
+  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+}
+
+.source-transfer-relation {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) minmax(0, 1.5fr) max-content;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 48px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 66%, transparent);
+  padding: var(--space-2) 0;
+}
+
+.source-transfer-relation > span,
+.source-transfer-relation small,
+.source-transfer-relation strong,
+.source-transfer-relation em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-transfer-relation > span,
+.source-transfer-relation em {
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 750;
+}
+
+.source-transfer-relation strong {
+  font-size: 0.8rem;
+}
+
+.source-transfer-more {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  padding-top: var(--space-2);
+}
+
+.source-collection-transfer-import-dialog {
+  width: min(760px, calc(100vw - 24px));
+  height: min(720px, calc(100dvh - 24px));
+  min-width: min(580px, calc(100vw - 24px));
+}
+
+.source-collection-transfer-import-panel {
+  min-height: 0;
+}
+
+.source-collection-transfer-tree {
+  --dialog-section-min-height: 96px;
+  --dialog-section-max-height: min(300px, 38dvh);
+  display: grid;
+  align-content: start;
+  gap: 1px;
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: color-mix(in srgb, var(--panel-muted) 72%, transparent);
+  padding: var(--space-2);
+}
+
+.source-collection-transfer-tree-item {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 32px;
+  border-radius: calc(var(--control-radius) - 2px);
+  padding: 0 var(--space-2);
+  padding-left: calc(var(--space-2) + var(--source-collection-import-depth) * 18px);
+}
+
+.source-collection-transfer-tree-item:nth-child(odd) {
+  background: color-mix(in srgb, var(--panel) 56%, transparent);
+}
+
+.source-collection-transfer-tree-item > span {
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-weight: 750;
+}
+
+.source-collection-transfer-tree-item strong,
+.source-collection-transfer-source strong,
+.source-collection-transfer-source small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-collection-transfer-tree-item strong {
+  font-size: 0.82rem;
+}
+
+.source-collection-transfer-sources {
+  --dialog-section-min-height: 140px;
+  --dialog-section-max-height: min(470px, 54dvh);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 0;
+  gap: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: color-mix(in srgb, var(--panel-muted) 72%, transparent);
+  padding: var(--space-3);
+}
+
+.source-collection-transfer-sources > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.source-collection-transfer-sources > header small {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.source-collection-transfer-headings,
+.source-collection-transfer-source {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) minmax(174px, 218px);
+  gap: var(--space-3);
+}
+
+.source-collection-transfer-headings {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.source-collection-transfer-source-list {
+  display: grid;
+  grid-auto-rows: 62px;
+  min-height: 0;
+  overflow: auto;
+  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+}
+
+.source-collection-transfer-source {
+  align-items: center;
+  min-width: 0;
+  height: 62px;
+  overflow: hidden;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 66%, transparent);
+  padding: var(--space-2) 0;
+}
+
+.source-collection-transfer-source:last-child {
+  border-bottom: 0;
+}
+
+.source-collection-transfer-source > span:first-child {
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 750;
+}
+
+.source-collection-transfer-source > span:nth-child(2) {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.source-collection-transfer-source strong {
+  font-size: 0.82rem;
+}
+
+.source-collection-transfer-source small {
+  color: var(--text-muted);
+  font-size: 0.72rem;
 }
 
 .markdown-import-source-links > header {
@@ -8474,7 +8872,7 @@ dialog.app-window-dialog > :first-child {
 
 .markdown-import-source-headings {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
+  grid-template-columns: 92px minmax(0, 1fr) minmax(174px, 218px);
   gap: var(--space-3);
   color: var(--text-muted);
   font-size: 0.68rem;
@@ -8493,19 +8891,21 @@ dialog.app-window-dialog > :first-child {
 }
 
 .markdown-import-source-items {
-  --dialog-section-min-height: 96px;
-  --dialog-section-max-height: min(420px, 48dvh);
   display: grid;
+  grid-auto-rows: 76px;
+  min-height: 0;
   overflow: auto;
   border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
 }
 
 .markdown-import-source-item {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
+  grid-template-columns: 92px minmax(0, 1fr) minmax(174px, 218px);
   align-items: center;
   gap: 0 var(--space-3);
-  min-height: 54px;
+  height: 76px;
+  min-height: 0;
+  overflow: hidden;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 66%, transparent);
   padding: var(--space-2) 0;
 }
@@ -8529,6 +8929,27 @@ dialog.app-window-dialog > :first-child {
   white-space: nowrap;
 }
 
+.markdown-import-source-action {
+  grid-column: 3;
+  grid-row: 1 / span 3;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: var(--space-2) var(--space-3);
+}
+
+.markdown-import-source-action:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: 1px;
+}
+
 .markdown-import-source-item em {
   color: var(--accent);
   font-size: 0.68rem;
@@ -8550,7 +8971,9 @@ dialog.app-window-dialog > :first-child {
   grid-template-columns: 76px minmax(0, 1fr);
   align-items: center;
   gap: 0 var(--space-3);
-  min-height: 48px;
+  height: 66px;
+  min-height: 0;
+  overflow: hidden;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
   padding: var(--space-2) var(--space-3);
 }
@@ -8602,6 +9025,8 @@ dialog.app-window-dialog > :first-child {
 
   .markdown-import-item {
     grid-template-columns: 1fr;
+    height: auto;
+    min-height: 66px;
     gap: var(--space-1);
   }
 
@@ -8617,6 +9042,8 @@ dialog.app-window-dialog > :first-child {
 
   .markdown-import-source-item {
     grid-template-columns: 1fr;
+    height: auto;
+    min-height: 76px;
     gap: var(--space-1);
   }
 
@@ -8624,8 +9051,13 @@ dialog.app-window-dialog > :first-child {
     grid-row: auto;
   }
 
+  .markdown-import-source-action {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
   .markdown-import-source-headings {
-    grid-template-columns: 1fr;
+    display: none;
     gap: var(--space-1);
   }
 }

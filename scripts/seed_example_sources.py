@@ -242,9 +242,55 @@ def main() -> None:
                 )
                 created_links += 1
 
+    collection_specs = [
+        ("transfer-examples", "Skúška prenosu zdrojov", ""),
+        ("transfer-reading", "Odborné podklady", "transfer-examples"),
+        ("transfer-data", "Dáta a prílohy", "transfer-examples"),
+        ("transfer-archive", "Archív ukážok", "transfer-data"),
+    ]
+    collection_ids = {key: stable_id(f"source-collection:{key}") for key, _, _ in collection_specs}
+    created_collections = 0
+    for key, title, parent_key in collection_specs:
+        collection_id = collection_ids[key]
+        with database.connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM source_collections WHERE id = ? AND user_id = ?",
+                (collection_id, user_id),
+            ).fetchone()
+        if not exists:
+            database.create_source_collection(
+                user_id,
+                {
+                    "id": collection_id,
+                    "title": title,
+                    "parentId": collection_ids[parent_key] if parent_key else "",
+                },
+            )
+            created_collections += 1
+
+    collection_sources = {
+        "transfer-examples": ["zotero-guide"],
+        "transfer-reading": ["focus-paper", "deep-work-book", "zotero-guide"],
+        "transfer-data": ["focus-dataset"],
+        "transfer-archive": ["project-brief"],
+    }
+    created_memberships = 0
+    for collection_key, source_keys in collection_sources.items():
+        for source_key in source_keys:
+            source_id = stable_id(f"source:{source_key}")
+            with database.connect() as connection:
+                exists = connection.execute(
+                    "SELECT 1 FROM collection_sources WHERE collection_id = ? AND source_id = ?",
+                    (collection_ids[collection_key], source_id),
+                ).fetchone()
+            if not exists:
+                database.link_collection_source(user_id, collection_ids[collection_key], source_id)
+                created_memberships += 1
+
     print(
         f"Hotovo pre používateľa {username}: {created_sources} nových zdrojov, "
-        f"{created_files} príloh a {created_links} väzieb."
+        f"{created_files} príloh, {created_links} väzieb, {created_collections} zbierok "
+        f"a {created_memberships} zaradení do zbierok."
     )
 
 

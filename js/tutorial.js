@@ -733,6 +733,7 @@ async function importTutorialMarkdown() {
   requestMarkdownImport({
     libraryName: languageTitle,
     destinationLabel: `učebnice „${languageTitle}“`,
+    confirmLabel: 'Pridať do učebnice',
     previewAdapter: tutorialMarkdownPreview,
     onConfirm: async (preview) => {
       const plan = tutorialMarkdownImportPlan(preview);

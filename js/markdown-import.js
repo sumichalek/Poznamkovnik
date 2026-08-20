@@ -9,6 +9,9 @@ const MAX_EMBEDDED_FILE_BYTES = 1_500_000;
 const MAX_EMBEDDED_TOTAL_BYTES = 20 * 1024 * 1024;
 const MAX_DOCUMENT_CONTENT_LENGTH = 4_500_000;
 const MAX_EXPORT_MANIFEST_BYTES = 2 * 1024 * 1024;
+const MAX_LIBRARY_PACKAGE_MANIFEST_BYTES = 20 * 1024 * 1024;
+const libraryPackageManifestPath = '.poznamkovnik-library.json';
+const taskPackageManifestPath = '.poznamkovnik-task.json';
 const markdownExtensions = new Set(['md', 'markdown', 'mdown', 'mkdn']);
 
 let pendingImport = null;
@@ -141,7 +144,7 @@ async function readZipEntries(file) {
   return entries;
 }
 
-async function readImportEntries(file) {
+export async function readImportEntries(file) {
   const filename = String(file?.name || 'import.md');
   if (extensionFor(filename) === 'zip') return readZipEntries(file);
   if (!isMarkdownPath(filename)) throw new Error('Vyber Markdown súbor alebo ZIP archív.');
@@ -159,7 +162,7 @@ function parseScalar(value) {
   }
 }
 
-function parseFrontmatter(markdown) {
+export function parseFrontmatter(markdown) {
   const value = String(markdown || '').replace(/^\uFEFF/, '');
   if (!value.startsWith('---\n') && !value.startsWith('---\r\n')) return { metadata: {}, body: value };
   const lines = value.replace(/\r\n?/g, '\n').split('\n');
@@ -191,7 +194,7 @@ function parseFrontmatter(markdown) {
   return { metadata, body: lines.slice(end + 1).join('\n') };
 }
 
-function documentTitle(markdown, fallback) {
+export function documentTitle(markdown, fallback) {
   const heading = String(markdown || '').match(/^\s*#\s+(.+?)\s*$/m)?.[1];
   return String(heading || fallback || 'Importovaná poznámka').replace(/[*_`]/g, '').trim().slice(0, 200) || 'Importovaná poznámka';
 }
@@ -424,7 +427,14 @@ function markdownToHtml(markdown, documentPath, assets) {
 }
 
 function emptyExportManifest() {
-  return { folders: new Map(), librarySources: [], documentSources: new Map(), isOwnExport: false };
+  return {
+    library: { name: '', tags: [] },
+    folders: new Map(),
+    librarySources: [],
+    documentSources: new Map(),
+    sourceSnapshots: [],
+    isOwnExport: false
+  };
 }
 
 function manifestText(value, maximum) {
@@ -451,6 +461,55 @@ function manifestLibrarySource(value) {
   const sourceId = manifestText(value?.sourceId, 160);
   if (!sourceId) return null;
   return { sourceId, title: manifestText(value?.title, 300), note: manifestText(value?.note, 2_000) };
+}
+
+function manifestLibrary(value) {
+  const tags = Array.isArray(value?.tags)
+    ? value.tags.map((tag) => manifestText(tag, 80)).filter(Boolean).slice(0, 30)
+    : [];
+  return { name: manifestText(value?.name, 80), tags: [...new Set(tags)] };
+}
+
+function manifestSourceMetadata(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const metadata = {};
+  Object.entries(value).slice(0, 50).forEach(([key, item]) => {
+    const name = manifestText(key, 80);
+    if (!name) return;
+    if (typeof item === 'string') metadata[name] = manifestText(item, 1_000);
+    else if (typeof item === 'number' && Number.isFinite(item)) metadata[name] = item;
+    else if (typeof item === 'boolean') metadata[name] = item;
+  });
+  return metadata;
+}
+
+export function importedSourceSnapshot(value) {
+  const id = manifestText(value?.id, 160);
+  const title = manifestText(value?.title, 240);
+  if (!id || !title) return null;
+  const files = (Array.isArray(value?.files) ? value.files : []).slice(0, 200).map((file) => {
+    const fileId = manifestText(file?.id, 160);
+    if (!fileId) return null;
+    return {
+      id: fileId,
+      originalName: manifestText(file?.originalName, 240) || 'priloha',
+      mimeType: manifestText(file?.mimeType, 160) || 'application/octet-stream',
+      sizeBytes: Math.max(0, Math.min(Number(file?.sizeBytes) || 0, MAX_ARCHIVE_BYTES)),
+      archivePath: manifestText(file?.archivePath, 320)
+    };
+  }).filter(Boolean);
+  const tags = Array.isArray(value?.tags)
+    ? [...new Set(value.tags.map((tag) => manifestText(tag, 80)).filter(Boolean))].slice(0, 30)
+    : [];
+  return {
+    id,
+    title,
+    kind: manifestText(value?.kind, 40) || 'source',
+    description: manifestText(value?.description, 10_000),
+    metadata: manifestSourceMetadata(value?.metadata),
+    tags,
+    files
+  };
 }
 
 function stripExportSourceSection(markdown, sourceSection) {
@@ -486,11 +545,229 @@ function parseManifest(entries) {
           links: (Array.isArray(document?.links) ? document.links : []).map(manifestSourceLink).filter(Boolean)
         });
       });
-      return { folders, librarySources, documentSources, isOwnExport: true };
+      const sourceSnapshots = (Array.isArray(value.sources) ? value.sources : [])
+        .slice(0, 500)
+        .map(importedSourceSnapshot)
+        .filter(Boolean);
+      return { library: manifestLibrary(value.library), folders, librarySources, documentSources, sourceSnapshots, isOwnExport: true };
     } catch {
       return emptyExportManifest();
     }
   });
+}
+
+function packageElement(value) {
+  const id = manifestText(value?.id, 160);
+  const title = manifestText(value?.title, 200);
+  const type = ['folder', 'note', 'article'].includes(value?.type) ? value.type : '';
+  if (!id || !title || !type) return null;
+  const tags = Array.isArray(value?.tags)
+    ? [...new Set(value.tags.map((tag) => manifestText(tag, 80)).filter(Boolean))].slice(0, 30)
+    : [];
+  const content = type === 'folder' ? '' : String(value?.content || '');
+  if (content.length > MAX_DOCUMENT_CONTENT_LENGTH) return null;
+  return {
+    id,
+    type,
+    parentId: manifestText(value?.parentId, 160),
+    title,
+    content,
+    tags,
+    createdAt: manifestText(value?.createdAt, 80),
+    updatedAt: manifestText(value?.updatedAt, 80),
+    sourceLinks: []
+  };
+}
+
+async function parseLibraryPackage(entries) {
+  const manifest = entries.find((entry) => entry.path === libraryPackageManifestPath);
+  if (!manifest) return null;
+  if (manifest.blob.size > MAX_LIBRARY_PACKAGE_MANIFEST_BYTES) {
+    throw new Error('Prenosový balík má príliš veľký popis obsahu.');
+  }
+  let value;
+  try {
+    value = JSON.parse(await manifest.blob.text());
+  } catch {
+    throw new Error('Prenosový balík má neplatný popis obsahu.');
+  }
+  if (value?.format !== 'poznamkovnik-library-package' || !Array.isArray(value.elements)) {
+    throw new Error('ZIP neobsahuje podporovaný prenosový balík Poznámkovníka.');
+  }
+  const elements = value.elements.slice(0, 500).map(packageElement).filter(Boolean);
+  const elementIds = new Set(elements.map((element) => element.id));
+  const linksByElement = new Map();
+  (Array.isArray(value.elementLinks) ? value.elementLinks : []).slice(0, 500).forEach((item) => {
+    const elementId = manifestText(item?.elementId, 160);
+    if (!elementIds.has(elementId) || linksByElement.has(elementId)) return;
+    linksByElement.set(elementId, (Array.isArray(item?.links) ? item.links : []).map(manifestSourceLink).filter(Boolean));
+  });
+  elements.forEach((element) => {
+    element.parentId = elementIds.has(element.parentId) ? element.parentId : '';
+    element.sourceLinks = linksByElement.get(element.id) || [];
+  });
+  const librarySources = (Array.isArray(value.librarySources) ? value.librarySources : [])
+    .map(manifestLibrarySource)
+    .filter(Boolean);
+  const sourceSnapshots = (Array.isArray(value.sources) ? value.sources : [])
+    .slice(0, 500)
+    .map(importedSourceSnapshot)
+    .filter(Boolean);
+  return {
+    library: manifestLibrary(value.library),
+    elements,
+    librarySources,
+    sourceSnapshots
+  };
+}
+
+function importedTaskRecord(value) {
+  const title = manifestText(value?.title, 240);
+  if (!title) return null;
+  const status = ['open', 'in_progress', 'done'].includes(value?.status) ? value.status : 'open';
+  const priority = ['none', 'low', 'medium', 'high'].includes(value?.priority) ? value.priority : 'none';
+  const dueDate = manifestText(value?.dueDate, 32);
+  const tags = Array.isArray(value?.tags)
+    ? [...new Set(value.tags.map((tag) => manifestText(tag, 80)).filter(Boolean))].slice(0, 30)
+    : [];
+  return {
+    title,
+    description: manifestText(value?.description, 10_000),
+    status,
+    priority,
+    dueDate: /^\d{4}-\d{2}-\d{2}$/.test(dueDate) ? dueDate : '',
+    tags
+  };
+}
+
+function importedTaskLink(value) {
+  const targetType = ['library', 'element', 'source'].includes(value?.targetType) ? value.targetType : '';
+  const targetId = manifestText(value?.targetId, 160);
+  if (!targetType || !targetId) return null;
+  return {
+    targetType,
+    targetId,
+    title: manifestText(value?.title, 300),
+    subtitle: manifestText(value?.subtitle, 300),
+    libraryId: manifestText(value?.libraryId, 160),
+    elementType: manifestText(value?.elementType, 40)
+  };
+}
+
+async function parseTaskPackage(entries) {
+  const manifest = entries.find((entry) => entry.path === taskPackageManifestPath);
+  if (!manifest) return null;
+  if (manifest.blob.size > MAX_EXPORT_MANIFEST_BYTES) throw new Error('Prenosový balík úlohy má príliš veľký popis obsahu.');
+  let value;
+  try {
+    value = JSON.parse(await manifest.blob.text());
+  } catch {
+    throw new Error('Prenosový balík úlohy má neplatný popis obsahu.');
+  }
+  if (value?.format !== 'poznamkovnik-task-package') {
+    throw new Error('ZIP neobsahuje podporovaný prenosový balík úlohy Poznámkovníka.');
+  }
+  const task = importedTaskRecord(value.task);
+  if (!task) throw new Error('Prenosový balík úlohy neobsahuje platný názov.');
+  return {
+    task,
+    links: (Array.isArray(value.links) ? value.links : []).slice(0, 100).map(importedTaskLink).filter(Boolean),
+    sourceSnapshots: (Array.isArray(value.sources) ? value.sources : []).slice(0, 200).map(importedSourceSnapshot).filter(Boolean)
+  };
+}
+
+function importedTaskTitle(body, fallback) {
+  return documentTitle(body, fallback)
+    .replace(/^\[[ xX]\]\s*/, '')
+    .trim()
+    .slice(0, 240) || 'Importovaná úloha';
+}
+
+function importedTaskDescription(body) {
+  const lines = String(body || '').replace(/\r\n?/g, '\n').split('\n');
+  const firstContent = lines.findIndex((line) => line.trim());
+  if (firstContent !== -1 && /^#\s+/.test(lines[firstContent])) lines.splice(firstContent, 1);
+  while (lines.length && !lines[0].trim()) lines.shift();
+  while (lines.length && /^\*\*(?:Stav|Priorita|Termín):\*\*/.test(lines[0].trim())) lines.shift();
+  while (lines.length && !lines[0].trim()) lines.shift();
+  const generatedSection = lines.findIndex((line) => /^##\s+(?:Prepojenia|Zdroje)\s*$/i.test(line.trim()));
+  if (generatedSection !== -1) lines.splice(generatedSection);
+  return lines.join('\n').trim().slice(0, 10_000);
+}
+
+function taskImportPreview({ sourceName, task, links = [], sourceSnapshots = [], sourceAssets = new Map(), sourceManifest = false }) {
+  const sourceLinks = links
+    .filter((link) => link.targetType === 'source')
+    .map((link) => {
+      const sourceImportLink = {
+        sourceId: link.targetId,
+        title: link.title,
+        relationType: 'reference',
+        locator: '',
+        label: '',
+        note: ''
+      };
+      link.sourceImportLink = sourceImportLink;
+      return sourceImportLink;
+    });
+  return {
+    sourceName,
+    task,
+    taskLinks: links,
+    documents: [{ title: task.title, type: 'task', sourceLinks }],
+    folders: [],
+    warnings: [],
+    attachments: 0,
+    librarySourceLinks: [],
+    sourceManifest,
+    sourceSnapshots,
+    sourceAssets,
+    sourceActions: {},
+    sourceUsageLabel: 'Úloha',
+    sourceDestinationLabel: 'k úlohe'
+  };
+}
+
+export async function prepareTaskMarkdownImport(file) {
+  const entries = await readImportEntries(file);
+  const taskPackage = await parseTaskPackage(entries);
+  const assets = new Map();
+  entries.filter((entry) => (
+    entry.path !== '.poznamkovnik-export.json'
+    && entry.path !== libraryPackageManifestPath
+    && entry.path !== taskPackageManifestPath
+    && !isMarkdownPath(entry.path)
+  )).forEach((entry) => assets.set(entry.path, { ...entry, available: false, dataUrl: '' }));
+  if (taskPackage) {
+    return taskImportPreview({
+      sourceName: String(file.name || 'Prenosový balík úlohy'),
+      task: taskPackage.task,
+      links: taskPackage.links,
+      sourceSnapshots: taskPackage.sourceSnapshots,
+      sourceAssets: assets,
+      sourceManifest: true
+    });
+  }
+
+  const markdownEntries = entries.filter((entry) => isMarkdownPath(entry.path) && entry.path.toLocaleLowerCase('sk') !== 'readme.md');
+  if (markdownEntries.length !== 1) {
+    throw new Error('Pre import úlohy vyber jeden Markdown súbor alebo ZIP s jedinou úlohou.');
+  }
+  const entry = markdownEntries[0];
+  if (entry.blob.size > MAX_MARKDOWN_BYTES) throw new Error('Markdown súbor môže mať najviac 2 MB.');
+  const { metadata, body } = parseFrontmatter(await entry.blob.text());
+  if (metadata.type && metadata.type !== 'task') throw new Error('Vybraný Markdown neoznačuje úlohu.');
+  const fallback = entry.path.split('/').at(-1).replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ');
+  const task = importedTaskRecord({
+    title: metadata.title || importedTaskTitle(body, fallback),
+    description: importedTaskDescription(body),
+    status: metadata.status,
+    priority: metadata.priority,
+    dueDate: metadata.due,
+    tags: metadata.tags
+  });
+  if (!task) throw new Error('Markdown úlohy nemá platný názov.');
+  return taskImportPreview({ sourceName: String(file.name || 'Markdown úlohy'), task });
 }
 
 function isInternalAssetPath(path, manifestFolders) {
@@ -518,18 +795,52 @@ function summaryText(preview) {
 
 export async function prepareMarkdownImport(file) {
   const entries = await readImportEntries(file);
+  const libraryPackage = await parseLibraryPackage(entries);
   const manifest = await parseManifest(entries);
   const manifestFolders = manifest.folders;
   const warnings = [];
   const assets = new Map();
   entries.filter((entry) => (
     entry.path !== '.poznamkovnik-export.json'
+    && entry.path !== libraryPackageManifestPath
     && (!isMarkdownPath(entry.path) || isInternalAssetPath(entry.path, manifestFolders))
   )).forEach((entry) => {
     assets.set(entry.path, { ...entry, available: false, dataUrl: '' });
   });
+  if (libraryPackage) {
+    const folders = libraryPackage.elements
+      .filter((element) => element.type === 'folder')
+      .map((element) => ({ path: element.id, title: element.title }));
+    const documents = libraryPackage.elements
+      .filter((element) => element.type !== 'folder')
+      .map((element) => ({
+        path: element.title,
+        directory: [],
+        title: element.title,
+        type: element.type,
+        tags: element.tags,
+        content: element.content,
+        sourceLinks: element.sourceLinks
+      }));
+    return {
+      sourceName: String(file.name || 'Prenosový balík'),
+      libraryName: libraryPackage.library.name,
+      libraryTags: libraryPackage.library.tags,
+      documents,
+      folders,
+      warnings: [],
+      attachments: 0,
+      librarySourceLinks: libraryPackage.librarySources,
+      sourceManifest: true,
+      sourceSnapshots: libraryPackage.sourceSnapshots,
+      sourceAssets: assets,
+      sourceActions: {},
+      nativeElements: libraryPackage.elements
+    };
+  }
   let markdownEntries = entries.filter((entry) => (
     entry.path !== '.poznamkovnik-export.json'
+    && entry.path !== libraryPackageManifestPath
     && isMarkdownPath(entry.path)
     && !isInternalAssetPath(entry.path, manifestFolders)
   ));
@@ -588,19 +899,52 @@ export async function prepareMarkdownImport(file) {
     });
   });
   const attachments = [...assets.values()].filter((asset) => asset.available).length;
+  const markdownLibraryName = documents.map((document) => manifestText(document.metadata?.library, 80)).find(Boolean) || '';
   return {
     sourceName: String(file.name || 'Markdown'),
+    libraryName: manifest.library.name || markdownLibraryName,
+    libraryTags: manifest.library.tags,
     documents,
     folders: [...folderMap.entries()].map(([path, title]) => ({ path, title })),
     warnings: [...new Set(warnings)],
     attachments,
     librarySourceLinks: manifest.librarySources,
-    sourceManifest: manifest.isOwnExport
+    sourceManifest: manifest.isOwnExport,
+    sourceSnapshots: manifest.sourceSnapshots,
+    sourceAssets: assets,
+    sourceActions: {}
   };
 }
 
 export function importedLibraryPlan(preview, parentId = '') {
   const timestamp = new Date().toISOString();
+  if (Array.isArray(preview?.nativeElements)) {
+    const rawElements = preview.nativeElements.filter((item) => item?.id && ['folder', 'note', 'article'].includes(item.type));
+    const ids = new Map(rawElements.map((item) => [item.id, crypto.randomUUID()]));
+    const items = rawElements.map((item) => ({
+      id: ids.get(item.id),
+      type: item.type,
+      parentId: ids.get(item.parentId) || parentId,
+      title: item.title,
+      content: item.type === 'folder' ? '' : item.content,
+      tags: item.tags,
+      createdAt: item.createdAt || timestamp,
+      updatedAt: item.updatedAt || timestamp
+    }));
+    const elementSourceLinks = rawElements.flatMap((item) => (item.sourceLinks || []).map((link) => ({
+      ...link,
+      elementId: ids.get(item.id)
+    })));
+    return {
+      items,
+      librarySourceLinks: Array.isArray(preview?.librarySourceLinks) ? preview.librarySourceLinks : [],
+      elementSourceLinks,
+      sourceManifest: Boolean(preview?.sourceManifest),
+      sourceSnapshots: Array.isArray(preview?.sourceSnapshots) ? preview.sourceSnapshots : [],
+      sourceAssets: preview?.sourceAssets instanceof Map ? preview.sourceAssets : new Map(),
+      sourceActions: preview?.sourceActions && typeof preview.sourceActions === 'object' ? preview.sourceActions : {}
+    };
+  }
   const folders = [...(preview?.folders || [])].sort((first, second) => first.path.split('/').length - second.path.split('/').length || first.path.localeCompare(second.path, 'sk'));
   const folderIds = new Map([['', parentId]]);
   const items = [];
@@ -630,7 +974,10 @@ export function importedLibraryPlan(preview, parentId = '') {
     items,
     librarySourceLinks: Array.isArray(preview?.librarySourceLinks) ? preview.librarySourceLinks : [],
     elementSourceLinks,
-    sourceManifest: Boolean(preview?.sourceManifest)
+    sourceManifest: Boolean(preview?.sourceManifest),
+    sourceSnapshots: Array.isArray(preview?.sourceSnapshots) ? preview.sourceSnapshots : [],
+    sourceAssets: preview?.sourceAssets instanceof Map ? preview.sourceAssets : new Map(),
+    sourceActions: preview?.sourceActions && typeof preview.sourceActions === 'object' ? preview.sourceActions : {}
   };
 }
 
@@ -656,34 +1003,6 @@ function previewView(preview) {
   };
 }
 
-function sourceLinkRows(preview) {
-  const rows = [];
-  (preview.librarySourceLinks || []).forEach((link) => {
-    rows.push({
-      type: 'Knižnici',
-      title: link.title || 'Zdroj z archívu',
-      context: link.note ? `Spoločný zdroj knižnice · ${link.note}` : 'Spoločný zdroj knižnice',
-      availability: link.importAvailability || 'unchecked'
-    });
-  });
-  (preview.documents || []).forEach((document) => {
-    (document.sourceLinks || []).forEach((link) => {
-      const detail = [
-        document.title,
-        link.label || relationLabel(link.relationType),
-        link.locator
-      ].filter(Boolean).join(' · ');
-      rows.push({
-        type: 'Textu',
-        title: link.title || 'Zdroj z archívu',
-        context: detail ? `${document.type === 'article' ? 'Článok' : 'Poznámka'}: ${detail}` : 'Väzba na text',
-        availability: link.importAvailability || 'unchecked'
-      });
-    });
-  });
-  return rows;
-}
-
 function sourceAvailabilityLabel(status) {
   const labels = {
     available: 'Pripravené na obnovenie',
@@ -694,9 +1013,103 @@ function sourceAvailabilityLabel(status) {
   return labels[status] || labels.unchecked;
 }
 
-function sourceAvailabilitySummary(rows) {
-  const counts = rows.reduce((result, row) => {
-    result[row.availability] = (result[row.availability] || 0) + 1;
+function sourceSnapshotMap(preview) {
+  return new Map((Array.isArray(preview?.sourceSnapshots) ? preview.sourceSnapshots : [])
+    .filter((source) => source?.id)
+    .map((source) => [source.id, source]));
+}
+
+function sourceGroupAvailability(links) {
+  const states = new Set(links.map((link) => link.importAvailability || 'unchecked'));
+  if (states.size === 1 && states.has('available')) return 'available';
+  if (states.has('unchecked')) return 'unchecked';
+  if (states.has('missing-source')) return 'missing-source';
+  if (states.has('missing-file')) return 'missing-file';
+  return 'unchecked';
+}
+
+function sourceActionChoices(group) {
+  const choices = [];
+  if (group.sourceExists) choices.push({ value: 'existing', label: 'Použiť existujúci zdroj' });
+  if (group.snapshot) {
+    const fileCount = group.snapshot.files.length;
+    const bundledFiles = group.snapshot.files.filter((file) => file.archivePath).length;
+    const suffix = fileCount ? ` · ${bundledFiles}/${fileCount} súb.` : '';
+    choices.push({ value: 'copy', label: `Vytvoriť kópiu${suffix}` });
+  }
+  choices.push({ value: 'skip', label: 'Vynechať väzby' });
+  return choices;
+}
+
+function defaultSourceAction(group) {
+  if (group.availability === 'available' && group.sourceExists) return 'existing';
+  if (group.availability === 'unchecked') return 'skip';
+  if (group.snapshot) return 'copy';
+  return group.sourceExists ? 'existing' : 'skip';
+}
+
+function sourceImportGroups(preview) {
+  const snapshots = sourceSnapshotMap(preview);
+  const groups = new Map();
+  (preview?.librarySourceLinks || []).forEach((link) => {
+    const sourceId = String(link?.sourceId || '');
+    if (!sourceId) return;
+    const group = groups.get(sourceId) || { sourceId, title: link.title || 'Zdroj z archívu', libraryLinks: [], documentLinks: [] };
+    group.libraryLinks.push(link);
+    groups.set(sourceId, group);
+  });
+  (preview?.documents || []).forEach((document) => {
+    (document.sourceLinks || []).forEach((link) => {
+      const sourceId = String(link?.sourceId || '');
+      if (!sourceId) return;
+      const group = groups.get(sourceId) || { sourceId, title: link.title || 'Zdroj z archívu', libraryLinks: [], documentLinks: [] };
+      group.documentLinks.push({ ...link, document });
+      groups.set(sourceId, group);
+    });
+  });
+  return [...groups.values()].map((group) => {
+    const links = [...group.libraryLinks, ...group.documentLinks];
+    const availability = sourceGroupAvailability(links);
+    const snapshot = snapshots.get(group.sourceId) || null;
+    const sourceExists = availability === 'available' || availability === 'missing-file';
+    const result = {
+      ...group,
+      links,
+      snapshot,
+      sourceExists,
+      availability
+    };
+    const choices = sourceActionChoices(result);
+    const selected = preview.sourceActions?.[group.sourceId];
+    result.action = choices.some((choice) => choice.value === selected) ? selected : defaultSourceAction(result);
+    return result;
+  });
+}
+
+function sourceUsageLabel(group, preview) {
+  const parts = [];
+  if (group.libraryLinks.length) parts.push(`${group.libraryLinks.length} kniž.`);
+  if (group.documentLinks.length) {
+    parts.push(preview?.sourceUsageLabel || `${group.documentLinks.length} text.`);
+  }
+  return parts.join(' · ') || 'Bez väzby';
+}
+
+function sourceContextLabel(group) {
+  const details = group.documentLinks.slice(0, 2).map(({ document, label, relationType, locator }) => (
+    [document?.title, label || relationLabel(relationType), locator].filter(Boolean).join(' · ')
+  )).filter(Boolean);
+  if (group.documentLinks.length > 2) details.push(`a ďalších ${group.documentLinks.length - 2}`);
+  if (group.libraryLinks.length && !details.length) {
+    const note = group.libraryLinks.find((link) => link.note)?.note;
+    return note ? `Spoločný zdroj knižnice · ${note}` : 'Spoločný zdroj knižnice';
+  }
+  return details.join(' · ') || 'Väzba zo zdroja';
+}
+
+function sourceAvailabilitySummary(groups) {
+  const counts = groups.reduce((result, group) => {
+    result[group.availability] = (result[group.availability] || 0) + 1;
     return result;
   }, {});
   const parts = [];
@@ -742,6 +1155,11 @@ async function checkImportSourceAvailability(preview) {
     }
     link.importAvailability = 'available';
   });
+  sourceImportGroups(preview).forEach((group) => {
+    if (!Object.hasOwn(preview.sourceActions, group.sourceId)) {
+      preview.sourceActions[group.sourceId] = defaultSourceAction(group);
+    }
+  });
 }
 
 function relationLabel(relationType) {
@@ -758,31 +1176,63 @@ function relationLabel(relationType) {
 }
 
 function renderSourceLinkPreview(preview) {
-  const rows = sourceLinkRows(preview);
+  const groups = sourceImportGroups(preview);
   const libraryCount = (preview.librarySourceLinks || []).length;
-  const documentCount = rows.length - libraryCount;
+  const documentCount = allSourceLinks(preview).length - libraryCount;
   dom.markdownImportSourceItems.replaceChildren();
-  dom.markdownImportSourceLinks.hidden = !rows.length;
-  if (!rows.length) return;
+  dom.markdownImportSourceLinks.hidden = !groups.length;
+  if (!groups.length) return;
 
   const parts = [];
   if (libraryCount) parts.push(`${libraryCount} ku knižnici`);
-  if (documentCount) parts.push(`${documentCount} k textom`);
-  dom.markdownImportSourceSummary.textContent = `Obnoví sa ${parts.join(' · ')} · ${sourceAvailabilitySummary(rows)}.`;
-  rows.forEach((link) => {
+  if (documentCount) parts.push(`${documentCount} ${preview?.sourceDestinationLabel || 'k textom'}`);
+  dom.markdownImportSourceSummary.textContent = `${groups.length} zdrojov · ${parts.join(' · ')} · ${sourceAvailabilitySummary(groups)}.`;
+  groups.forEach((group) => {
     const row = document.createElement('div');
-    row.className = `markdown-import-source-item is-${link.availability}`;
-    const type = document.createElement('span');
-    type.textContent = link.type;
+    row.className = `markdown-import-source-item is-${group.availability}`;
+    const usage = document.createElement('span');
+    usage.textContent = sourceUsageLabel(group, preview);
     const title = document.createElement('strong');
-    title.textContent = link.title;
+    title.textContent = group.title;
     const context = document.createElement('small');
-    context.textContent = link.context;
+    context.textContent = sourceContextLabel(group);
     const availability = document.createElement('em');
-    availability.textContent = sourceAvailabilityLabel(link.availability);
-    row.append(type, title, context, availability);
+    availability.textContent = sourceAvailabilityLabel(group.availability);
+    const action = document.createElement('select');
+    action.className = 'markdown-import-source-action';
+    action.setAttribute('aria-label', `Postup importu zdroja ${group.title}`);
+    sourceActionChoices(group).forEach((choice) => {
+      const option = document.createElement('option');
+      option.value = choice.value;
+      option.textContent = choice.label;
+      action.append(option);
+    });
+    action.value = group.action;
+    action.addEventListener('change', () => {
+      preview.sourceActions[group.sourceId] = action.value;
+      renderSourceLinkPreview(preview);
+      updateImportReadyStatus(preview);
+    });
+    row.append(usage, title, context, availability, action);
     dom.markdownImportSourceItems.append(row);
   });
+}
+
+function updateImportReadyStatus(preview, view = previewView(preview)) {
+  const groups = sourceImportGroups(preview);
+  const sourceLinks = allSourceLinks(preview).length;
+  const copied = groups.filter((group) => group.action === 'copy').length;
+  const skippedLinks = groups.filter((group) => group.action === 'skip').reduce((count, group) => count + group.links.length, 0);
+  const warnings = [...new Set([...(preview.warnings || []), ...(view.warnings || [])])];
+  const sourceMessage = !sourceLinks
+    ? 'Import vytvorí iba nové položky; existujúce texty nemení.'
+    : [
+        'Import vytvorí iba nové položky',
+        copied ? `vytvorí kópiu ${copied} ${copied === 1 ? 'zdroja' : 'zdrojov'}` : '',
+        skippedLinks ? `vynechá ${skippedLinks} ${skippedLinks === 1 ? 'väzbu' : 'väzieb'}` : '',
+        'existujúce texty nemení'
+      ].filter(Boolean).join('; ') + '.';
+  setPreviewStatus(warnings.length ? warnings.join(' ') : sourceMessage, Boolean(warnings.length));
 }
 
 function renderPreview(preview) {
@@ -810,20 +1260,11 @@ function renderPreview(preview) {
     dom.markdownImportItems.append(more);
   }
   renderSourceLinkPreview(preview);
-  const sourceLinkRowsPreview = sourceLinkRows(preview);
-  const sourceLinks = sourceLinkRowsPreview.length;
-  const unavailableSourceLinks = sourceLinkRowsPreview.filter((link) => link.availability !== 'available').length;
+  const sourceLinks = allSourceLinks(preview).length;
   dom.markdownImportItems.hidden = !view.items.length;
   dom.markdownImportItemsResizer.hidden = !view.items.length || !sourceLinks.length;
   fitDialogResizableSection(dom.markdownImportItems);
-  fitDialogResizableSection(dom.markdownImportSourceItems);
-  const warnings = [...new Set([...(preview.warnings || []), ...(view.warnings || [])])];
-  const readyMessage = sourceLinks
-    ? unavailableSourceLinks
-      ? `Import vytvorí iba nové položky. ${unavailableSourceLinks} väzieb zdrojov sa neobnoví alebo ich nebolo možné overiť.`
-      : `Import vytvorí iba nové položky a obnoví ${sourceLinks} väzieb zdrojov; existujúce texty nemení.`
-    : 'Import vytvorí iba nové položky; existujúce texty nemení.';
-  setPreviewStatus(warnings.length ? warnings.join(' ') : readyMessage, Boolean(warnings.length));
+  updateImportReadyStatus(preview, view);
   dom.markdownImportConfirm.disabled = false;
 }
 
@@ -852,7 +1293,9 @@ async function handleSelectedFile() {
   setPreviewStatus('');
   if (!dom.markdownImportDialog.open) dom.markdownImportDialog.showModal();
   try {
-    pendingImport = await prepareMarkdownImport(file);
+    pendingImport = importTarget.prepareImport
+      ? await importTarget.prepareImport(file)
+      : await prepareMarkdownImport(file);
     await checkImportSourceAvailability(pendingImport);
     renderPreview(pendingImport);
   } catch (error) {
@@ -863,7 +1306,7 @@ async function handleSelectedFile() {
 async function confirmImport() {
   if (!pendingImport || !importTarget) return;
   dom.markdownImportConfirm.disabled = true;
-  setPreviewStatus(sourceLinkRows(pendingImport).length ? 'Pridávam nové položky a obnovujem väzby zdrojov...' : 'Pridávam nové položky...');
+  setPreviewStatus(allSourceLinks(pendingImport).length ? 'Pridávam nové položky a obnovujem väzby zdrojov...' : 'Pridávam nové položky...');
   try {
     const result = await importTarget.onConfirm(pendingImport);
     closeImportDialog();
@@ -878,10 +1321,19 @@ async function confirmImport() {
   }
 }
 
-export function requestMarkdownImport({ libraryName = '', parentId = '', destinationLabel = 'knižnice', previewAdapter = null, onConfirm }) {
-  importTarget = { parentId, destinationLabel, previewAdapter, onConfirm };
+export function requestMarkdownImport({
+  libraryName = '',
+  parentId = '',
+  destinationLabel = 'knižnice',
+  confirmLabel = 'Pridať do knižnice',
+  previewAdapter = null,
+  prepareImport = null,
+  onConfirm
+}) {
+  importTarget = { parentId, destinationLabel, confirmLabel, previewAdapter, prepareImport, onConfirm };
   pendingImport = null;
   dom.markdownImportInput.value = '';
+  dom.markdownImportConfirm.textContent = confirmLabel;
   dom.markdownImportDialog.setAttribute('aria-label', `Import Markdownu do knižnice ${libraryName || ''}`.trim());
   dom.markdownImportInput.click();
 }

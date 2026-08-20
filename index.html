@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sk" data-app-version="0.50.8">
+<html lang="sk" data-app-version="0.50.20">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,8 +8,8 @@
       const savedTheme = localStorage.getItem('knowledge-theme') || 'focus';
       document.documentElement.dataset.theme = savedTheme === 'contrast' ? 'contrast-light' : savedTheme;
     </script>
-    <link rel="stylesheet" href="style.css?v=0.50.8" />
-    <link rel="stylesheet" href="assets/app.css?v=0.50.8" />
+    <link rel="stylesheet" href="style.css?v=0.50.20" />
+    <link rel="stylesheet" href="assets/app.css?v=0.50.20" />
   </head>
   <body>
     <main id="login-screen" class="login-screen" aria-labelledby="login-title">
@@ -202,6 +202,7 @@
             </div>
             <div class="libraries-panel-actions">
               <button id="library-create-button" class="panel-icon-button" type="button" aria-label="Vytvoriť knižnicu" title="Vytvoriť knižnicu"><span data-app-icon="plus"></span></button>
+              <button id="library-import-button" class="panel-icon-button" type="button" aria-label="Importovať do novej knižnice" title="Importovať do novej knižnice"><span data-app-icon="upload"></span></button>
               <button id="library-edit-button" class="panel-icon-button" type="button" aria-label="Upraviť vybranú knižnicu" title="Upraviť vybranú knižnicu" disabled><span data-app-icon="pencil"></span></button>
               <button id="library-delete-button" class="panel-icon-button danger" type="button" aria-label="Zmazať vybranú knižnicu" title="Zmazať vybranú knižnicu" disabled><span data-app-icon="trash"></span></button>
             </div>
@@ -253,6 +254,9 @@
               <h2 id="source-browser-title">Všetky zdroje</h2>
             </div>
             <div class="source-browser-actions">
+              <button id="source-transfer-import-button" class="panel-icon-button" type="button" aria-label="Importovať zdroj" title="Importovať zdroj"><span data-app-icon="upload"></span></button>
+              <button id="source-collection-transfer-import-button" class="panel-icon-button" type="button" aria-label="Importovať zbierku zdrojov" title="Importovať zbierku zdrojov"><span data-app-icon="folder-up"></span></button>
+              <button id="source-collection-transfer-export-button" class="panel-icon-button" type="button" aria-label="Exportovať zbierku zdrojov" title="Exportovať otvorenú zbierku zdrojov" hidden><span data-app-icon="folder-down"></span></button>
               <button id="source-create-button" class="panel-icon-button" type="button" aria-label="Vytvoriť zdroj" title="Vytvoriť zdroj"><span data-app-icon="plus"></span></button>
               <button id="source-collection-create-button" class="panel-icon-button" type="button" aria-label="Vytvoriť zbierku" title="Vytvoriť zbierku"><span data-app-icon="folder-plus"></span></button>
               <button id="source-collection-rename-button" class="panel-icon-button" type="button" aria-label="Premenovať zbierku" title="Premenovať zbierku" hidden><span data-app-icon="pencil"></span></button>
@@ -288,6 +292,7 @@
                   </div>
                   <div class="source-detail-actions">
                     <button id="source-relationships-button" class="panel-icon-button" type="button" aria-label="Zobraziť prepojenia zdroja" title="Prepojenia" hidden><span data-app-icon="link"></span></button>
+                    <button id="source-transfer-export-button" class="panel-icon-button" type="button" aria-label="Exportovať zdroj" title="Exportovať zdroj" hidden><span data-app-icon="download"></span></button>
                     <button id="source-delete-button" class="panel-icon-button danger" type="button" aria-label="Zmazať zdroj" title="Zmazať zdroj" hidden><span data-app-icon="trash"></span></button>
                   </div>
                 </header>
@@ -481,7 +486,10 @@
         <div class="tasks-panel-inner">
           <header class="tasks-panel-head">
             <h2>Úlohy</h2>
-            <button id="task-create-button" class="panel-icon-button" type="button" aria-label="Vytvoriť úlohu" title="Vytvoriť úlohu"><span data-app-icon="plus"></span></button>
+            <div class="tasks-panel-actions">
+              <button id="task-import-button" class="panel-icon-button" type="button" aria-label="Importovať úlohu" title="Importovať úlohu"><span data-app-icon="upload"></span></button>
+              <button id="task-create-button" class="panel-icon-button" type="button" aria-label="Vytvoriť úlohu" title="Vytvoriť úlohu"><span data-app-icon="plus"></span></button>
+            </div>
           </header>
           <div class="task-filter-group" role="group" aria-label="Filtrovanie úloh">
             <button class="task-filter-button is-active" type="button" data-task-status="">Všetky</button>
@@ -503,7 +511,7 @@
               </div>
               <div class="task-detail-actions">
                 <button id="task-relationships-button" class="panel-icon-button" type="button" aria-label="Zobraziť prepojenia úlohy" title="Prepojenia" hidden><span data-app-icon="link"></span></button>
-                <button id="task-markdown-export" class="panel-icon-button" type="button" aria-label="Exportovať úlohu do Markdownu" title="Exportovať do Markdownu" hidden><span data-app-icon="download"></span></button>
+                <button id="task-markdown-export" class="panel-icon-button" type="button" aria-label="Exportovať úlohu" title="Exportovať" hidden><span data-app-icon="download"></span></button>
                 <button id="task-delete-button" class="panel-icon-button danger" type="button" aria-label="Zmazať úlohu" title="Zmazať úlohu" hidden><span data-app-icon="trash"></span></button>
               </div>
             </header>
@@ -765,7 +773,7 @@
             <div class="library-detail-toolbar" aria-label="Tvorba prvkov knižnice">
               <button id="library-relationships-button" class="panel-icon-button" type="button" aria-label="Zobraziť prepojenia knižnice" title="Prepojenia"><span data-app-icon="link"></span></button>
               <button id="library-markdown-import" class="panel-icon-button" type="button" aria-label="Importovať Markdown do knižnice" title="Importovať Markdown"><span data-app-icon="upload"></span></button>
-              <button id="library-markdown-export" class="panel-icon-button" type="button" aria-label="Exportovať knižnicu do Markdownu" title="Exportovať knižnicu do Markdownu"><span data-app-icon="download"></span></button>
+              <button id="library-markdown-export" class="panel-icon-button" type="button" aria-label="Exportovať knižnicu" title="Exportovať knižnicu"><span data-app-icon="download"></span></button>
               <button id="create-folder-button" class="library-tool-button" type="button" aria-label="Vytvoriť priečinok" title="Vytvoriť priečinok">
                 <span class="tool-icon folder-icon" data-app-icon="folder"></span>
               </button>
@@ -797,7 +805,7 @@
               <input id="library-editor-title" class="library-editor-title" type="text" maxlength="120" aria-label="Názov prvku" />
               <div class="library-editor-actions">
                 <button id="library-editor-relationships" class="panel-icon-button" type="button" aria-label="Zobraziť prepojenia otvoreného prvku" title="Prepojenia"><span data-app-icon="link"></span></button>
-                <button id="library-editor-markdown-export" class="panel-icon-button" type="button" aria-label="Exportovať do Markdownu" title="Exportovať do Markdownu"><span data-app-icon="download"></span></button>
+                <button id="library-editor-markdown-export" class="panel-icon-button" type="button" aria-label="Exportovať otvorený prvok" title="Exportovať"><span data-app-icon="download"></span></button>
                 <button id="library-editor-fullscreen" class="panel-icon-button editor-fullscreen-button" type="button" aria-label="Otvoriť editor na celej ploche" title="Celá plocha" data-mode="maximize"><span data-app-icon="maximize"></span></button>
                 <button id="library-editor-delete" class="panel-icon-button danger editor-delete-button" type="button" aria-label="Zmazať prvok" title="Zmazať prvok"><span data-app-icon="trash"></span></button>
               </div>
@@ -1355,6 +1363,50 @@
     </dialog>
 
     <input id="markdown-import-input" type="file" accept=".md,.markdown,.mdown,.mkdn,.zip,text/markdown,application/zip" hidden />
+    <dialog id="task-export-dialog" class="library-export-dialog" aria-labelledby="task-export-title">
+      <section class="library-export-panel">
+        <header>
+          <div>
+            <h2 id="task-export-title">Exportovať úlohu</h2>
+            <p id="task-export-description">Vyber formát podľa toho, kam chceš úlohu preniesť.</p>
+          </div>
+          <button id="task-export-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+        </header>
+        <div class="library-export-options">
+          <button id="task-package-export" class="library-export-option" type="button">
+            <span data-app-icon="file"></span>
+            <span><strong>Prenosový balík úlohy</strong><small>Zachová údaje úlohy, väzby zdrojov a priložené súbory.</small></span>
+          </button>
+          <button id="task-portable-markdown-export" class="library-export-option" type="button">
+            <span data-app-icon="download"></span>
+            <span><strong>Prenosný Markdown</strong><small>Čitateľný v Obsidiane, Jopline a Notesnooku.</small></span>
+          </button>
+        </div>
+        <p class="library-export-note">Prenosový balík má pri importe zatiaľ limit 50 MB.</p>
+      </section>
+    </dialog>
+    <dialog id="library-export-dialog" class="library-export-dialog" aria-labelledby="library-export-title">
+      <section class="library-export-panel">
+        <header>
+          <div>
+            <h2 id="library-export-title">Exportovať knižnicu</h2>
+            <p id="library-export-description">Vyber formát podľa toho, kam chceš obsah preniesť.</p>
+          </div>
+          <button id="library-export-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+        </header>
+        <div class="library-export-options">
+          <button id="library-package-export" class="library-export-option" type="button">
+            <span data-app-icon="file"></span>
+            <span><strong id="library-package-export-label">Prenosový balík Poznámkovníka</strong><small id="library-package-export-description">Zachová presný obsah, priečinky, zdroje, väzby a priložené súbory.</small></span>
+          </button>
+          <button id="library-portable-markdown-export" class="library-export-option" type="button">
+            <span data-app-icon="download"></span>
+            <span><strong id="library-portable-markdown-export-label">Prenosný Markdown ZIP</strong><small id="library-portable-markdown-export-description">Čitateľný v Obsidiane, Jopline a Notesnooku; obsahuje aj údaje na opätovný import.</small></span>
+          </button>
+        </div>
+        <p class="library-export-note">Úplná záloha všetkých dát programu je v Nastaveniach, v časti Účet a dáta. Prenosový balík má pri importe zatiaľ limit 50 MB.</p>
+      </section>
+    </dialog>
     <dialog id="markdown-import-dialog" class="markdown-import-dialog" aria-labelledby="markdown-import-title">
       <section class="markdown-import-panel">
         <header>
@@ -1366,21 +1418,101 @@
         </header>
         <p id="markdown-import-summary" class="markdown-import-summary" aria-live="polite"></p>
         <div id="markdown-import-items" class="markdown-import-items" data-dialog-resizable-section data-dialog-section-min-height="112" data-dialog-section-max-height="520" aria-live="polite"></div>
-        <div id="markdown-import-items-resizer" class="dialog-section-resizer" data-dialog-resize-target="markdown-import-items" data-dialog-resize-peer="markdown-import-source-items" role="separator" aria-orientation="horizontal" aria-label="Zmeniť rozdelenie priestoru medzi importovanými textami a prepojeniami zdrojov" tabindex="0"></div>
+        <div id="markdown-import-items-resizer" class="dialog-section-resizer" data-dialog-resize-target="markdown-import-items" role="separator" aria-orientation="horizontal" aria-label="Zmeniť rozdelenie priestoru medzi importovanými textami a prepojeniami zdrojov" tabindex="0"></div>
         <section id="markdown-import-source-links" class="markdown-import-source-links" hidden aria-live="polite">
           <header>
             <strong>Prepojenia zdrojov</strong>
             <small id="markdown-import-source-summary"></small>
           </header>
           <div class="markdown-import-source-headings" aria-hidden="true">
-            <span>Pripojí sa k</span>
-            <span>Zdroj a väzba</span>
+            <span>Použitie</span>
+            <span>Zdroj</span>
+            <span>Import</span>
           </div>
-          <div id="markdown-import-source-items" class="markdown-import-source-items" data-dialog-resizable-section data-dialog-section-min-height="96" data-dialog-section-max-height="420"></div>
+          <div id="markdown-import-source-items" class="markdown-import-source-items"></div>
         </section>
         <p id="markdown-import-status" class="settings-inline-status" aria-live="polite"></p>
         <footer>
           <button id="markdown-import-confirm" class="settings-background-button primary" type="button" disabled>Pridať do knižnice</button>
+        </footer>
+      </section>
+    </dialog>
+
+    <input id="source-transfer-input" type="file" accept=".md,.markdown,.mdown,.mkdn,.zip,text/markdown,application/zip" hidden />
+    <input id="source-collection-transfer-input" type="file" accept=".zip,application/zip" hidden />
+    <dialog id="source-export-dialog" class="library-export-dialog" aria-labelledby="source-export-title">
+      <section class="library-export-panel">
+        <header>
+          <div>
+            <h2 id="source-export-title">Exportovať zdroj</h2>
+            <p id="source-export-description">Vyber formát podľa toho, kam chceš zdroj preniesť.</p>
+          </div>
+          <button id="source-export-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+        </header>
+        <div class="library-export-options">
+          <button id="source-package-export" class="library-export-option" type="button">
+            <span data-app-icon="file"></span>
+            <span><strong>Prenosový balík zdroja</strong><small>Zachová metadáta, prílohy, anotácie a údaje o väzbách.</small></span>
+          </button>
+          <button id="source-markdown-export" class="library-export-option" type="button">
+            <span data-app-icon="download"></span>
+            <span><strong>Prenosný Markdown</strong><small>Čitateľný zápis metadát a poznámky; bez príloh a väzieb.</small></span>
+          </button>
+        </div>
+        <p class="library-export-note">Pri importe balíka sa vždy vytvorí nový zdroj. Väzby sa obnovia len vtedy, keď ich pôvodný cieľ existuje.</p>
+      </section>
+    </dialog>
+    <dialog id="source-transfer-import-dialog" class="markdown-import-dialog source-transfer-import-dialog" aria-labelledby="source-transfer-import-title">
+      <section class="markdown-import-panel source-transfer-import-panel">
+        <header>
+          <div>
+            <h2 id="source-transfer-import-title">Importovať zdroj</h2>
+            <p id="source-transfer-import-description">Vyber Markdown zdroja alebo prenosový ZIP balík.</p>
+          </div>
+          <button id="source-transfer-import-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+        </header>
+        <p id="source-transfer-import-summary" class="markdown-import-summary" aria-live="polite"></p>
+        <div id="source-transfer-import-item" class="source-transfer-import-item" aria-live="polite"></div>
+        <section id="source-transfer-import-relations-section" class="source-transfer-import-relations" hidden aria-live="polite">
+          <header>
+            <strong>Prepojenia</strong>
+            <small>Obnovia sa len k dostupným prvkom.</small>
+          </header>
+          <div id="source-transfer-import-relations" class="source-transfer-import-relation-list"></div>
+        </section>
+        <p id="source-transfer-import-status" class="settings-inline-status" aria-live="polite"></p>
+        <footer>
+          <button id="source-transfer-import-confirm" class="settings-background-button primary" type="button" disabled>Vytvoriť zdroj</button>
+        </footer>
+      </section>
+    </dialog>
+    <dialog id="source-collection-transfer-import-dialog" class="markdown-import-dialog source-collection-transfer-import-dialog" aria-labelledby="source-collection-transfer-import-title">
+      <section class="markdown-import-panel source-collection-transfer-import-panel">
+        <header>
+          <div>
+            <h2 id="source-collection-transfer-import-title">Importovať zbierku zdrojov</h2>
+            <p id="source-collection-transfer-import-description">Vyber prenosový ZIP balík zbierky zdrojov.</p>
+          </div>
+          <button id="source-collection-transfer-import-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+        </header>
+        <p id="source-collection-transfer-import-summary" class="markdown-import-summary" aria-live="polite"></p>
+        <section id="source-collection-transfer-import-tree" class="source-collection-transfer-tree" data-dialog-resizable-section data-dialog-section-min-height="96" data-dialog-section-max-height="300" aria-label="Štruktúra importovaných zbierok"></section>
+        <button class="dialog-section-resizer" type="button" data-dialog-resize-target="source-collection-transfer-import-tree" data-dialog-resize-peer="source-collection-transfer-import-sources-section" aria-label="Upraviť výšku stromu zbierok" aria-orientation="horizontal" aria-valuemin="96" aria-valuemax="300" aria-valuenow="150"><span></span></button>
+        <section id="source-collection-transfer-import-sources-section" class="source-collection-transfer-sources" data-dialog-resizable-section data-dialog-section-min-height="140" data-dialog-section-max-height="470" aria-live="polite">
+          <header>
+            <strong>Zdroje v zbierkach</strong>
+            <small>Všetky sa predvolene skopírujú.</small>
+          </header>
+          <div class="source-collection-transfer-headings" aria-hidden="true">
+            <span>Použitie</span>
+            <span>Zdroj</span>
+            <span>Import</span>
+          </div>
+          <div id="source-collection-transfer-import-sources" class="source-collection-transfer-source-list"></div>
+        </section>
+        <p id="source-collection-transfer-import-status" class="settings-inline-status" aria-live="polite"></p>
+        <footer>
+          <button id="source-collection-transfer-import-confirm" class="settings-background-button primary" type="button" disabled>Vytvoriť zbierku</button>
         </footer>
       </section>
     </dialog>
@@ -1511,6 +1643,6 @@
         }
       }, true);
     </script>
-    <script type="module" src="assets/app.js?v=0.50.8"></script>
+    <script type="module" src="assets/app.js?v=0.50.20"></script>
   </body>
 </html>

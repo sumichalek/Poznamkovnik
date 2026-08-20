@@ -47,8 +47,9 @@ import {
   createLibraryElement,
   deleteLibraryElement,
   importMarkdownIntoLibrary,
-  exportLibraryMarkdownArchive,
-  exportActiveLibraryElementMarkdown,
+  initializeLibraryExport,
+  openLibraryExportDialog,
+  openActiveLibraryElementExportDialog,
   exitEditorFullscreen,
   handleLibraryItemClick,
   openLibraryElement,
@@ -64,6 +65,7 @@ import {
   closeLibraryDetailPanel,
   deleteLibrary,
   hideLibraryForm,
+  importMarkdownAsNewLibrary,
   isTextInput,
   openLibraryDetailPanel,
   openLibrariesPanel,
@@ -341,6 +343,7 @@ window.addEventListener('global-search-open', (event) => {
 });
 
 dom.libraryCreateButton.addEventListener('click', () => showLibraryForm());
+dom.libraryImportButton.addEventListener('click', importMarkdownAsNewLibrary);
 dom.libraryEditButton.addEventListener('click', () => {
   const library = currentLibrary();
   if (library) showLibraryForm(library);
@@ -363,7 +366,7 @@ dom.libraryRelationshipsButton.addEventListener('click', () => {
   if (state.activeDetailLibraryId) void openRelationships({ targetType: 'library', targetId: state.activeDetailLibraryId });
 });
 dom.libraryMarkdownImport.addEventListener('click', importMarkdownIntoLibrary);
-dom.libraryMarkdownExport.addEventListener('click', () => void exportLibraryMarkdownArchive());
+dom.libraryMarkdownExport.addEventListener('click', openLibraryExportDialog);
 dom.libraryItemsList.addEventListener('pointerup', handleLibraryItemClick);
 dom.libraryItemsList.addEventListener('click', handleLibraryItemClick);
 dom.libraryEditorBack.addEventListener('click', () => closeLibraryElementEditor());
@@ -372,7 +375,7 @@ dom.libraryEditorDelete.addEventListener('click', () => deleteLibraryElement());
 dom.libraryEditorRelationships.addEventListener('click', () => {
   if (state.activeLibraryElementId) void openRelationships({ targetType: 'element', targetId: state.activeLibraryElementId });
 });
-dom.libraryEditorMarkdownExport.addEventListener('click', () => void exportActiveLibraryElementMarkdown());
+dom.libraryEditorMarkdownExport.addEventListener('click', openActiveLibraryElementExportDialog);
 dom.libraryEditorTitle.addEventListener('input', () => updateActiveElementFromEditor({ renderItems: true }));
 dom.libraryEditorTitle.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter') return;
@@ -687,6 +690,7 @@ initializeSettings();
 initializeGlobalSearch();
 initializeRelationships();
 initializeMarkdownImport();
+initializeLibraryExport();
 [
   [dom.libraryTags, dom.libraryTagChips],
   [dom.libraryEditorTags, dom.libraryEditorTagChips],
