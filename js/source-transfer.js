@@ -1,4 +1,5 @@
 import { apiRequest } from './api.js';
+import { bibliographyBibtex, bibliographyCslJson, bibliographyRis } from './bibliography.js';
 import { dom } from './dom.js';
 import { installDialogBackdropClose } from './dialogs.js';
 import {
@@ -95,6 +96,14 @@ function sourceMarkdown(source) {
     `author: ${markdownEscape(metadata.author || '')}`,
     `year: ${markdownEscape(metadata.year || '')}`,
     `url: ${markdownEscape(metadata.url || '')}`,
+    `doi: ${markdownEscape(metadata.doi || '')}`,
+    `isbn: ${markdownEscape(metadata.isbn || '')}`,
+    `publisher: ${markdownEscape(metadata.publisher || '')}`,
+    `publicationTitle: ${markdownEscape(metadata.publicationTitle || '')}`,
+    `volume: ${markdownEscape(metadata.volume || '')}`,
+    `issue: ${markdownEscape(metadata.issue || '')}`,
+    `pages: ${markdownEscape(metadata.pages || '')}`,
+    `language: ${markdownEscape(metadata.language || '')}`,
     `tags: ${JSON.stringify(Array.isArray(source.tags) ? source.tags : [])}`,
     '---',
     '',
@@ -148,9 +157,44 @@ async function downloadSourceMarkdown(sourceId) {
   await downloadMarkdownBundle(`${sourceFilename(source.title)}-zdroj.md`, sourceMarkdown(source), createAssetCollector(), { missing: [], skipped: [] });
 }
 
+function downloadTextFile(filename, content, type) {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
+async function downloadSourceCitationFormat(sourceId, format) {
+  const source = await loadCompleteSource(sourceId);
+  const name = sourceFilename(source.title);
+  if (format === 'bibtex') {
+    downloadTextFile(`${name}.bib`, bibliographyBibtex(source), 'application/x-bibtex;charset=utf-8');
+    return;
+  }
+  if (format === 'ris') {
+    downloadTextFile(`${name}.ris`, bibliographyRis(source), 'application/x-research-info-systems;charset=utf-8');
+    return;
+  }
+  downloadTextFile(
+    `${name}.csl.json`,
+    JSON.stringify(bibliographyCslJson(source), null, 2).concat('\n'),
+    'application/vnd.citationstyles.csl+json;charset=utf-8'
+  );
+}
+
 function setExportBusy(busy) {
-  dom.sourcePackageExport.disabled = busy;
-  dom.sourceMarkdownExport.disabled = busy;
+  [
+    dom.sourcePackageExport,
+    dom.sourceMarkdownExport,
+    dom.sourceBibtexExport,
+    dom.sourceRisExport,
+    dom.sourceCslJsonExport
+  ].forEach((button) => { button.disabled = busy; });
   dom.sourceExportCancel.disabled = busy;
 }
 
@@ -171,7 +215,8 @@ async function exportSource(format) {
   setExportBusy(true);
   try {
     if (format === 'package') await downloadSourcePackage(exportSourceId);
-    else await downloadSourceMarkdown(exportSourceId);
+    else if (format === 'markdown') await downloadSourceMarkdown(exportSourceId);
+    else await downloadSourceCitationFormat(exportSourceId, format);
     closeSourceExportDialog();
   } catch (error) {
     window.alert(error?.message || 'Zdroj sa nepodarilo vyexportovať.');
@@ -482,6 +527,9 @@ export function initializeSourceTransfer({ saveCurrent = async () => true, onImp
   dom.sourceExportCancel.addEventListener('click', closeSourceExportDialog);
   dom.sourcePackageExport.addEventListener('click', () => void exportSource('package'));
   dom.sourceMarkdownExport.addEventListener('click', () => void exportSource('markdown'));
+  dom.sourceBibtexExport.addEventListener('click', () => void exportSource('bibtex'));
+  dom.sourceRisExport.addEventListener('click', () => void exportSource('ris'));
+  dom.sourceCslJsonExport.addEventListener('click', () => void exportSource('csl-json'));
   dom.sourceExportDialog.addEventListener('close', () => {
     exportSourceId = '';
     setExportBusy(false);

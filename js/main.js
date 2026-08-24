@@ -1,5 +1,6 @@
 import { APP_VERSION, LEFT_PANEL_REVEAL_DISTANCE, TOPBAR_REVEAL_DISTANCE, storageKeys } from './config.js';
 import { hydrateAppIcons } from './app-icons.js';
+import { bibliographicReference, shortCitation } from './bibliography.js';
 import {
   focusArticleEditor,
   initializeArticleEditor,
@@ -110,6 +111,7 @@ import { initializeSettings } from './settings.js';
 import { initializeGlobalSearch, openGlobalSearch } from './search.js';
 import { initializeRelationships, openRelationships } from './relationships.js';
 import { initializeMarkdownImport } from './markdown-import.js';
+import { initializeDocuments, isDocumentsPanelOpen } from './documents.js';
 import { wireTagInput } from './tags.js';
 import { loadWorkspacePreferences } from './preferences.js';
 import { loadSecuritySettings, startSecuritySession } from './security.js';
@@ -131,6 +133,7 @@ document.addEventListener('pointermove', (event) => {
     !isTasksPanelOpen() &&
     !isCalendarPanelOpen() &&
     !isTutorialPanelOpen() &&
+    !isDocumentsPanelOpen() &&
     !isSourcePreviewOpen()
   ) {
     openLibrariesPanel();
@@ -386,9 +389,21 @@ dom.libraryEditorTitle.addEventListener('keydown', (event) => {
 dom.libraryEditorBody.addEventListener('input', () => updateActiveElementFromEditor());
 dom.libraryEditorTags.addEventListener('input', () => updateActiveElementFromEditor({ renderItems: true }));
 
-async function openCitationDialog() {
+let citationSources = [];
+
+function updateCitationSourceFromSelection() {
+  const sourceId = dom.citationSavedSource.value;
+  const selected = citationSources.find((source) => source.id === sourceId);
+  if (!selected) return;
+  dom.citationSourceInput.value = dom.citationFormat.value === 'bibliography'
+    ? bibliographicReference(selected)
+    : shortCitation(selected);
+}
+
+async function openCitationDialog({ sourceId = '' } = {}) {
   if (!state.activeLibraryElementId) return;
   dom.citationForm.reset();
+  citationSources = [];
   dom.citationSavedSource.replaceChildren();
   const customOption = document.createElement('option');
   customOption.value = '';
@@ -396,7 +411,8 @@ async function openCitationDialog() {
   dom.citationSavedSource.append(customOption);
   try {
     const result = await apiRequest('/sources');
-    result.sources.forEach((source) => {
+    citationSources = Array.isArray(result.sources) ? result.sources : [];
+    citationSources.forEach((source) => {
       const option = document.createElement('option');
       option.value = source.id;
       option.textContent = source.title;
@@ -405,8 +421,12 @@ async function openCitationDialog() {
   } catch {
     // Vlastný citačný zápis funguje aj bez dostupného katalógu zdrojov.
   }
+  if (citationSources.some((source) => source.id === sourceId)) {
+    dom.citationSavedSource.value = sourceId;
+    updateCitationSourceFromSelection();
+  }
   dom.citationDialog.showModal();
-  dom.citationSourceInput.focus();
+  (sourceId ? dom.citationLocatorInput : dom.citationSourceInput).focus();
 }
 
 function selectEditorFile(kind) {
@@ -453,8 +473,15 @@ dom.editorFileInput.addEventListener('change', async () => {
 });
 dom.citationCancelButton.addEventListener('click', () => dom.citationDialog.close());
 dom.citationSavedSource.addEventListener('change', () => {
-  const option = dom.citationSavedSource.selectedOptions[0];
-  if (option?.value && !dom.citationSourceInput.value.trim()) dom.citationSourceInput.value = option.textContent || '';
+  updateCitationSourceFromSelection();
+});
+dom.citationFormat.addEventListener('change', updateCitationSourceFromSelection);
+window.addEventListener('citation-open-request', (event) => {
+  if (!state.activeLibraryElementId) {
+    window.alert('Najprv otvor článok alebo poznámku, do ktorého chceš vložiť citáciu.');
+    return;
+  }
+  void openCitationDialog({ sourceId: String(event.detail?.sourceId || '') });
 });
 dom.citationForm.addEventListener('submit', (event) => {
   event.preventDefault();
@@ -462,7 +489,8 @@ dom.citationForm.addEventListener('submit', (event) => {
   const source = dom.citationSourceInput.value.trim();
   const locator = dom.citationLocatorInput.value.trim();
   const elementId = state.activeLibraryElementId;
-  const inserted = runArticleEditorAction('citation', {
+  const bibliography = dom.citationFormat.value === 'bibliography';
+  const inserted = runArticleEditorAction(bibliography ? 'bibliography-entry' : 'citation', {
     source,
     locator,
     sourceId
@@ -700,6 +728,7 @@ initializeLibraryExport();
 ].forEach(([input, chips]) => wireTagInput(input, chips));
 initializeMusic();
 initializeSources();
+initializeDocuments();
 initializeTasks();
 initializeCalendar();
 initializeTutorial();

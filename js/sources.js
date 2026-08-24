@@ -1,5 +1,6 @@
 import { apiRequest, uploadSourceFile } from './api.js';
 import { createAppIcon, setAppIcon, sourceFileIcon, sourceKindIcon } from './app-icons.js';
+import { bibliographicReference } from './bibliography.js';
 import { dom } from './dom.js';
 import { state } from './state.js';
 import { flushWorkspaceSync } from './storage.js';
@@ -9,6 +10,7 @@ import { refreshSourceDetailResizeHandle } from './source-detail-resize.js';
 import { refreshSourcePreviewResizeHandle } from './source-preview-resize.js';
 import { readTagField, refreshTagSuggestions, setTagField } from './tags.js';
 import { openRelationships } from './relationships.js';
+import { installDialogBackdropClose } from './dialogs.js';
 import { initializeSourceTransfer, openSourceExportDialog } from './source-transfer.js';
 import { exportSourceCollectionPackage, initializeSourceCollectionTransfer } from './source-collection-transfer.js';
 
@@ -62,6 +64,38 @@ let sourceDraftCollectionId = '';
 let sourceBrowserError = '';
 let lastSourceBrowserAction = null;
 let pointerHandledSourceBrowserItem = null;
+let pendingBibliographicProvenance = null;
+let activeBibliographicProposal = null;
+
+const bibliographicMetadataInputs = {
+  author: () => dom.sourceAuthor,
+  year: () => dom.sourceYear,
+  url: () => dom.sourceUrl,
+  doi: () => dom.sourceDoi,
+  isbn: () => dom.sourceIsbn,
+  publisher: () => dom.sourcePublisher,
+  publicationTitle: () => dom.sourcePublicationTitle,
+  volume: () => dom.sourceVolume,
+  issue: () => dom.sourceIssue,
+  pages: () => dom.sourcePages,
+  language: () => dom.sourceLanguage
+};
+
+const bibliographicFieldDefinitions = [
+  { id: 'title', label: 'Názov', read: () => dom.sourceTitle.value, write: (value) => { dom.sourceTitle.value = value; } },
+  { id: 'kind', label: 'Typ', read: () => dom.sourceKind.value, write: (value) => { dom.sourceKind.value = value; } },
+  { id: 'author', label: 'Autor alebo vydavateľ', read: () => dom.sourceAuthor.value, write: (value) => { dom.sourceAuthor.value = value; } },
+  { id: 'year', label: 'Rok', read: () => dom.sourceYear.value, write: (value) => { dom.sourceYear.value = value; } },
+  { id: 'url', label: 'URL', read: () => dom.sourceUrl.value, write: (value) => { dom.sourceUrl.value = value; } },
+  { id: 'doi', label: 'DOI', read: () => dom.sourceDoi.value, write: (value) => { dom.sourceDoi.value = value; } },
+  { id: 'isbn', label: 'ISBN', read: () => dom.sourceIsbn.value, write: (value) => { dom.sourceIsbn.value = value; } },
+  { id: 'publisher', label: 'Vydavateľ', read: () => dom.sourcePublisher.value, write: (value) => { dom.sourcePublisher.value = value; } },
+  { id: 'publicationTitle', label: 'Časopis alebo zborník', read: () => dom.sourcePublicationTitle.value, write: (value) => { dom.sourcePublicationTitle.value = value; } },
+  { id: 'volume', label: 'Zväzok', read: () => dom.sourceVolume.value, write: (value) => { dom.sourceVolume.value = value; } },
+  { id: 'issue', label: 'Číslo', read: () => dom.sourceIssue.value, write: (value) => { dom.sourceIssue.value = value; } },
+  { id: 'pages', label: 'Strany', read: () => dom.sourcePages.value, write: (value) => { dom.sourcePages.value = value; } },
+  { id: 'language', label: 'Jazyk', read: () => dom.sourceLanguage.value, write: (value) => { dom.sourceLanguage.value = value; } }
+];
 
 function notifySourcesChanged() {
   window.dispatchEvent(new Event('sources-changed'));
@@ -101,11 +135,169 @@ function sourceFormSnapshot() {
     title: dom.sourceTitle.value.trim(),
     kind: dom.sourceKind.value,
     year: dom.sourceYear.value.trim(),
-    author: dom.sourceAuthor.value.trim(),
-    url: dom.sourceUrl.value.trim(),
+    metadata: sourceMetadataFromForm(),
     description: dom.sourceDescription.value.trim(),
     tags: readTagField(dom.sourceTags)
   });
+}
+
+function sourceMetadataFromForm() {
+  const metadata = { ...(selectedSource?.metadata || {}) };
+  Object.entries(bibliographicMetadataInputs).forEach(([key, input]) => {
+    const value = input().value.trim();
+    if (value) metadata[key] = value;
+    else delete metadata[key];
+  });
+  if (pendingBibliographicProvenance) metadata.bibliographicProvenance = pendingBibliographicProvenance;
+  return metadata;
+}
+
+function renderBibliographicFields(metadata = {}) {
+  Object.entries(bibliographicMetadataInputs).forEach(([key, input]) => {
+    input().value = metadata[key] || '';
+  });
+  const provenance = metadata.bibliographicProvenance;
+  if (provenance?.provider && provenance?.retrievedAt) {
+    const timestamp = new Intl.DateTimeFormat('sk-SK', { dateStyle: 'medium', timeStyle: 'short' })
+      .format(new Date(provenance.retrievedAt));
+    dom.sourceMetadataProvenance.textContent = `Údaje načítané z ${provenance.provider} · ${timestamp}`;
+    dom.sourceMetadataProvenance.hidden = false;
+  } else {
+    dom.sourceMetadataProvenance.hidden = true;
+    dom.sourceMetadataProvenance.textContent = '';
+  }
+  const hasDetails = ['doi', 'isbn', 'publisher', 'publicationTitle', 'volume', 'issue', 'pages', 'language']
+    .some((key) => Boolean(metadata[key]));
+  dom.sourceBibliographicFields.open = hasDetails;
+}
+
+function closeSourceMetadataDialog() {
+  activeBibliographicProposal = null;
+  if (dom.sourceMetadataDialog.open) dom.sourceMetadataDialog.close();
+}
+
+function sourceLookupValue() {
+  return dom.sourceDoi.value.trim() || dom.sourceIsbn.value.trim() || dom.sourceUrl.value.trim();
+}
+
+function comparisonValue(value) {
+  return String(value || '').trim();
+}
+
+function bibliographicProposalFields(proposal) {
+  const metadata = proposal?.metadata && typeof proposal.metadata === 'object' ? proposal.metadata : {};
+  return bibliographicFieldDefinitions
+    .map((field) => ({ ...field, proposed: comparisonValue(field.id === 'title' ? proposal?.title : field.id === 'kind' ? proposal?.kind : metadata[field.id]) }))
+    .filter((field) => field.proposed);
+}
+
+function renderSourceMetadataDuplicates(duplicates = []) {
+  dom.sourceMetadataDuplicates.replaceChildren();
+  dom.sourceMetadataDuplicates.hidden = !duplicates.length;
+  if (!duplicates.length) return;
+
+  const message = document.createElement('p');
+  message.textContent = duplicates.length === 1
+    ? 'Zdroj s týmto identifikátorom už v katalógu existuje.'
+    : `Zdroje s týmto identifikátorom už v katalógu existujú (${duplicates.length}).`;
+  dom.sourceMetadataDuplicates.append(message);
+  const list = document.createElement('div');
+  list.className = 'source-metadata-duplicate-list';
+  duplicates.forEach((duplicate) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.sourceMetadataOpenDuplicate = duplicate.id;
+    button.append(createAppIcon(sourceKindIcon(duplicate.kind)), document.createTextNode(duplicate.title));
+    list.append(button);
+  });
+  dom.sourceMetadataDuplicates.append(list);
+}
+
+function renderSourceMetadataComparison(result) {
+  const proposal = result?.proposal || {};
+  activeBibliographicProposal = result;
+  dom.sourceMetadataDescription.textContent = `${result.provider} · ${result.identifier?.type?.toUpperCase() || 'identifikátor'}: ${result.identifier?.value || ''}`;
+  renderSourceMetadataDuplicates(result.duplicates || []);
+  dom.sourceMetadataComparison.replaceChildren();
+
+  const fields = bibliographicProposalFields(proposal);
+  if (!fields.length) {
+    const empty = document.createElement('p');
+    empty.className = 'source-metadata-empty';
+    empty.textContent = 'Služba nenašla žiadne údaje, ktoré by sa dali vložiť do zdroja.';
+    dom.sourceMetadataComparison.append(empty);
+    dom.sourceMetadataApply.disabled = true;
+    return;
+  }
+
+  fields.forEach((field) => {
+    const current = comparisonValue(field.read());
+    const identical = current === field.proposed;
+    const row = document.createElement('label');
+    row.className = 'source-metadata-row';
+    if (identical) row.classList.add('is-identical');
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.value = field.id;
+    checkbox.checked = !current;
+    checkbox.disabled = identical;
+    checkbox.setAttribute('aria-label', `Použiť pole ${field.label}`);
+    const name = document.createElement('strong');
+    name.textContent = field.label;
+    const currentValue = document.createElement('span');
+    currentValue.className = 'source-metadata-current';
+    currentValue.textContent = current || 'Prázdne';
+    const proposalValue = document.createElement('span');
+    proposalValue.className = 'source-metadata-proposed';
+    proposalValue.textContent = identical ? 'Už zhodné' : field.proposed;
+    row.append(checkbox, name, currentValue, proposalValue);
+    dom.sourceMetadataComparison.append(row);
+  });
+  dom.sourceMetadataApply.disabled = false;
+}
+
+async function lookupSourceMetadata() {
+  const identifier = sourceLookupValue();
+  if (!identifier) {
+    dom.sourceUrl.setCustomValidity('Zadaj DOI alebo ISBN, z ktorého sa majú načítať údaje.');
+    dom.sourceUrl.reportValidity();
+    return;
+  }
+  dom.sourceUrl.setCustomValidity('');
+  dom.sourceMetadataLookupButton.disabled = true;
+  try {
+    const result = await apiRequest('/sources/metadata-lookup', {
+      method: 'POST',
+      body: { identifier, excludeSourceId: selectedSource?.id || '' }
+    });
+    renderSourceMetadataComparison(result);
+    if (!dom.sourceMetadataDialog.open) dom.sourceMetadataDialog.showModal();
+  } catch (error) {
+    dom.sourceUrl.setCustomValidity(error?.message || 'Údaje sa nepodarilo načítať.');
+    dom.sourceUrl.reportValidity();
+  } finally {
+    dom.sourceMetadataLookupButton.disabled = false;
+  }
+}
+
+function applySourceMetadataProposal() {
+  if (!activeBibliographicProposal?.proposal) return;
+  const fields = new Map(bibliographicProposalFields(activeBibliographicProposal.proposal).map((field) => [field.id, field]));
+  const selectedFields = [...dom.sourceMetadataComparison.querySelectorAll('input[type="checkbox"]:checked')];
+  selectedFields.forEach((checkbox) => {
+    const field = fields.get(checkbox.value);
+    if (field) field.write(field.proposed);
+  });
+  if (selectedFields.length) {
+    pendingBibliographicProvenance = {
+      provider: activeBibliographicProposal.provider,
+      identifier: activeBibliographicProposal.identifier,
+      retrievedAt: activeBibliographicProposal.retrievedAt
+    };
+    dom.sourceBibliographicFields.open = true;
+  }
+  closeSourceMetadataDialog();
 }
 
 function rememberSourceForm() {
@@ -1101,15 +1293,20 @@ function startNewSource() {
   closeSourcePreview();
   sourceDraftCollectionId = activeSourceCollectionId;
   selectedSource = null;
+  pendingBibliographicProvenance = null;
   setSourceFilesStatus('');
   showSourceDetail();
   dom.sourceForm.reset();
   setTagField(dom.sourceTags, dom.sourceTagChips, []);
   dom.sourceKind.value = 'source';
+  renderBibliographicFields();
   dom.sourceFormTitle.textContent = 'Nový zdroj';
   dom.sourceDeleteButton.hidden = true;
   dom.sourceRelationshipsButton.hidden = true;
+  dom.sourceCitationButton.hidden = true;
   dom.sourceTransferExportButton.hidden = true;
+  dom.sourceCitationSection.hidden = true;
+  dom.sourceCitationPreview.textContent = '';
   dom.sourceDetailEmpty.hidden = true;
   dom.sourceForm.hidden = false;
   hideSourceSections();
@@ -1140,14 +1337,17 @@ function renderSourceDetail() {
   dom.sourceFormTitle.textContent = selectedSource.title;
   dom.sourceDeleteButton.hidden = false;
   dom.sourceRelationshipsButton.hidden = false;
+  dom.sourceCitationButton.hidden = false;
   dom.sourceTransferExportButton.hidden = false;
   dom.sourceTitle.value = selectedSource.title;
   dom.sourceKind.value = selectedSource.kind in kindLabels ? selectedSource.kind : 'source';
   dom.sourceYear.value = metadata.year || '';
-  dom.sourceAuthor.value = metadata.author || '';
-  dom.sourceUrl.value = metadata.url || '';
+  pendingBibliographicProvenance = null;
+  renderBibliographicFields(metadata);
   dom.sourceDescription.value = selectedSource.description || '';
   setTagField(dom.sourceTags, dom.sourceTagChips, selectedSource.tags || []);
+  dom.sourceCitationSection.hidden = false;
+  dom.sourceCitationPreview.textContent = bibliographicReference(selectedSource);
   dom.sourceCollectionSection.hidden = false;
   dom.sourceFilesSection.hidden = false;
   dom.sourceLibrarySection.hidden = false;
@@ -1195,16 +1395,13 @@ export async function saveSourceDraft() {
         kind: dom.sourceKind.value,
         description: dom.sourceDescription.value.trim(),
         tags: readTagField(dom.sourceTags),
-        metadata: {
-          author: dom.sourceAuthor.value.trim(),
-          year: dom.sourceYear.value.trim(),
-          url: dom.sourceUrl.value.trim()
-        }
+        metadata: sourceMetadataFromForm()
       };
       const result = selectedSource
         ? await apiRequest(`/sources/${selectedSource.id}`, { method: 'PATCH', body: data })
         : await apiRequest('/sources', { method: 'POST', body: { ...data, id: crypto.randomUUID() } });
       selectedSource = result.source;
+      pendingBibliographicProvenance = null;
       if (isNewSource && sourceDraftCollectionId) {
         await apiRequest(`/source-collections/${encodeURIComponent(sourceDraftCollectionId)}/sources/${selectedSource.id}`, {
           method: 'PUT',
@@ -1700,6 +1897,7 @@ export async function refreshElementSourceLinks() {
 
 export function initializeSources() {
   syncSourceReturnButton();
+  installDialogBackdropClose(dom.sourceMetadataDialog, closeSourceMetadataDialog);
   initializeSourceTransfer({
     saveCurrent: saveSourceDraft,
     onImported: async (sourceId) => {
@@ -1769,6 +1967,19 @@ export function initializeSources() {
     window.dispatchEvent(new CustomEvent('source-return-request', { detail: state.sourceReturnTarget }));
   });
   dom.sourceTitle.addEventListener('input', () => dom.sourceTitle.setCustomValidity(''));
+  dom.sourceMetadataLookupButton.addEventListener('click', () => void lookupSourceMetadata());
+  dom.sourceMetadataCancel.addEventListener('click', closeSourceMetadataDialog);
+  dom.sourceMetadataApply.addEventListener('click', applySourceMetadataProposal);
+  dom.sourceMetadataDuplicates.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-source-metadata-open-duplicate]');
+    if (!button) return;
+    const sourceId = button.dataset.sourceMetadataOpenDuplicate;
+    if (hasUnsavedSourceChanges() && !confirm('Aktuálne úpravy zdroja ešte nie sú uložené. Naozaj chceš otvoriť existujúci zdroj?')) {
+      return;
+    }
+    closeSourceMetadataDialog();
+    if (sourceId) void selectSource(sourceId);
+  });
   dom.sourceCollectionName.addEventListener('input', () => dom.sourceCollectionName.setCustomValidity(''));
   dom.sourceSearch.addEventListener('input', () => {
     window.clearTimeout(searchTimer);
@@ -1784,6 +1995,28 @@ export function initializeSources() {
   });
   dom.sourceRelationshipsButton.addEventListener('click', () => {
     if (selectedSource) void openRelationships({ targetType: 'source', targetId: selectedSource.id });
+  });
+  dom.sourceCitationButton.addEventListener('click', () => {
+    if (!selectedSource) return;
+    window.dispatchEvent(new CustomEvent('citation-open-request', { detail: { sourceId: selectedSource.id } }));
+  });
+  dom.sourceCitationCopyButton.addEventListener('click', () => {
+    const value = dom.sourceCitationPreview.textContent.trim();
+    if (!value) return;
+    void (async () => {
+      try {
+        await navigator.clipboard.writeText(value);
+      } catch {
+        const textarea = document.createElement('textarea');
+        textarea.value = value;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.append(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
+      }
+    })();
   });
   dom.sourceTransferExportButton.addEventListener('click', () => {
     if (selectedSource) openSourceExportDialog(selectedSource);

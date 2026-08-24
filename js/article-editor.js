@@ -352,6 +352,11 @@ export function runArticleEditorAction(action, value = {}) {
         .insertContent(' ')
         .run();
     }
+    case 'bibliography-entry': {
+      const source = String(value.source || '').trim();
+      if (!source) return false;
+      return chain.insertContent(source).insertContent(' ').run();
+    }
     default:
       return false;
   }

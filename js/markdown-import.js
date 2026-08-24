@@ -630,13 +630,22 @@ function importedTaskRecord(value) {
   const tags = Array.isArray(value?.tags)
     ? [...new Set(value.tags.map((tag) => manifestText(tag, 80)).filter(Boolean))].slice(0, 30)
     : [];
+  const listPaths = Array.isArray(value?.listPaths)
+    ? value.listPaths
+      .slice(0, 30)
+      .map((path) => Array.isArray(path)
+        ? path.slice(0, 12).map((part) => manifestText(part, 160)).filter(Boolean)
+        : [])
+      .filter((path) => path.length)
+    : [];
   return {
     title,
     description: manifestText(value?.description, 10_000),
     status,
     priority,
     dueDate: /^\d{4}-\d{2}-\d{2}$/.test(dueDate) ? dueDate : '',
-    tags
+    tags,
+    listPaths
   };
 }
 
@@ -764,7 +773,8 @@ export async function prepareTaskMarkdownImport(file) {
     status: metadata.status,
     priority: metadata.priority,
     dueDate: metadata.due,
-    tags: metadata.tags
+    tags: metadata.tags,
+    listPaths: metadata.taskListPaths
   });
   if (!task) throw new Error('Markdown úlohy nemá platný názov.');
   return taskImportPreview({ sourceName: String(file.name || 'Markdown úlohy'), task });

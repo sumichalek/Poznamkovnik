@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .podcast import PodcastFeed
+from .bibliography import detect_identifier
 from .tutorial_content import C_EXAMPLES, C_LANGUAGE, C_PAGES
 
 
@@ -69,6 +70,9 @@ BACKUP_RECORD_LIMITS = {
     "sourceCollections": 10_000,
     "collectionSources": 50_000,
     "sourceFiles": 50_000,
+    "documentProjects": 5_000,
+    "documentInputs": 50_000,
+    "documentPages": 250_000,
     "musicTracks": 20_000,
     "musicPlaylists": 5_000,
     "musicPlaylistTracks": 100_000,
@@ -80,6 +84,8 @@ BACKUP_RECORD_LIMITS = {
     "librarySources": 50_000,
     "elementSources": 50_000,
     "tasks": 20_000,
+    "taskLists": 10_000,
+    "taskListMemberships": 50_000,
     "taskLinks": 50_000,
     "calendarEvents": 20_000,
     "calendarEventLinks": 50_000,
@@ -223,6 +229,43 @@ class Database:
                 CREATE INDEX IF NOT EXISTS source_files_source_idx ON source_files(source_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS source_files_blob_idx ON source_files(blob_hash);
 
+                CREATE TABLE IF NOT EXISTS document_projects (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS document_projects_user_idx
+                    ON document_projects(user_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS document_inputs (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES document_projects(id) ON DELETE CASCADE,
+                    source_id TEXT REFERENCES sources(id) ON DELETE SET NULL,
+                    source_file_id TEXT REFERENCES source_files(id) ON DELETE SET NULL,
+                    blob_hash TEXT NOT NULL,
+                    original_name TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS document_inputs_project_idx
+                    ON document_inputs(project_id, created_at);
+                CREATE INDEX IF NOT EXISTS document_inputs_blob_idx ON document_inputs(blob_hash);
+
+                CREATE TABLE IF NOT EXISTS document_pages (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES document_projects(id) ON DELETE CASCADE,
+                    input_id TEXT NOT NULL REFERENCES document_inputs(id) ON DELETE CASCADE,
+                    input_page_index INTEGER NOT NULL,
+                    order_index INTEGER NOT NULL,
+                    rotation INTEGER NOT NULL DEFAULT 0 CHECK(rotation IN (0, 90, 180, 270)),
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS document_pages_project_idx
+                    ON document_pages(project_id, order_index, created_at);
+
                 CREATE TABLE IF NOT EXISTS music_tracks (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -362,6 +405,16 @@ class Database:
                 CREATE INDEX IF NOT EXISTS source_annotations_file_idx ON source_annotations(source_file_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS source_annotations_element_idx ON source_annotations(element_id);
 
+                CREATE TABLE IF NOT EXISTS task_lists (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    parent_id TEXT REFERENCES task_lists(id) ON DELETE SET NULL,
+                    title TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS task_lists_user_parent_idx ON task_lists(user_id, parent_id, title COLLATE NOCASE);
+
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -387,6 +440,14 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS task_links_task_idx ON task_links(task_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS task_links_target_idx ON task_links(target_type, target_id);
+
+                CREATE TABLE IF NOT EXISTS task_list_memberships (
+                    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                    list_id TEXT NOT NULL REFERENCES task_lists(id) ON DELETE CASCADE,
+                    added_at TEXT NOT NULL,
+                    PRIMARY KEY(task_id, list_id)
+                );
+                CREATE INDEX IF NOT EXISTS task_list_memberships_list_idx ON task_list_memberships(list_id, added_at DESC);
 
                 CREATE TABLE IF NOT EXISTS calendar_events (
                     id TEXT PRIMARY KEY,
@@ -2072,6 +2133,27 @@ class Database:
                     WHERE s.user_id = ? ORDER BY sf.created_at
                     """
                 ),
+                "documentProjects": rows(
+                    "SELECT id, title, created_at, updated_at FROM document_projects WHERE user_id = ? ORDER BY created_at"
+                ),
+                "documentInputs": rows(
+                    """
+                    SELECT i.id, i.project_id, i.source_id, i.source_file_id, i.blob_hash, i.original_name,
+                           i.mime_type, i.size_bytes, i.created_at
+                    FROM document_inputs i
+                    JOIN document_projects p ON p.id = i.project_id
+                    WHERE p.user_id = ? ORDER BY i.created_at
+                    """
+                ),
+                "documentPages": rows(
+                    """
+                    SELECT page.id, page.project_id, page.input_id, page.input_page_index, page.order_index,
+                           page.rotation, page.created_at
+                    FROM document_pages page
+                    JOIN document_projects p ON p.id = page.project_id
+                    WHERE p.user_id = ? ORDER BY page.project_id, page.order_index, page.created_at
+                    """
+                ),
                 "musicTracks": rows(
                     """
                     SELECT id, blob_hash, original_name, mime_type, size_bytes, title, artist, album, release_year,
@@ -2145,6 +2227,20 @@ class Database:
                     """
                     SELECT id, title, description, tags_json, status, priority, due_date, completed_at, created_at, updated_at
                     FROM tasks WHERE user_id = ? ORDER BY created_at
+                    """
+                ),
+                "taskLists": rows(
+                    """
+                    SELECT id, parent_id, title, created_at, updated_at
+                    FROM task_lists WHERE user_id = ? ORDER BY created_at
+                    """
+                ),
+                "taskListMemberships": rows(
+                    """
+                    SELECT membership.task_id, membership.list_id, membership.added_at
+                    FROM task_list_memberships membership
+                    JOIN tasks task ON task.id = membership.task_id
+                    WHERE task.user_id = ? ORDER BY membership.added_at
                     """
                 ),
                 "taskLinks": rows(
@@ -2226,6 +2322,8 @@ class Database:
             raise ValidationError("Záloha neobsahuje platné dáta.")
 
         optional_backup_keys = {
+            "taskLists",
+            "taskListMemberships",
             "tutorialLanguages",
             "tutorialPages",
             "tutorialExamples",
@@ -2239,6 +2337,9 @@ class Database:
             "radioRecordingSchedules",
             "podcastFeeds",
             "podcastEpisodes",
+            "documentProjects",
+            "documentInputs",
+            "documentPages",
         }
         records = {
             key: self._backup_records(snapshot.get(key, [] if key in optional_backup_keys else None), key)
@@ -2357,6 +2458,76 @@ class Database:
                 }
             )
         source_file_ids = self._backup_unique_ids(source_files, "súborov")
+
+        document_projects = [
+            {
+                "id": self._backup_id(row, "id"),
+                "title": self._backup_text(row, "title", 240) or "Nový dokument",
+                "created_at": self._timestamp(row.get("created_at")),
+                "updated_at": self._timestamp(row.get("updated_at")),
+            }
+            for row in records["documentProjects"]
+        ]
+        document_project_ids = self._backup_unique_ids(document_projects, "projektov dielne")
+        document_inputs = []
+        for row in records["documentInputs"]:
+            project_id = self._backup_id(row, "project_id")
+            blob_hash = self._backup_blob_hash(row.get("blob_hash"))
+            if project_id not in document_project_ids or not blob_hash:
+                continue
+            try:
+                size_bytes = int(row.get("size_bytes", 0))
+            except (TypeError, ValueError):
+                continue
+            if size_bytes < 0:
+                continue
+            source_id = self._clean_id(row.get("source_id")) or None
+            source_file_id = self._clean_id(row.get("source_file_id")) or None
+            if source_id not in source_ids:
+                source_id = None
+                source_file_id = None
+            elif source_file_id not in source_file_ids:
+                source_file_id = None
+            document_inputs.append(
+                {
+                    "id": self._backup_id(row, "id"),
+                    "project_id": project_id,
+                    "source_id": source_id,
+                    "source_file_id": source_file_id,
+                    "blob_hash": blob_hash,
+                    "original_name": self._backup_text(row, "original_name", 240) or "dokument",
+                    "mime_type": self._backup_text(row, "mime_type", 160) or "application/octet-stream",
+                    "size_bytes": size_bytes,
+                    "created_at": self._timestamp(row.get("created_at")),
+                }
+            )
+        document_input_ids = self._backup_unique_ids(document_inputs, "vstupov dielne")
+        document_pages = []
+        for row in records["documentPages"]:
+            project_id = self._backup_id(row, "project_id")
+            input_id = self._backup_id(row, "input_id")
+            try:
+                input_page_index = int(row.get("input_page_index", -1))
+                order_index = int(row.get("order_index", -1))
+                rotation = int(row.get("rotation", 0))
+            except (TypeError, ValueError):
+                continue
+            if project_id not in document_project_ids or input_id not in document_input_ids:
+                continue
+            if not 0 <= input_page_index <= 100_000 or not 0 <= order_index <= 500_000 or rotation not in {0, 90, 180, 270}:
+                continue
+            document_pages.append(
+                {
+                    "id": self._backup_id(row, "id"),
+                    "project_id": project_id,
+                    "input_id": input_id,
+                    "input_page_index": input_page_index,
+                    "order_index": order_index,
+                    "rotation": rotation,
+                    "created_at": self._timestamp(row.get("created_at")),
+                }
+            )
+        self._backup_unique_ids(document_pages, "strán dielne")
 
         music_tracks = []
         for row in records["musicTracks"]:
@@ -2576,6 +2747,48 @@ class Database:
                 }
             )
         task_ids = self._backup_unique_ids(tasks, "úloh")
+
+        task_lists = []
+        for row in records["taskLists"]:
+            list_id = self._backup_id(row, "id")
+            title = self._backup_text(row, "title", 160).strip()
+            if not title:
+                continue
+            task_lists.append(
+                {
+                    "id": list_id,
+                    "parent_id": self._clean_id(row.get("parent_id")) or None,
+                    "title": title,
+                    "created_at": self._timestamp(row.get("created_at")),
+                    "updated_at": self._timestamp(row.get("updated_at")),
+                }
+            )
+        task_list_ids = self._backup_unique_ids(task_lists, "zoznamov úloh")
+        for task_list in task_lists:
+            if task_list["parent_id"] not in task_list_ids:
+                task_list["parent_id"] = None
+        task_list_parents = {item["id"]: item["parent_id"] for item in task_lists}
+        for list_id in task_list_ids:
+            visited: set[str] = set()
+            current_id = list_id
+            while current_id:
+                if current_id in visited:
+                    raise ValidationError("Záloha obsahuje cyklus v zoznamoch úloh.")
+                visited.add(current_id)
+                current_id = task_list_parents.get(current_id) or ""
+
+        task_list_memberships = []
+        seen_task_list_memberships: set[tuple[str, str]] = set()
+        for row in records["taskListMemberships"]:
+            task_id = self._clean_id(row.get("task_id"))
+            list_id = self._clean_id(row.get("list_id"))
+            pair = (task_id, list_id)
+            if task_id not in task_ids or list_id not in task_list_ids or pair in seen_task_list_memberships:
+                continue
+            seen_task_list_memberships.add(pair)
+            task_list_memberships.append(
+                {"task_id": task_id, "list_id": list_id, "added_at": self._timestamp(row.get("added_at"))}
+            )
 
         calendar_events = []
         for row in records["calendarEvents"]:
@@ -2932,8 +3145,10 @@ class Database:
         with self.connect() as connection:
             connection.execute("PRAGMA defer_foreign_keys = ON")
             connection.execute("DELETE FROM semantic_links WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM document_projects WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM tutorial_languages WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM tasks WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM task_lists WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM calendar_events WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM radio_recording_schedules WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM radio_stations WHERE user_id = ?", (user_id,))
@@ -2985,6 +3200,30 @@ class Database:
             connection.executemany(
                 "INSERT INTO source_files(id, source_id, blob_hash, original_name, mime_type, size_bytes, created_at) VALUES (:id, :source_id, :blob_hash, :original_name, :mime_type, :size_bytes, :created_at)",
                 source_files,
+            )
+            connection.executemany(
+                """
+                INSERT INTO document_projects(id, user_id, title, created_at, updated_at)
+                VALUES (:id, :user_id, :title, :created_at, :updated_at)
+                """,
+                [{**row, "user_id": user_id} for row in document_projects],
+            )
+            connection.executemany(
+                """
+                INSERT INTO document_inputs(
+                    id, project_id, source_id, source_file_id, blob_hash, original_name, mime_type, size_bytes, created_at
+                ) VALUES (
+                    :id, :project_id, :source_id, :source_file_id, :blob_hash, :original_name, :mime_type, :size_bytes, :created_at
+                )
+                """,
+                document_inputs,
+            )
+            connection.executemany(
+                """
+                INSERT INTO document_pages(id, project_id, input_id, input_page_index, order_index, rotation, created_at)
+                VALUES (:id, :project_id, :input_id, :input_page_index, :order_index, :rotation, :created_at)
+                """,
+                document_pages,
             )
             connection.executemany(
                 """
@@ -3072,10 +3311,21 @@ class Database:
             )
             connection.executemany(
                 """
+                INSERT INTO task_lists(id, user_id, parent_id, title, created_at, updated_at)
+                VALUES (:id, :user_id, :parent_id, :title, :created_at, :updated_at)
+                """,
+                [{**row, "user_id": user_id} for row in task_lists],
+            )
+            connection.executemany(
+                """
                 INSERT INTO tasks(id, user_id, title, description, tags_json, status, priority, due_date, completed_at, created_at, updated_at)
                 VALUES (:id, :user_id, :title, :description, :tags_json, :status, :priority, :due_date, :completed_at, :created_at, :updated_at)
                 """,
                 [{**row, "user_id": user_id} for row in tasks],
+            )
+            connection.executemany(
+                "INSERT INTO task_list_memberships(task_id, list_id, added_at) VALUES (:task_id, :list_id, :added_at)",
+                task_list_memberships,
             )
             connection.executemany(
                 "INSERT INTO task_links(id, task_id, target_type, target_id, created_at) VALUES (:id, :task_id, :target_type, :target_id, :created_at)",
@@ -3406,6 +3656,75 @@ class Database:
         value = str(value or "").strip()
         return value[:64] if value else now_iso()
 
+    def list_task_lists(self, user_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT l.id, l.parent_id, l.title, l.created_at, l.updated_at,
+                       COUNT(DISTINCT child.id) AS child_count,
+                       COUNT(DISTINCT membership.task_id) AS task_count
+                FROM task_lists l
+                LEFT JOIN task_lists child ON child.parent_id = l.id
+                LEFT JOIN task_list_memberships membership ON membership.list_id = l.id
+                WHERE l.user_id = ?
+                GROUP BY l.id
+                ORDER BY l.title COLLATE NOCASE, l.created_at
+                """,
+                (user_id,),
+            ).fetchall()
+        return [self._task_list_row(row) for row in rows]
+
+    def create_task_list(self, user_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Zoznam úloh musí byť objekt.")
+        list_id = self._clean_id(data.get("id"))
+        parent_id = self._clean_id(data.get("parentId")) or None
+        title = self._clean_text(data.get("title"), 160)
+        if not list_id or not title:
+            raise ValidationError("Zoznam úloh potrebuje názov.")
+        timestamp = now_iso()
+        with self.connect() as connection:
+            if parent_id:
+                self._assert_task_list(connection, user_id, parent_id)
+            self._assert_task_list_title_available(connection, user_id, parent_id, title)
+            connection.execute(
+                "INSERT INTO task_lists(id, user_id, parent_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (list_id, user_id, parent_id, title, timestamp, timestamp),
+            )
+            row = self._task_list(connection, user_id, list_id)
+        return self._task_list_row(row)
+
+    def update_task_list(self, user_id: str, list_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Úprava zoznamu úloh musí byť objekt.")
+        with self.connect() as connection:
+            current = self._task_list(connection, user_id, list_id)
+            title = self._clean_text(data.get("title", current["title"]), 160)
+            parent_id = self._clean_id(data.get("parentId", current["parent_id"])) or None
+            if not title:
+                raise ValidationError("Zoznam úloh potrebuje názov.")
+            if parent_id:
+                self._assert_task_list(connection, user_id, parent_id)
+                self._assert_task_list_parent(connection, user_id, list_id, parent_id)
+            self._assert_task_list_title_available(connection, user_id, parent_id, title, excluded_id=list_id)
+            connection.execute(
+                "UPDATE task_lists SET parent_id = ?, title = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                (parent_id, title, now_iso(), list_id, user_id),
+            )
+            row = self._task_list(connection, user_id, list_id)
+        return self._task_list_row(row)
+
+    def delete_task_list(self, user_id: str, list_id: str) -> str:
+        with self.connect() as connection:
+            task_list = self._task_list(connection, user_id, list_id)
+            parent_id = task_list["parent_id"] or ""
+            connection.execute(
+                "UPDATE task_lists SET parent_id = ?, updated_at = ? WHERE user_id = ? AND parent_id = ?",
+                (parent_id or None, now_iso(), user_id, list_id),
+            )
+            connection.execute("DELETE FROM task_lists WHERE id = ? AND user_id = ?", (list_id, user_id))
+        return parent_id
+
     def create_task(self, user_id: str, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise ValidationError("Úloha musí byť objekt.")
@@ -3417,6 +3736,8 @@ class Database:
         priority = self._task_priority(data.get("priority", "none"))
         timestamp = now_iso()
         with self.connect() as connection:
+            list_ids = self._task_list_ids(connection, user_id, data.get("listIds"))
+            list_ids |= self._task_list_ids_from_paths(connection, user_id, data.get("listPaths"))
             connection.execute(
                 """
                 INSERT INTO tasks(
@@ -3437,17 +3758,28 @@ class Database:
                     timestamp,
                 ),
             )
+            connection.executemany(
+                "INSERT INTO task_list_memberships(task_id, list_id, added_at) VALUES (?, ?, ?)",
+                [(task_id, list_id, timestamp) for list_id in sorted(list_ids)],
+            )
         return self.task_detail(user_id, task_id)
 
-    def list_tasks(self, user_id: str, status: str = "") -> list[dict[str, Any]]:
+    def list_tasks(self, user_id: str, status: str = "", list_id: str = "") -> list[dict[str, Any]]:
         status = self._task_status(status) if status else ""
+        list_id = self._clean_id(list_id)
         with self.connect() as connection:
+            if list_id:
+                self._assert_task_list(connection, user_id, list_id)
             rows = connection.execute(
                 """
                 SELECT t.*, COUNT(tl.id) AS link_count
                 FROM tasks t
                 LEFT JOIN task_links tl ON tl.task_id = t.id
                 WHERE t.user_id = ? AND (? = '' OR t.status = ?)
+                  AND (? = '' OR EXISTS (
+                      SELECT 1 FROM task_list_memberships membership
+                      WHERE membership.task_id = t.id AND membership.list_id = ?
+                  ))
                 GROUP BY t.id
                 ORDER BY
                     CASE t.status WHEN 'done' THEN 1 ELSE 0 END,
@@ -3456,7 +3788,7 @@ class Database:
                     t.due_date ASC,
                     t.updated_at DESC
                 """,
-                (user_id, status, status),
+                (user_id, status, status, list_id, list_id),
             ).fetchall()
         return [self._task_row(row) for row in rows]
 
@@ -3471,8 +3803,10 @@ class Database:
                 target = self._task_link_target(connection, user_id, link)
                 if target:
                     links.append(target)
+            lists = self._task_lists_for_task(connection, user_id, task_id)
         result = self._task_row(task)
         result["links"] = links
+        result["lists"] = lists
         return result
 
     def update_task(self, user_id: str, task_id: str, data: Any) -> dict[str, Any]:
@@ -3499,6 +3833,14 @@ class Database:
                 """,
                 (title, description, self._tags_json(tags), status, priority, due_date, completed_at, now_iso(), task_id),
             )
+            if "listIds" in data or "listPaths" in data:
+                list_ids = self._task_list_ids(connection, user_id, data.get("listIds"))
+                list_ids |= self._task_list_ids_from_paths(connection, user_id, data.get("listPaths"))
+                connection.execute("DELETE FROM task_list_memberships WHERE task_id = ?", (task_id,))
+                connection.executemany(
+                    "INSERT INTO task_list_memberships(task_id, list_id, added_at) VALUES (?, ?, ?)",
+                    [(task_id, item_id, now_iso()) for item_id in sorted(list_ids)],
+                )
         return self.task_detail(user_id, task_id)
 
     def delete_task(self, user_id: str, task_id: str) -> None:
@@ -3506,6 +3848,23 @@ class Database:
             self._task(connection, user_id, task_id)
             self._delete_semantic_links_for_target(connection, user_id, "task", task_id)
             connection.execute("DELETE FROM tasks WHERE id = ? AND user_id = ?", (task_id, user_id))
+
+    def add_task_to_list(self, user_id: str, task_id: str, list_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            self._task(connection, user_id, task_id)
+            self._assert_task_list(connection, user_id, list_id)
+            connection.execute(
+                "INSERT INTO task_list_memberships(task_id, list_id, added_at) VALUES (?, ?, ?) ON CONFLICT(task_id, list_id) DO NOTHING",
+                (task_id, list_id, now_iso()),
+            )
+        return self.task_detail(user_id, task_id)
+
+    def remove_task_from_list(self, user_id: str, task_id: str, list_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            self._task(connection, user_id, task_id)
+            self._assert_task_list(connection, user_id, list_id)
+            connection.execute("DELETE FROM task_list_memberships WHERE task_id = ? AND list_id = ?", (task_id, list_id))
+        return self.task_detail(user_id, task_id)
 
     def link_task(self, user_id: str, task_id: str, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
@@ -4041,6 +4400,43 @@ class Database:
             ).fetchall()
         return [self._source_row(row) for row in rows]
 
+    def find_source_identifier_duplicates(
+        self,
+        user_id: str,
+        identifier: dict[str, Any],
+        *,
+        excluded_id: str = "",
+    ) -> list[dict[str, Any]]:
+        identifier_type = str(identifier.get("type", ""))
+        identifier_value = str(identifier.get("value", ""))
+        if identifier_type not in {"doi", "isbn"} or not identifier_value:
+            return []
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT id, title, kind, metadata_json FROM sources WHERE user_id = ? ORDER BY updated_at DESC",
+                (user_id,),
+            ).fetchall()
+        duplicates: list[dict[str, Any]] = []
+        for row in rows:
+            if row["id"] == excluded_id:
+                continue
+            try:
+                metadata = json.loads(row["metadata_json"])
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                continue
+            candidates = (metadata.get(identifier_type), metadata.get("url"))
+            for candidate in candidates:
+                try:
+                    found = detect_identifier(candidate)
+                except ValueError:
+                    continue
+                if found["type"] == identifier_type and found["value"] == identifier_value:
+                    duplicates.append({"id": row["id"], "title": row["title"], "kind": row["kind"]})
+                    break
+        return duplicates
+
     def list_source_collections(self, user_id: str) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
@@ -4413,6 +4809,286 @@ class Database:
             connection.execute("DELETE FROM source_files WHERE id = ? AND source_id = ?", (file_id, source_id))
             still_used = self._blob_is_referenced(connection, blob_hash)
         return self.source_detail(user_id, source_id), None if still_used else blob_hash
+
+    def list_document_projects(self, user_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT p.*, COUNT(DISTINCT i.id) AS input_count, COUNT(DISTINCT page.id) AS page_count
+                FROM document_projects p
+                LEFT JOIN document_inputs i ON i.project_id = p.id
+                LEFT JOIN document_pages page ON page.project_id = p.id
+                WHERE p.user_id = ?
+                GROUP BY p.id
+                ORDER BY p.updated_at DESC, p.created_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [self._document_project_row(row) for row in rows]
+
+    def document_project_detail(self, user_id: str, project_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            project = self._document_project(connection, user_id, project_id)
+            inputs = [
+                self._document_input_row(row)
+                for row in connection.execute(
+                    """
+                    SELECT i.*, s.title AS source_title
+                    FROM document_inputs i
+                    LEFT JOIN sources s ON s.id = i.source_id
+                    WHERE i.project_id = ?
+                    ORDER BY i.created_at, i.id
+                    """,
+                    (project_id,),
+                )
+            ]
+            pages = [
+                self._document_page_row(row)
+                for row in connection.execute(
+                    """
+                    SELECT page.*, i.blob_hash, i.original_name, i.mime_type, i.source_id, i.source_file_id, s.title AS source_title
+                    FROM document_pages page
+                    JOIN document_inputs i ON i.id = page.input_id
+                    LEFT JOIN sources s ON s.id = i.source_id
+                    WHERE page.project_id = ?
+                    ORDER BY page.order_index, page.created_at, page.id
+                    """,
+                    (project_id,),
+                )
+            ]
+        return {
+            "project": self._document_project_row(project),
+            "inputs": inputs,
+            "pages": pages,
+        }
+
+    def create_document_project(self, user_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Projekt dielne musí byť objekt.")
+        project_id = self._clean_id(data.get("id"))
+        title = self._clean_text(data.get("title"), 240) or "Nový dokument"
+        if not project_id:
+            raise ValidationError("Projekt dielne potrebuje identifikátor.")
+        timestamp = now_iso()
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO document_projects(id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (project_id, user_id, title, timestamp, timestamp),
+            )
+        return self.document_project_detail(user_id, project_id)
+
+    def update_document_project(self, user_id: str, project_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Úprava projektu dielne musí byť objekt.")
+        with self.connect() as connection:
+            project = self._document_project(connection, user_id, project_id)
+            title = self._clean_text(data.get("title", project["title"]), 240)
+            if not title:
+                raise ValidationError("Projekt dielne potrebuje názov.")
+            connection.execute(
+                "UPDATE document_projects SET title = ?, updated_at = ? WHERE id = ?",
+                (title, now_iso(), project_id),
+            )
+        return self.document_project_detail(user_id, project_id)
+
+    def delete_document_project(self, user_id: str, project_id: str) -> list[str]:
+        with self.connect() as connection:
+            self._document_project(connection, user_id, project_id)
+            blob_hashes = [
+                row["blob_hash"]
+                for row in connection.execute(
+                    "SELECT DISTINCT blob_hash FROM document_inputs WHERE project_id = ?", (project_id,)
+                )
+            ]
+            connection.execute("DELETE FROM document_projects WHERE id = ? AND user_id = ?", (project_id, user_id))
+            return [blob_hash for blob_hash in blob_hashes if not self._blob_is_referenced(connection, blob_hash)]
+
+    def add_document_input(self, user_id: str, project_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Vstup dokumentu musí byť objekt.")
+        input_id = self._clean_id(data.get("id"))
+        blob_hash = self._clean_text(data.get("blobHash"), 64).lower()
+        original_name = self._clean_text(data.get("originalName"), 240) or "dokument"
+        mime_type = self._clean_text(data.get("mimeType"), 160) or "application/octet-stream"
+        source_id = self._clean_id(data.get("sourceId")) or None
+        source_file_id = self._clean_id(data.get("sourceFileId")) or None
+        try:
+            size_bytes = int(data.get("sizeBytes", 0))
+            page_count = int(data.get("pageCount", 0))
+        except (TypeError, ValueError) as error:
+            raise ValidationError("Vstup dokumentu nemá platnú veľkosť alebo počet strán.") from error
+        if not input_id or len(blob_hash) != 64 or any(character not in "0123456789abcdef" for character in blob_hash):
+            raise ValidationError("Vstup dokumentu nemá platný súbor.")
+        if size_bytes < 0 or not 1 <= page_count <= 500:
+            raise ValidationError("Do jedného vstupu môžeš pridať najviac 500 strán.")
+        with self.connect() as connection:
+            self._document_project(connection, user_id, project_id)
+            if source_id:
+                self._assert_source(connection, user_id, source_id)
+            if source_file_id:
+                row = connection.execute(
+                    """
+                    SELECT sf.id FROM source_files sf JOIN sources s ON s.id = sf.source_id
+                    WHERE sf.id = ? AND s.user_id = ? AND (? IS NULL OR sf.source_id = ?)
+                    """,
+                    (source_file_id, user_id, source_id, source_id),
+                ).fetchone()
+                if not row:
+                    raise ValidationError("Príloha nepatrí k vybranému zdroju.")
+            current_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM document_pages WHERE project_id = ?", (project_id,)
+            ).fetchone()["count"]
+            if current_count + page_count > 2_000:
+                raise ValidationError("Jeden projekt dielne môže mať najviac 2 000 strán.")
+            timestamp = now_iso()
+            connection.execute(
+                """
+                INSERT INTO document_inputs(
+                    id, project_id, source_id, source_file_id, blob_hash, original_name, mime_type, size_bytes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (input_id, project_id, source_id, source_file_id, blob_hash, original_name, mime_type, size_bytes, timestamp),
+            )
+            start_index = connection.execute(
+                "SELECT COALESCE(MAX(order_index), -1) + 1 AS next_index FROM document_pages WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()["next_index"]
+            connection.executemany(
+                """
+                INSERT INTO document_pages(id, project_id, input_id, input_page_index, order_index, rotation, created_at)
+                VALUES (?, ?, ?, ?, ?, 0, ?)
+                """,
+                [
+                    (str(uuid.uuid4()), project_id, input_id, page_index, start_index + page_index, timestamp)
+                    for page_index in range(page_count)
+                ],
+            )
+            connection.execute("UPDATE document_projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
+        return self.document_project_detail(user_id, project_id)
+
+    def update_document_page(self, user_id: str, project_id: str, page_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Úprava strany musí byť objekt.")
+        try:
+            rotation = int(data.get("rotation"))
+        except (TypeError, ValueError) as error:
+            raise ValidationError("Otočenie strany nie je platné.") from error
+        if rotation not in {0, 90, 180, 270}:
+            raise ValidationError("Stranu možno otočiť len po pravom uhle.")
+        with self.connect() as connection:
+            self._document_project(connection, user_id, project_id)
+            result = connection.execute(
+                "UPDATE document_pages SET rotation = ? WHERE id = ? AND project_id = ?",
+                (rotation, page_id, project_id),
+            )
+            if result.rowcount != 1:
+                raise KeyError("Strana projektu neexistuje.")
+            connection.execute("UPDATE document_projects SET updated_at = ? WHERE id = ?", (now_iso(), project_id))
+        return self.document_project_detail(user_id, project_id)
+
+    def duplicate_document_page(self, user_id: str, project_id: str, page_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            self._document_project(connection, user_id, project_id)
+            page = connection.execute(
+                "SELECT * FROM document_pages WHERE id = ? AND project_id = ?", (page_id, project_id)
+            ).fetchone()
+            if not page:
+                raise KeyError("Strana projektu neexistuje.")
+            position = page["order_index"] + 1
+            connection.execute(
+                "UPDATE document_pages SET order_index = order_index + 1 WHERE project_id = ? AND order_index >= ?",
+                (project_id, position),
+            )
+            connection.execute(
+                """
+                INSERT INTO document_pages(id, project_id, input_id, input_page_index, order_index, rotation, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    project_id,
+                    page["input_id"],
+                    page["input_page_index"],
+                    position,
+                    page["rotation"],
+                    now_iso(),
+                ),
+            )
+            connection.execute("UPDATE document_projects SET updated_at = ? WHERE id = ?", (now_iso(), project_id))
+        return self.document_project_detail(user_id, project_id)
+
+    def delete_document_page(self, user_id: str, project_id: str, page_id: str) -> tuple[dict[str, Any], list[str]]:
+        with self.connect() as connection:
+            self._document_project(connection, user_id, project_id)
+            page = connection.execute(
+                "SELECT input_id FROM document_pages WHERE id = ? AND project_id = ?", (page_id, project_id)
+            ).fetchone()
+            if not page:
+                raise KeyError("Strana projektu neexistuje.")
+            input_id = page["input_id"]
+            input_row = connection.execute("SELECT blob_hash FROM document_inputs WHERE id = ?", (input_id,)).fetchone()
+            connection.execute("DELETE FROM document_pages WHERE id = ? AND project_id = ?", (page_id, project_id))
+            remaining = connection.execute(
+                "SELECT COUNT(*) AS count FROM document_pages WHERE input_id = ?", (input_id,)
+            ).fetchone()["count"]
+            if not remaining:
+                connection.execute("DELETE FROM document_inputs WHERE id = ?", (input_id,))
+            connection.execute("UPDATE document_projects SET updated_at = ? WHERE id = ?", (now_iso(), project_id))
+            orphaned = []
+            if not remaining and input_row and not self._blob_is_referenced(connection, input_row["blob_hash"]):
+                orphaned.append(input_row["blob_hash"])
+        return self.document_project_detail(user_id, project_id), orphaned
+
+    def reorder_document_pages(self, user_id: str, project_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict) or not isinstance(data.get("pageIds"), list):
+            raise ValidationError("Poradie strán musí byť zoznam.")
+        page_ids = [self._clean_id(page_id) for page_id in data["pageIds"]]
+        if not page_ids or len(page_ids) != len(set(page_ids)):
+            raise ValidationError("Poradie strán nie je platné.")
+        with self.connect() as connection:
+            self._document_project(connection, user_id, project_id)
+            existing = [
+                row["id"]
+                for row in connection.execute(
+                    "SELECT id FROM document_pages WHERE project_id = ?", (project_id,)
+                )
+            ]
+            if set(existing) != set(page_ids):
+                raise ValidationError("Poradie neobsahuje presne stránky projektu.")
+            connection.executemany(
+                "UPDATE document_pages SET order_index = ? WHERE id = ? AND project_id = ?",
+                [(index, page_id, project_id) for index, page_id in enumerate(page_ids)],
+            )
+            connection.execute("UPDATE document_projects SET updated_at = ? WHERE id = ?", (now_iso(), project_id))
+        return self.document_project_detail(user_id, project_id)
+
+    def document_page_file(self, user_id: str, project_id: str, page_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            self._document_project(connection, user_id, project_id)
+            row = connection.execute(
+                """
+                SELECT page.id, page.input_page_index, page.rotation, i.blob_hash, i.original_name, i.mime_type
+                FROM document_pages page JOIN document_inputs i ON i.id = page.input_id
+                WHERE page.id = ? AND page.project_id = ?
+                """,
+                (page_id, project_id),
+            ).fetchone()
+        if not row:
+            raise KeyError("Strana projektu neexistuje.")
+        return dict(row)
+
+    def source_file_for_user(self, user_id: str, file_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT sf.* FROM source_files sf JOIN sources s ON s.id = sf.source_id
+                WHERE sf.id = ? AND s.user_id = ?
+                """,
+                (file_id, user_id),
+            ).fetchone()
+        if not row:
+            raise KeyError("Príloha neexistuje.")
+        return dict(row)
 
     def music_library(self, user_id: str) -> dict[str, Any]:
         with self.connect() as connection:
@@ -5309,11 +5985,146 @@ class Database:
         if not connection.execute("SELECT 1 FROM sources WHERE id = ? AND user_id = ?", (source_id, user_id)).fetchone():
             raise KeyError("Zdroj neexistuje.")
 
+    @staticmethod
+    def _document_project(connection: sqlite3.Connection, user_id: str, project_id: str) -> sqlite3.Row:
+        row = connection.execute(
+            "SELECT * FROM document_projects WHERE id = ? AND user_id = ?", (project_id, user_id)
+        ).fetchone()
+        if not row:
+            raise KeyError("Projekt dielne neexistuje.")
+        return row
+
     def _task(self, connection: sqlite3.Connection, user_id: str, task_id: str) -> sqlite3.Row:
         row = connection.execute("SELECT * FROM tasks WHERE id = ? AND user_id = ?", (task_id, user_id)).fetchone()
         if not row:
             raise KeyError("Úloha neexistuje.")
         return row
+
+    def _task_list(self, connection: sqlite3.Connection, user_id: str, list_id: str) -> sqlite3.Row:
+        row = connection.execute("SELECT * FROM task_lists WHERE id = ? AND user_id = ?", (list_id, user_id)).fetchone()
+        if not row:
+            raise KeyError("Zoznam úloh neexistuje.")
+        return row
+
+    def _assert_task_list(self, connection: sqlite3.Connection, user_id: str, list_id: str) -> None:
+        self._task_list(connection, user_id, list_id)
+
+    def _assert_task_list_title_available(
+        self,
+        connection: sqlite3.Connection,
+        user_id: str,
+        parent_id: str | None,
+        title: str,
+        *,
+        excluded_id: str = "",
+    ) -> None:
+        row = connection.execute(
+            """
+            SELECT id FROM task_lists
+            WHERE user_id = ? AND parent_id IS ? AND title = ? COLLATE NOCASE AND id != ?
+            """,
+            (user_id, parent_id, title, excluded_id),
+        ).fetchone()
+        if row:
+            raise ValidationError("V tomto zozname už existuje položka s rovnakým názvom.")
+
+    def _assert_task_list_parent(
+        self,
+        connection: sqlite3.Connection,
+        user_id: str,
+        list_id: str,
+        parent_id: str,
+    ) -> None:
+        current_id = parent_id
+        visited: set[str] = set()
+        while current_id:
+            if current_id == list_id:
+                raise ValidationError("Zoznam nemožno vložiť do seba ani do svojho podzoznamu.")
+            if current_id in visited:
+                raise ValidationError("Strom zoznamov obsahuje neplatný cyklus.")
+            visited.add(current_id)
+            row = self._task_list(connection, user_id, current_id)
+            current_id = row["parent_id"] or ""
+
+    def _task_list_ids(self, connection: sqlite3.Connection, user_id: str, value: Any) -> set[str]:
+        if value is None or value == "":
+            return set()
+        if not isinstance(value, list) or len(value) > 30:
+            raise ValidationError("Úloha môže patriť najviac do 30 zoznamov.")
+        ids: set[str] = set()
+        for raw_id in value:
+            list_id = self._clean_id(raw_id)
+            if not list_id:
+                raise ValidationError("Úloha obsahuje neplatný zoznam.")
+            self._assert_task_list(connection, user_id, list_id)
+            ids.add(list_id)
+        return ids
+
+    def _task_list_ids_from_paths(self, connection: sqlite3.Connection, user_id: str, value: Any) -> set[str]:
+        if value is None or value == "":
+            return set()
+        if not isinstance(value, list) or len(value) > 30:
+            raise ValidationError("Import úlohy obsahuje priveľa zoznamov.")
+        ids: set[str] = set()
+        timestamp = now_iso()
+        for raw_path in value:
+            if not isinstance(raw_path, list) or not 1 <= len(raw_path) <= 12:
+                raise ValidationError("Import úlohy obsahuje neplatnú cestu zoznamu.")
+            parent_id: str | None = None
+            for raw_title in raw_path:
+                title = self._clean_text(raw_title, 160)
+                if not title:
+                    raise ValidationError("Import úlohy obsahuje prázdny názov zoznamu.")
+                row = connection.execute(
+                    "SELECT id FROM task_lists WHERE user_id = ? AND parent_id IS ? AND title = ? COLLATE NOCASE",
+                    (user_id, parent_id, title),
+                ).fetchone()
+                if row:
+                    parent_id = row["id"]
+                    continue
+                next_id = str(uuid.uuid4())
+                connection.execute(
+                    "INSERT INTO task_lists(id, user_id, parent_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (next_id, user_id, parent_id, title, timestamp, timestamp),
+                )
+                parent_id = next_id
+            if parent_id:
+                ids.add(parent_id)
+        return ids
+
+    def _task_lists_for_task(self, connection: sqlite3.Connection, user_id: str, task_id: str) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            """
+            SELECT l.id, l.parent_id, l.title, l.created_at, l.updated_at
+            FROM task_list_memberships membership
+            JOIN task_lists l ON l.id = membership.list_id
+            WHERE membership.task_id = ? AND l.user_id = ?
+            ORDER BY l.title COLLATE NOCASE, l.created_at
+            """,
+            (task_id, user_id),
+        ).fetchall()
+        all_rows = connection.execute(
+            "SELECT id, parent_id, title FROM task_lists WHERE user_id = ?", (user_id,)
+        ).fetchall()
+        tree = {row["id"]: row for row in all_rows}
+
+        def path_for(list_id: str) -> list[str]:
+            parts: list[str] = []
+            current_id = list_id
+            visited: set[str] = set()
+            while current_id and current_id not in visited:
+                visited.add(current_id)
+                current = tree.get(current_id)
+                if not current:
+                    break
+                parts.append(current["title"])
+                current_id = current["parent_id"] or ""
+            return list(reversed(parts))
+
+        lists = [self._task_list_row(row) for row in rows]
+        for task_list in lists:
+            task_list["path"] = path_for(task_list["id"])
+        return lists
 
     def _calendar_event(self, connection: sqlite3.Connection, user_id: str, event_id: str) -> sqlite3.Row:
         row = connection.execute(
@@ -5611,9 +6422,11 @@ class Database:
                 SELECT 1 FROM source_files WHERE blob_hash = ?
                 UNION ALL
                 SELECT 1 FROM music_tracks WHERE blob_hash = ?
+                UNION ALL
+                SELECT 1 FROM document_inputs WHERE blob_hash = ?
                 LIMIT 1
                 """,
-                (blob_hash, blob_hash),
+                (blob_hash, blob_hash, blob_hash),
             ).fetchone()
         )
 
@@ -5673,6 +6486,22 @@ class Database:
         }
 
     @staticmethod
+    def _task_list_row(row: sqlite3.Row) -> dict[str, Any]:
+        task_list = dict(row)
+        result = {
+            "id": task_list["id"],
+            "parentId": task_list.get("parent_id") or "",
+            "title": task_list["title"],
+            "createdAt": task_list["created_at"],
+            "updatedAt": task_list["updated_at"],
+        }
+        if "child_count" in task_list:
+            result["childCount"] = int(task_list["child_count"] or 0)
+        if "task_count" in task_list:
+            result["taskCount"] = int(task_list["task_count"] or 0)
+        return result
+
+    @staticmethod
     def _calendar_event_row(row: sqlite3.Row) -> dict[str, Any]:
         event = dict(row)
         return {
@@ -5722,6 +6551,50 @@ class Database:
         if "source_count" in collection:
             collection["sourceCount"] = collection.pop("source_count")
         return collection
+
+    @staticmethod
+    def _document_project_row(row: sqlite3.Row) -> dict[str, Any]:
+        project = dict(row)
+        project.pop("user_id", None)
+        project["createdAt"] = project.pop("created_at")
+        project["updatedAt"] = project.pop("updated_at")
+        if "input_count" in project:
+            project["inputCount"] = project.pop("input_count")
+        if "page_count" in project:
+            project["pageCount"] = project.pop("page_count")
+        return project
+
+    @staticmethod
+    def _document_input_row(row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        item["projectId"] = item.pop("project_id")
+        item["sourceId"] = item.pop("source_id") or ""
+        item["sourceFileId"] = item.pop("source_file_id") or ""
+        item["blobHash"] = item.pop("blob_hash")
+        item["originalName"] = item.pop("original_name")
+        item["mimeType"] = item.pop("mime_type")
+        item["sizeBytes"] = item.pop("size_bytes")
+        item["createdAt"] = item.pop("created_at")
+        if "source_title" in item:
+            item["sourceTitle"] = item.pop("source_title") or ""
+        return item
+
+    @staticmethod
+    def _document_page_row(row: sqlite3.Row) -> dict[str, Any]:
+        page = dict(row)
+        page["projectId"] = page.pop("project_id")
+        page["inputId"] = page.pop("input_id")
+        page["inputPageIndex"] = page.pop("input_page_index")
+        page["orderIndex"] = page.pop("order_index")
+        page["createdAt"] = page.pop("created_at")
+        if "original_name" in page:
+            page["blobHash"] = page.pop("blob_hash")
+            page["originalName"] = page.pop("original_name")
+            page["mimeType"] = page.pop("mime_type")
+            page["sourceId"] = page.pop("source_id") or ""
+            page["sourceFileId"] = page.pop("source_file_id") or ""
+            page["sourceTitle"] = page.pop("source_title") or ""
+        return page
 
     @staticmethod
     def _source_annotation_row(row: sqlite3.Row) -> dict[str, Any]:

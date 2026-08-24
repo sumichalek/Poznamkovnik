@@ -18,8 +18,10 @@ from urllib.request import Request, urlopen
 from .audio_metadata import read_audio_metadata
 from .auth import AuthError, AuthService, SESSION_DAYS
 from .backups import AutomaticBackupScheduler, BackupArtifact, BackupManager, MAX_BACKUP_ARCHIVE_BYTES
+from .bibliography import BibliographyLookupError, lookup_bibliographic_metadata
 from .code_runner import CCodeRunner, CodeRunnerError
 from .database import Database, ValidationError
+from .document_workshop import DocumentWorkshop
 from .files import BackgroundStore, FileStore, MAX_BACKGROUND_BYTES, UploadError
 from .podcast import PodcastFeedError, fetch_podcast_feed
 from .radio_recording import RadioRecordingManager
@@ -56,6 +58,7 @@ class AppContext:
         self.database.initialize()
         self.auth = AuthService(self.database)
         self.files = FileStore(data_dir / "files")
+        self.documents = DocumentWorkshop(data_dir / "documents", self.database, self.files)
         self.backgrounds = BackgroundStore(data_dir / "backgrounds")
         self.backups = BackupManager(data_dir / "backups", self.database, self.files, self.backgrounds)
         self.radio_recordings = RadioRecordingManager(data_dir / "radio-recordings", self.database)
@@ -144,7 +147,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                 self._write_json(HTTPStatus.OK, result)
         except ApiError as error:
             self._write_json(error.status, {"error": error.message})
-        except (ValidationError, UploadError, CodeRunnerError, PodcastFeedError) as error:
+        except (ValidationError, UploadError, CodeRunnerError, PodcastFeedError, BibliographyLookupError) as error:
             self._write_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
         except AuthError as error:
             self._write_json(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
@@ -319,12 +322,20 @@ class AppHandler(SimpleHTTPRequestHandler):
             return self.context.c_runner.run(source, stdin, standard)
 
         if route == ["tasks"] and method == "GET":
-            status = parse_qs(request_url.query).get("status", [""])[0]
-            return {"tasks": self.context.database.list_tasks(user["id"], status)}
+            query = parse_qs(request_url.query)
+            status = query.get("status", [""])[0]
+            list_id = query.get("list", [""])[0]
+            return {"tasks": self.context.database.list_tasks(user["id"], status, list_id)}
         if route == ["tasks"] and method == "POST":
             data = self._read_json()
             data.setdefault("id", str(uuid.uuid4()))
             return {"task": self.context.database.create_task(user["id"], data)}
+        if route == ["task-lists"] and method == "GET":
+            return {"lists": self.context.database.list_task_lists(user["id"])}
+        if route == ["task-lists"] and method == "POST":
+            data = self._read_json()
+            data.setdefault("id", str(uuid.uuid4()))
+            return {"list": self.context.database.create_task_list(user["id"], data)}
         if route == ["relationship-targets"] and method == "GET":
             return {"targets": self.context.database.semantic_targets(user["id"])}
         if len(route) == 3 and route[0] == "semantic-links" and method == "GET":
@@ -345,6 +356,8 @@ class AppHandler(SimpleHTTPRequestHandler):
             return {"events": self.context.database.calendar_events_for_target(user["id"], route[1], route[2])}
         if len(route) >= 2 and route[0] == "tasks":
             return self._route_task(method, user["id"], route)
+        if len(route) >= 2 and route[0] == "task-lists":
+            return self._route_task_list(method, user["id"], route)
 
         if route == ["calendar-events"] and method == "GET":
             query = parse_qs(request_url.query)
@@ -401,6 +414,15 @@ class AppHandler(SimpleHTTPRequestHandler):
         if len(route) >= 2 and route[0] == "music":
             return self._route_music(method, user["id"], route)
 
+        if route == ["documents"] and method == "GET":
+            return {"projects": self.context.database.list_document_projects(user["id"])}
+        if route == ["documents"] and method == "POST":
+            data = self._read_json()
+            data.setdefault("id", str(uuid.uuid4()))
+            return self.context.database.create_document_project(user["id"], data)
+        if len(route) >= 2 and route[0] == "documents":
+            return self._route_document_workshop(method, user["id"], route)
+
         if route == ["sources"] and method == "GET":
             query = parse_qs(request_url.query).get("q", [""])[0]
             return {"sources": self.context.database.list_sources(user["id"], query)}
@@ -408,6 +430,16 @@ class AppHandler(SimpleHTTPRequestHandler):
             data = self._read_json()
             data.setdefault("id", str(uuid.uuid4()))
             return {"source": self.context.database.create_source(user["id"], data)}
+        if route == ["sources", "metadata-lookup"] and method == "POST":
+            data = self._read_json()
+            result = lookup_bibliographic_metadata(data.get("identifier"))
+            excluded_id = str(data.get("excludeSourceId", ""))
+            result["duplicates"] = self.context.database.find_source_identifier_duplicates(
+                user["id"],
+                result["identifier"],
+                excluded_id=excluded_id,
+            )
+            return result
 
         if route == ["source-collections"] and method == "GET":
             return {"collections": self.context.database.list_source_collections(user["id"])}
@@ -434,6 +466,88 @@ class AppHandler(SimpleHTTPRequestHandler):
             return {"sources": self.context.database.sources_for_library(user["id"], route[1])}
         raise ApiError(HTTPStatus.NOT_FOUND, "Neznáme API.")
 
+    def _route_document_workshop(self, method: str, user_id: str, route: list[str]) -> dict[str, Any] | None:
+        project_id = route[1]
+        if len(route) == 2:
+            if method == "GET":
+                return self.context.database.document_project_detail(user_id, project_id)
+            if method == "PATCH":
+                return self.context.database.update_document_project(user_id, project_id, self._read_json())
+            if method == "DELETE":
+                for blob_hash in self.context.database.delete_document_project(user_id, project_id):
+                    self.context.files.delete_blob(blob_hash)
+                return {"deleted": True}
+
+        if len(route) == 3 and route[2] == "inputs" and method == "POST":
+            maximum = self.context.database.source_file_max_bytes(user_id)
+            uploaded = self._read_upload(maximum + 512 * 1024)
+            try:
+                file_info = self.context.files.store_upload(
+                    uploaded.file,
+                    uploaded.filename,
+                    uploaded.mime_type,
+                    maximum_bytes=maximum,
+                )
+                try:
+                    page_count = self.context.documents.page_count(file_info)
+                    return self.context.database.add_document_input(
+                        user_id,
+                        project_id,
+                        {"id": str(uuid.uuid4()), **file_info, "pageCount": page_count},
+                    )
+                except Exception:
+                    if file_info["created"]:
+                        self.context.files.delete_blob(str(file_info["blobHash"]))
+                    raise
+            finally:
+                uploaded.file.close()
+
+        if len(route) == 3 and route[2] == "source-files" and method == "POST":
+            data = self._read_json()
+            file_id = str(data.get("fileId", ""))
+            file_info = self.context.database.source_file_for_user(user_id, file_id)
+            page_count = self.context.documents.page_count(file_info)
+            return self.context.database.add_document_input(
+                user_id,
+                project_id,
+                {
+                    "id": str(uuid.uuid4()),
+                    "sourceId": file_info["source_id"],
+                    "sourceFileId": file_info["id"],
+                    "blobHash": file_info["blob_hash"],
+                    "originalName": file_info["original_name"],
+                    "mimeType": file_info["mime_type"],
+                    "sizeBytes": file_info["size_bytes"],
+                    "pageCount": page_count,
+                },
+            )
+
+        if len(route) == 3 and route[2] == "build" and method == "POST":
+            source = self.context.documents.build_source(user_id, project_id, str(self._read_json().get("title", "")))
+            return {"source": source}
+
+        if len(route) == 4 and route[2] == "pages" and route[3] == "order" and method == "PUT":
+            return self.context.database.reorder_document_pages(user_id, project_id, self._read_json())
+
+        if len(route) == 5 and route[2] == "pages" and route[4] == "thumbnail" and method in {"GET", "HEAD"}:
+            thumbnail = self.context.documents.thumbnail(user_id, project_id, route[3])
+            self._send_streamed_file(thumbnail, "image/jpeg", f"strana-{route[3]}.jpg", head_only=method == "HEAD")
+            return None
+
+        if len(route) == 5 and route[2] == "pages" and route[4] == "duplicate" and method == "POST":
+            return self.context.database.duplicate_document_page(user_id, project_id, route[3])
+
+        if len(route) == 4 and route[2] == "pages":
+            page_id = route[3]
+            if method == "PATCH":
+                return self.context.database.update_document_page(user_id, project_id, page_id, self._read_json())
+            if method == "DELETE":
+                detail, orphaned = self.context.database.delete_document_page(user_id, project_id, page_id)
+                for blob_hash in orphaned:
+                    self.context.files.delete_blob(blob_hash)
+                return detail
+        raise ApiError(HTTPStatus.NOT_FOUND, "Neznámy endpoint Dielne dokumentov.")
+
     def _route_task(self, method: str, user_id: str, route: list[str]) -> dict[str, Any]:
         task_id = route[1]
         if len(route) == 2:
@@ -450,7 +564,22 @@ class AppHandler(SimpleHTTPRequestHandler):
             return {"task": self.context.database.link_task(user_id, task_id, data)}
         if len(route) == 4 and route[2] == "links" and method == "DELETE":
             return {"task": self.context.database.unlink_task(user_id, task_id, route[3])}
+        if len(route) == 4 and route[2] == "lists":
+            list_id = route[3]
+            if method == "PUT":
+                return {"task": self.context.database.add_task_to_list(user_id, task_id, list_id)}
+            if method == "DELETE":
+                return {"task": self.context.database.remove_task_from_list(user_id, task_id, list_id)}
         raise ApiError(HTTPStatus.NOT_FOUND, "Neznámy endpoint úloh.")
+
+    def _route_task_list(self, method: str, user_id: str, route: list[str]) -> dict[str, Any]:
+        list_id = route[1]
+        if len(route) == 2:
+            if method == "PATCH":
+                return {"list": self.context.database.update_task_list(user_id, list_id, self._read_json())}
+            if method == "DELETE":
+                return {"parentId": self.context.database.delete_task_list(user_id, list_id)}
+        raise ApiError(HTTPStatus.NOT_FOUND, "Neznámy endpoint zoznamov úloh.")
 
     def _route_calendar_event(self, method: str, user_id: str, route: list[str]) -> dict[str, Any]:
         event_id = route[1]

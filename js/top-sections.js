@@ -61,8 +61,17 @@ import {
   saveTutorialNoteDraft,
   waitForTutorialOperations
 } from './tutorial.js';
+import {
+  closeDocumentsPanel,
+  discardDocumentDraft,
+  hasUnsavedDocumentChanges,
+  isDocumentsPanelOpen,
+  isDocumentsPanelPinned,
+  openDocumentsPanel,
+  saveDocumentDraft
+} from './documents.js';
 
-const sectionNames = ['libraries', 'sources', 'tutorial', 'tasks', 'calendar'];
+const sectionNames = ['libraries', 'sources', 'documents', 'tutorial', 'tasks', 'calendar'];
 const HOVER_CLOSE_DELAY = 220;
 
 let switchInProgress = false;
@@ -93,6 +102,14 @@ function sourcesSectionActive() {
   return isSourcesPanelPinned() || isSourceDetailOpen() || isSourcePreviewOpen();
 }
 
+function documentsSectionOpen() {
+  return isDocumentsPanelOpen();
+}
+
+function documentsSectionActive() {
+  return isDocumentsPanelPinned();
+}
+
 function tasksSectionOpen() {
   return isTasksPanelOpen() || isTaskDetailOpen();
 }
@@ -120,6 +137,7 @@ function tutorialSectionActive() {
 function sectionIsOpen(section) {
   if (section === 'libraries') return librariesSectionOpen();
   if (section === 'sources') return sourcesSectionOpen();
+  if (section === 'documents') return documentsSectionOpen();
   if (section === 'tutorial') return tutorialSectionOpen();
   if (section === 'tasks') return tasksSectionOpen();
   return calendarSectionOpen();
@@ -128,6 +146,7 @@ function sectionIsOpen(section) {
 function sectionIsActive(section) {
   if (section === 'libraries') return librariesSectionActive();
   if (section === 'sources') return sourcesSectionActive();
+  if (section === 'documents') return documentsSectionActive();
   if (section === 'tutorial') return tutorialSectionActive();
   if (section === 'tasks') return tasksSectionActive();
   return calendarSectionActive();
@@ -136,6 +155,7 @@ function sectionIsActive(section) {
 function sectionRoots(section) {
   if (section === 'libraries') return [dom.librariesPanel, dom.libraryDetailPanel, dom.libraryEditorDock];
   if (section === 'sources') return [dom.sourcesPanel, dom.sourceBrowserPanel, dom.sourceDetailDock, dom.sourcePreviewDock];
+  if (section === 'documents') return [dom.documentsPanel];
   if (section === 'tutorial') return [dom.tutorialPanel, dom.tutorialPlaygroundDock];
   if (section === 'tasks') return [dom.tasksPanel, dom.taskDetailDock];
   return [dom.calendarPanel, dom.calendarEventDock];
@@ -144,6 +164,7 @@ function sectionRoots(section) {
 function sectionButton(section) {
   if (section === 'libraries') return dom.librariesButton;
   if (section === 'sources') return dom.sourcesButton;
+  if (section === 'documents') return dom.documentsButton;
   if (section === 'tutorial') return dom.tutorialButton;
   if (section === 'tasks') return dom.tasksButton;
   return dom.calendarButton;
@@ -208,6 +229,10 @@ function closeTutorialSection({ force = true } = {}) {
   closeTutorialPanel({ force });
 }
 
+function closeDocumentsSection() {
+  closeDocumentsPanel();
+}
+
 async function openSection(section, { pinned = false } = {}) {
   if (section === 'libraries') {
     openLibrariesPanel({ pinned });
@@ -215,6 +240,10 @@ async function openSection(section, { pinned = false } = {}) {
   }
   if (section === 'sources') {
     await openSourcesPanel({ pinned });
+    return;
+  }
+  if (section === 'documents') {
+    await openDocumentsPanel({ pinned });
     return;
   }
   if (section === 'tutorial') {
@@ -235,6 +264,10 @@ function closeSection(section, { force = true } = {}) {
   }
   if (section === 'sources') {
     closeSourcesSection({ force });
+    return;
+  }
+  if (section === 'documents') {
+    closeDocumentsSection({ force });
     return;
   }
   if (section === 'tutorial') {
@@ -355,9 +388,24 @@ async function leaveTutorialSafely() {
   return saveTutorialNoteDraft();
 }
 
+async function leaveDocumentsSafely() {
+  if (!hasUnsavedDocumentChanges()) return true;
+  const decision = await requestSaveDecision({
+    title: 'Neuložené zmeny dielne dokumentov',
+    description: 'Názov projektu dokumentu je zmenený. Chceš ho pred prepnutím uložiť?'
+  });
+  if (decision === 'stay') return false;
+  if (decision === 'discard') {
+    discardDocumentDraft();
+    return true;
+  }
+  return saveDocumentDraft();
+}
+
 async function leaveSectionSafely(section) {
   if (section === 'libraries') return leaveLibrariesSafely();
   if (section === 'sources') return leaveSourcesSafely();
+  if (section === 'documents') return leaveDocumentsSafely();
   if (section === 'tutorial') return leaveTutorialSafely();
   if (section === 'tasks') return leaveTasksSafely();
   return leaveCalendarSafely();
@@ -572,6 +620,7 @@ export async function closeTopSections() {
 export function initializeTopSections() {
   dom.librariesButton.addEventListener('click', () => void switchTopSection('libraries'));
   dom.sourcesButton.addEventListener('click', () => void switchTopSection('sources'));
+  dom.documentsButton.addEventListener('click', () => void switchTopSection('documents'));
   dom.tutorialButton.addEventListener('click', () => void switchTopSection('tutorial'));
   dom.tasksButton.addEventListener('click', () => void switchTopSection('tasks'));
   dom.calendarButton.addEventListener('click', () => void switchTopSection('calendar'));

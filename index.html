@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sk" data-app-version="0.50.20">
+<html lang="sk" data-app-version="0.54.0">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,8 +8,8 @@
       const savedTheme = localStorage.getItem('knowledge-theme') || 'focus';
       document.documentElement.dataset.theme = savedTheme === 'contrast' ? 'contrast-light' : savedTheme;
     </script>
-    <link rel="stylesheet" href="style.css?v=0.50.20" />
-    <link rel="stylesheet" href="assets/app.css?v=0.50.20" />
+    <link rel="stylesheet" href="style.css?v=0.54.0" />
+    <link rel="stylesheet" href="assets/app.css?v=0.54.0" />
   </head>
   <body>
     <main id="login-screen" class="login-screen" aria-labelledby="login-title">
@@ -38,6 +38,7 @@
         <div class="topbar-primary">
           <button id="libraries-button" class="nav-button" type="button" aria-controls="libraries-panel">Knižnice</button>
           <button id="sources-button" class="nav-button" type="button" aria-controls="sources-panel" aria-expanded="false">Zdroje</button>
+          <button id="documents-button" class="nav-button" type="button" aria-controls="documents-panel" aria-expanded="false">Dokumenty</button>
           <button id="tutorial-button" class="nav-button" type="button" aria-controls="tutorial-panel" aria-expanded="false">Učebnica</button>
           <button id="tasks-button" class="nav-button" type="button" aria-controls="tasks-panel" aria-expanded="false">Úlohy</button>
           <button id="calendar-button" class="nav-button" type="button" aria-controls="calendar-panel" aria-expanded="false">Kalendár</button>
@@ -292,6 +293,7 @@
                   </div>
                   <div class="source-detail-actions">
                     <button id="source-relationships-button" class="panel-icon-button" type="button" aria-label="Zobraziť prepojenia zdroja" title="Prepojenia" hidden><span data-app-icon="link"></span></button>
+                    <button id="source-citation-button" class="panel-icon-button" type="button" aria-label="Citovať zdroj v otvorenom texte" title="Citovať v otvorenom texte" hidden><span data-app-icon="quote"></span></button>
                     <button id="source-transfer-export-button" class="panel-icon-button" type="button" aria-label="Exportovať zdroj" title="Exportovať zdroj" hidden><span data-app-icon="download"></span></button>
                     <button id="source-delete-button" class="panel-icon-button danger" type="button" aria-label="Zmazať zdroj" title="Zmazať zdroj" hidden><span data-app-icon="trash"></span></button>
                   </div>
@@ -323,8 +325,49 @@
                 </label>
                 <label>
                   URL, DOI alebo ISBN
-                  <input id="source-url" type="text" maxlength="500" />
+                  <span class="source-identifier-control">
+                    <input id="source-url" type="text" maxlength="500" />
+                    <button id="source-metadata-lookup-button" class="panel-icon-button" type="button" aria-label="Načítať bibliografické údaje podľa DOI alebo ISBN" title="Načítať bibliografické údaje podľa DOI alebo ISBN"><span data-app-icon="sparkles"></span></button>
+                  </span>
                 </label>
+                <details id="source-bibliographic-fields" class="source-bibliographic-fields">
+                  <summary>Bibliografické údaje</summary>
+                  <div class="source-bibliographic-grid">
+                    <label>
+                      DOI
+                      <input id="source-doi" type="text" maxlength="500" inputmode="url" />
+                    </label>
+                    <label>
+                      ISBN
+                      <input id="source-isbn" type="text" maxlength="32" />
+                    </label>
+                    <label>
+                      Vydavateľ
+                      <input id="source-publisher" type="text" maxlength="240" />
+                    </label>
+                    <label>
+                      Časopis alebo zborník
+                      <input id="source-publication-title" type="text" maxlength="240" />
+                    </label>
+                    <label>
+                      Zväzok
+                      <input id="source-volume" type="text" maxlength="80" />
+                    </label>
+                    <label>
+                      Číslo
+                      <input id="source-issue" type="text" maxlength="80" />
+                    </label>
+                    <label>
+                      Strany
+                      <input id="source-pages" type="text" maxlength="120" />
+                    </label>
+                    <label>
+                      Jazyk
+                      <input id="source-language" type="text" maxlength="80" />
+                    </label>
+                  </div>
+                  <p id="source-metadata-provenance" class="source-metadata-provenance" hidden></p>
+                </details>
                 <label>
                   Poznámka
                   <textarea id="source-description" rows="3" maxlength="10000"></textarea>
@@ -334,6 +377,13 @@
                   <input id="source-tags" class="tag-input" type="text" list="tag-suggestions" maxlength="480" placeholder="napr. článok, prečítať" />
                   <div id="source-tag-chips" class="tag-chip-list" hidden></div>
                 </div>
+                <section id="source-citation-section" class="source-citation-section" hidden>
+                  <header>
+                    <h4>Citovať ako</h4>
+                    <button id="source-citation-copy-button" class="panel-icon-button" type="button" aria-label="Kopírovať bibliografický zápis" title="Kopírovať bibliografický zápis"><span data-app-icon="duplicate"></span></button>
+                  </header>
+                  <output id="source-citation-preview" class="source-citation-preview"></output>
+                </section>
                 <footer>
                   <button id="source-save-button" class="citation-insert-button" type="submit">Uložiť zdroj</button>
                 </footer>
@@ -482,15 +532,74 @@
         </div>
       </aside>
 
+      <aside id="documents-panel" class="documents-panel" aria-label="Dielňa dokumentov" aria-hidden="true">
+        <div class="documents-panel-inner">
+          <aside class="documents-sidebar" aria-label="Projekty dielne dokumentov">
+            <header class="documents-sidebar-head">
+              <div>
+                <h2>Dielňa dokumentov</h2>
+                <p>Poskladaj nový PDF zo strán príloh.</p>
+              </div>
+              <button id="document-project-create" class="panel-icon-button" type="button" aria-label="Vytvoriť projekt dokumentu" title="Vytvoriť projekt"><span data-app-icon="plus"></span></button>
+            </header>
+            <div id="document-projects-list" class="document-projects-list" aria-live="polite"></div>
+          </aside>
+
+          <section class="documents-workspace" aria-live="polite">
+            <header class="documents-workspace-head">
+              <div class="documents-title-group">
+                <span data-app-icon="article" aria-hidden="true"></span>
+                <input id="document-project-title" type="text" maxlength="240" aria-label="Názov projektu dokumentu" placeholder="Nový dokument" disabled />
+              </div>
+              <div class="documents-workspace-actions">
+                <button id="document-project-delete" class="panel-icon-button danger" type="button" aria-label="Zmazať projekt dokumentu" title="Zmazať projekt" disabled><span data-app-icon="trash"></span></button>
+                <button id="document-build-button" class="citation-insert-button" type="button" disabled><span data-app-icon="save" aria-hidden="true"></span><span>Vytvoriť zdroj PDF</span></button>
+              </div>
+            </header>
+
+            <section class="documents-input-bar" aria-label="Pridanie vstupných strán">
+              <div class="documents-upload-controls">
+                <button id="document-upload-button" class="panel-icon-button" type="button" aria-label="Pridať PDF alebo obrázky" title="Pridať PDF alebo obrázky" disabled><span data-app-icon="upload"></span></button>
+                <input id="document-upload-input" type="file" accept="application/pdf,image/jpeg,image/png,image/webp,image/tiff,image/gif,.pdf,.jpg,.jpeg,.png,.webp,.tif,.tiff,.gif" multiple hidden />
+                <p>Pridať PDF alebo obrázky z počítača</p>
+              </div>
+              <div class="documents-source-controls">
+                <select id="document-source-select" aria-label="Zdroj s prílohou" disabled>
+                  <option value="">Vyber zdroj s prílohou</option>
+                </select>
+                <select id="document-source-file-select" aria-label="Príloha zdroja" disabled>
+                  <option value="">Vyber podporovanú prílohu</option>
+                </select>
+                <button id="document-source-add" class="panel-icon-button" type="button" aria-label="Pridať prílohu vybraného zdroja" title="Pridať prílohu zo zdroja" disabled><span data-app-icon="paperclip"></span></button>
+              </div>
+            </section>
+
+            <p id="document-workshop-status" class="documents-status" aria-live="polite"></p>
+            <section class="document-pages-section" aria-label="Strany výsledného dokumentu">
+              <header>
+                <div>
+                  <h3>Strany</h3>
+                  <p id="document-pages-summary">Vyber alebo vytvor projekt dokumentu.</p>
+                </div>
+                <p>Potiahni stranu na nové miesto.</p>
+              </header>
+              <div id="document-pages-grid" class="document-pages-grid"></div>
+            </section>
+          </section>
+        </div>
+      </aside>
+
       <aside id="tasks-panel" class="tasks-panel" aria-label="Úlohy" aria-hidden="true">
         <div class="tasks-panel-inner">
           <header class="tasks-panel-head">
             <h2>Úlohy</h2>
             <div class="tasks-panel-actions">
               <button id="task-import-button" class="panel-icon-button" type="button" aria-label="Importovať úlohu" title="Importovať úlohu"><span data-app-icon="upload"></span></button>
+              <button id="task-list-create-button" class="panel-icon-button" type="button" aria-label="Vytvoriť zoznam úloh" title="Vytvoriť zoznam úloh"><span data-app-icon="folder-plus"></span></button>
               <button id="task-create-button" class="panel-icon-button" type="button" aria-label="Vytvoriť úlohu" title="Vytvoriť úlohu"><span data-app-icon="plus"></span></button>
             </div>
           </header>
+          <nav id="task-list-tree" class="task-list-tree" aria-label="Zoznamy úloh"></nav>
           <div class="task-filter-group" role="group" aria-label="Filtrovanie úloh">
             <button class="task-filter-button is-active" type="button" data-task-status="">Všetky</button>
             <button class="task-filter-button" type="button" data-task-status="open">Otvorené</button>
@@ -555,6 +664,15 @@
               <button class="citation-insert-button" type="submit">Uložiť úlohu</button>
             </footer>
           </form>
+
+          <section id="task-lists-section" class="task-detail-section" hidden>
+            <header><h3>V zoznamoch</h3></header>
+            <div class="task-list-membership-controls">
+              <select id="task-list-membership-select" aria-label="Zoznam úloh"></select>
+              <button id="task-list-membership-add" class="citation-insert-button" type="button">Zaradiť</button>
+            </div>
+            <div id="task-list-memberships" class="task-lists-memberships"></div>
+          </section>
 
           <section id="task-links-section" class="task-detail-section" hidden>
             <header><h3>Prepojenia</h3></header>
@@ -1363,6 +1481,28 @@
     </dialog>
 
     <input id="markdown-import-input" type="file" accept=".md,.markdown,.mdown,.mkdn,.zip,text/markdown,application/zip" hidden />
+    <dialog id="task-list-dialog" class="task-list-dialog" aria-labelledby="task-list-dialog-title">
+      <form id="task-list-form" class="task-list-dialog-panel">
+        <header>
+          <div>
+            <h2 id="task-list-dialog-title">Nový zoznam úloh</h2>
+            <p id="task-list-dialog-description">Zoznamy slúžia len na usporiadanie úloh.</p>
+          </div>
+          <button id="task-list-dialog-close" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+        </header>
+        <label>
+          Názov
+          <input id="task-list-title" type="text" maxlength="160" required autocomplete="off" />
+        </label>
+        <label>
+          Vložiť do
+          <select id="task-list-parent"></select>
+        </label>
+        <footer>
+          <button id="task-list-save" class="citation-insert-button" type="submit">Vytvoriť zoznam</button>
+        </footer>
+      </form>
+    </dialog>
     <dialog id="task-export-dialog" class="library-export-dialog" aria-labelledby="task-export-title">
       <section class="library-export-panel">
         <header>
@@ -1458,8 +1598,40 @@
             <span data-app-icon="download"></span>
             <span><strong>Prenosný Markdown</strong><small>Čitateľný zápis metadát a poznámky; bez príloh a väzieb.</small></span>
           </button>
+          <button id="source-bibtex-export" class="library-export-option" type="button">
+            <span data-app-icon="code"></span>
+            <span><strong>BibTeX</strong><small>Pre LaTeX a správcov bibliografie podporujúcich BibTeX.</small></span>
+          </button>
+          <button id="source-ris-export" class="library-export-option" type="button">
+            <span data-app-icon="article"></span>
+            <span><strong>RIS</strong><small>Bežný formát na výmenu jedného bibliografického záznamu.</small></span>
+          </button>
+          <button id="source-csl-json-export" class="library-export-option" type="button">
+            <span data-app-icon="code"></span>
+            <span><strong>CSL-JSON</strong><small>Štruktúrované údaje pre citačné nástroje a ďalšie spracovanie.</small></span>
+          </button>
         </div>
         <p class="library-export-note">Pri importe balíka sa vždy vytvorí nový zdroj. Väzby sa obnovia len vtedy, keď ich pôvodný cieľ existuje.</p>
+      </section>
+    </dialog>
+    <dialog id="source-metadata-dialog" class="source-metadata-dialog" aria-labelledby="source-metadata-title">
+      <section class="source-metadata-panel">
+        <header>
+          <div>
+            <h2 id="source-metadata-title">Návrh bibliografických údajov</h2>
+            <p id="source-metadata-description"></p>
+          </div>
+          <button id="source-metadata-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+        </header>
+        <section id="source-metadata-duplicates" class="source-metadata-duplicates" hidden aria-live="polite"></section>
+        <div class="source-metadata-heading" aria-hidden="true">
+          <span>Použiť</span><span>Pole</span><span>Teraz</span><span>Návrh</span>
+        </div>
+        <div id="source-metadata-comparison" class="source-metadata-comparison" aria-live="polite"></div>
+        <p class="source-metadata-note">Vybrané údaje sa len vložia do formulára. Zdroj sa uloží až tlačidlom „Uložiť zdroj“.</p>
+        <footer>
+          <button id="source-metadata-apply" class="settings-background-button primary" type="button">Použiť vybrané</button>
+        </footer>
       </section>
     </dialog>
     <dialog id="source-transfer-import-dialog" class="markdown-import-dialog source-transfer-import-dialog" aria-labelledby="source-transfer-import-title">
@@ -1540,6 +1712,13 @@
           <button id="citation-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
         </header>
         <label>
+          Vložiť ako
+          <select id="citation-format">
+            <option value="citation">Krátka citácia v texte</option>
+            <option value="bibliography">Položka do zoznamu literatúry</option>
+          </select>
+        </label>
+        <label>
           Uložený zdroj
           <select id="citation-saved-source">
             <option value="">Vlastný zápis</option>
@@ -1547,7 +1726,7 @@
         </label>
         <label>
           Zdroj
-          <input id="citation-source" type="text" maxlength="160" required autocomplete="off" />
+          <input id="citation-source" type="text" maxlength="1200" required autocomplete="off" />
         </label>
         <label>
           Strana alebo čas
@@ -1643,6 +1822,6 @@
         }
       }, true);
     </script>
-    <script type="module" src="assets/app.js?v=0.50.20"></script>
+    <script type="module" src="assets/app.js?v=0.54.0"></script>
   </body>
 </html>

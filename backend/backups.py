@@ -404,8 +404,8 @@ class BackupManager:
 
     def _snapshot_blob_hashes(self, snapshot: dict[str, Any]) -> set[str]:
         result: set[str] = set()
-        for key in ("sourceFiles", "musicTracks"):
-            records = snapshot.get(key, [] if key == "musicTracks" else None)
+        for key in ("sourceFiles", "musicTracks", "documentInputs"):
+            records = snapshot.get(key, [] if key in {"musicTracks", "documentInputs"} else None)
             if not isinstance(records, list) or not all(isinstance(item, dict) for item in records):
                 raise BackupError("Záloha nemá platný zoznam príloh.")
             for record in records:
@@ -417,8 +417,8 @@ class BackupManager:
 
     def _blob_sizes(self, snapshot: dict[str, Any]) -> dict[str, int]:
         sizes: dict[str, int] = {}
-        for key in ("sourceFiles", "musicTracks"):
-            records = snapshot.get(key, [] if key == "musicTracks" else None)
+        for key in ("sourceFiles", "musicTracks", "documentInputs"):
+            records = snapshot.get(key, [] if key in {"musicTracks", "documentInputs"} else None)
             if not isinstance(records, list):
                 raise BackupError("Záloha nemá platný zoznam príloh.")
             for record in records:

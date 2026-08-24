@@ -38,6 +38,10 @@ const targetTypeLabels = {
 let tasks = [];
 let selectedTask = null;
 let taskStatusFilter = '';
+let taskLists = [];
+let activeTaskListId = '';
+let draftTaskListIds = [];
+let editingTaskListId = '';
 let panelPinned = false;
 let taskFormBaseline = '';
 let taskOperationCount = 0;
@@ -65,7 +69,8 @@ function taskFormSnapshot() {
     priority: dom.taskPriority.value,
     dueDate: dom.taskDueDate.value,
     description: dom.taskDescription.value.trim(),
-    tags: readTagField(dom.taskTags)
+    tags: readTagField(dom.taskTags),
+    listIds: taskMembershipListIds()
   });
 }
 
@@ -228,10 +233,144 @@ export function isTasksPanelPinned() {
 }
 
 async function loadTasks() {
-  const suffix = taskStatusFilter ? `?status=${encodeURIComponent(taskStatusFilter)}` : '';
+  const params = new URLSearchParams();
+  if (taskStatusFilter) params.set('status', taskStatusFilter);
+  if (activeTaskListId) params.set('list', activeTaskListId);
+  const suffix = params.size ? `?${params}` : '';
   const result = await apiRequest(`/tasks${suffix}`);
   tasks = result.tasks;
   renderTasksList();
+}
+
+async function loadTaskLists() {
+  const result = await apiRequest('/task-lists');
+  taskLists = result.lists;
+  if (activeTaskListId && !taskLists.some((taskList) => taskList.id === activeTaskListId)) {
+    activeTaskListId = '';
+  }
+  renderTaskListTree();
+  renderTaskListMemberships();
+}
+
+function taskListById(listId) {
+  return taskLists.find((taskList) => taskList.id === listId) || null;
+}
+
+function taskListChildren(parentId = '') {
+  return taskLists
+    .filter((taskList) => (taskList.parentId || '') === parentId)
+    .sort((left, right) => left.title.localeCompare(right.title, 'sk'));
+}
+
+function taskListPath(taskList) {
+  const parts = [];
+  const visited = new Set();
+  let current = taskList;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    parts.unshift(current.title);
+    current = taskListById(current.parentId);
+  }
+  return parts;
+}
+
+function taskListLabel(taskList) {
+  return taskListPath(taskList).join(' / ');
+}
+
+function taskMembershipListIds() {
+  if (selectedTask) return (selectedTask.lists || []).map((taskList) => taskList.id).sort();
+  return [...draftTaskListIds].sort();
+}
+
+function isTaskListDescendant(candidateId, ancestorId) {
+  const visited = new Set();
+  let current = taskListById(candidateId);
+  while (current && current.parentId && !visited.has(current.id)) {
+    visited.add(current.id);
+    if (current.parentId === ancestorId) return true;
+    current = taskListById(current.parentId);
+  }
+  return false;
+}
+
+function renderTaskListTree() {
+  dom.taskListTree.replaceChildren();
+
+  const allRow = document.createElement('div');
+  allRow.className = 'task-list-tree-row task-list-tree-all';
+  const allButton = document.createElement('button');
+  allButton.type = 'button';
+  allButton.className = 'task-list-tree-select';
+  allButton.classList.toggle('is-active', !activeTaskListId);
+  allButton.setAttribute('aria-current', !activeTaskListId ? 'true' : 'false');
+  allButton.append(createAppIcon('list-check', 'task-list-tree-icon'));
+  const allCopy = document.createElement('span');
+  allCopy.textContent = 'Všetky úlohy';
+  allButton.append(allCopy);
+  allButton.addEventListener('click', () => void selectTaskList(''));
+  allRow.append(allButton);
+  dom.taskListTree.append(allRow);
+
+  const appendChildren = (parentId, depth) => {
+    taskListChildren(parentId).forEach((taskList) => {
+      const row = document.createElement('div');
+      row.className = 'task-list-tree-row';
+      row.style.setProperty('--task-list-level', String(depth));
+
+      const select = document.createElement('button');
+      select.type = 'button';
+      select.className = 'task-list-tree-select';
+      select.classList.toggle('is-active', taskList.id === activeTaskListId);
+      select.setAttribute('aria-current', String(taskList.id === activeTaskListId));
+      select.title = `Zobraziť úlohy v zozname ${taskListLabel(taskList)}`;
+      select.append(createAppIcon('folder', 'task-list-tree-icon'));
+      const copy = document.createElement('span');
+      copy.className = 'task-list-tree-copy';
+      const title = document.createElement('strong');
+      title.textContent = taskList.title;
+      const count = document.createElement('small');
+      count.textContent = `${taskList.taskCount || 0} úloh`;
+      copy.append(title, count);
+      select.append(copy);
+      select.addEventListener('click', () => void selectTaskList(taskList.id));
+
+      const actions = document.createElement('span');
+      actions.className = 'task-list-tree-actions';
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'task-list-tree-action';
+      edit.title = `Upraviť zoznam ${taskList.title}`;
+      edit.setAttribute('aria-label', edit.title);
+      edit.append(createAppIcon('pencil'));
+      edit.addEventListener('click', (event) => {
+        event.stopPropagation();
+        openTaskListDialog(taskList);
+      });
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'task-list-tree-action danger';
+      remove.title = `Zmazať zoznam ${taskList.title}`;
+      remove.setAttribute('aria-label', remove.title);
+      remove.append(createAppIcon('trash'));
+      remove.addEventListener('click', (event) => {
+        event.stopPropagation();
+        void deleteTaskList(taskList);
+      });
+      actions.append(edit, remove);
+      row.append(select, actions);
+      dom.taskListTree.append(row);
+      appendChildren(taskList.id, depth + 1);
+    });
+  };
+
+  appendChildren('', 0);
+}
+
+async function selectTaskList(listId) {
+  activeTaskListId = listId;
+  renderTaskListTree();
+  await loadTasks();
 }
 
 function renderTasksList() {
@@ -359,6 +498,114 @@ async function renderTaskTargetOptions() {
   dom.taskLinkAddButton.disabled = !targets.length;
 }
 
+function renderTaskListMemberships() {
+  if (dom.taskDetail.hidden) return;
+  dom.taskListsSection.hidden = false;
+  dom.taskListMemberships.replaceChildren();
+
+  const assignedIds = new Set(taskMembershipListIds());
+  const assignedLists = taskLists
+    .filter((taskList) => assignedIds.has(taskList.id))
+    .sort((left, right) => taskListLabel(left).localeCompare(taskListLabel(right), 'sk'));
+  const availableLists = taskLists
+    .filter((taskList) => !assignedIds.has(taskList.id))
+    .sort((left, right) => taskListLabel(left).localeCompare(taskListLabel(right), 'sk'));
+
+  dom.taskListMembershipSelect.replaceChildren();
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = availableLists.length ? 'Vyber zoznam' : 'Nie je ďalší zoznam';
+  dom.taskListMembershipSelect.append(placeholder);
+  availableLists.forEach((taskList) => {
+    const option = document.createElement('option');
+    option.value = taskList.id;
+    option.textContent = taskListLabel(taskList);
+    dom.taskListMembershipSelect.append(option);
+  });
+  dom.taskListMembershipSelect.disabled = !availableLists.length;
+  dom.taskListMembershipAdd.disabled = !availableLists.length;
+
+  if (!assignedLists.length) {
+    const empty = document.createElement('p');
+    empty.className = 'task-links-empty';
+    empty.textContent = selectedTask
+      ? 'Táto úloha zatiaľ nie je zaradená v žiadnom zozname.'
+      : 'Po uložení bude úloha zaradená do zvolených zoznamov.';
+    dom.taskListMemberships.append(empty);
+    return;
+  }
+
+  assignedLists.forEach((taskList) => {
+    const row = document.createElement('div');
+    row.className = 'task-link-row task-list-membership-row';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'task-link-open';
+    open.append(createAppIcon('folder'));
+    const copy = document.createElement('span');
+    const title = document.createElement('strong');
+    title.textContent = taskList.title;
+    const meta = document.createElement('small');
+    meta.textContent = taskListPath(taskList).slice(0, -1).join(' / ') || 'Hlavný zoznam';
+    copy.append(title, meta);
+    open.append(copy);
+    open.title = `Zobraziť zoznam ${taskListLabel(taskList)}`;
+    open.addEventListener('click', () => void selectTaskList(taskList.id));
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'source-unlink-button';
+    remove.append(createAppIcon('close'));
+    remove.title = `Vyradiť zo zoznamu ${taskListLabel(taskList)}`;
+    remove.setAttribute('aria-label', remove.title);
+    remove.addEventListener('click', () => void removeTaskFromList(taskList.id));
+    row.append(open, remove);
+    dom.taskListMemberships.append(row);
+  });
+}
+
+async function addTaskToList() {
+  const listId = dom.taskListMembershipSelect.value;
+  if (!listId) return;
+  try {
+    if (!selectedTask) {
+      draftTaskListIds = [...new Set([...draftTaskListIds, listId])];
+      renderTaskListMemberships();
+      return;
+    }
+    const result = await runTaskOperation(() =>
+      apiRequest(`/tasks/${encodeURIComponent(selectedTask.id)}/lists/${encodeURIComponent(listId)}`, { method: 'PUT' })
+    );
+    selectedTask = result.task;
+    renderTaskDetail();
+    await loadTaskLists();
+    await loadTasks();
+    notifyTasksChanged();
+  } catch (error) {
+    setTaskFormError(error?.message || 'Úlohu sa nepodarilo zaradiť do zoznamu.');
+  }
+}
+
+async function removeTaskFromList(listId) {
+  try {
+    if (!selectedTask) {
+      draftTaskListIds = draftTaskListIds.filter((itemId) => itemId !== listId);
+      renderTaskListMemberships();
+      return;
+    }
+    const result = await runTaskOperation(() =>
+      apiRequest(`/tasks/${encodeURIComponent(selectedTask.id)}/lists/${encodeURIComponent(listId)}`, { method: 'DELETE' })
+    );
+    selectedTask = result.task;
+    renderTaskDetail();
+    await loadTaskLists();
+    await loadTasks();
+    notifyTasksChanged();
+  } catch (error) {
+    setTaskFormError(error?.message || 'Úlohu sa nepodarilo vyradiť zo zoznamu.');
+  }
+}
+
 function renderTaskLinks() {
   dom.taskLinksList.replaceChildren();
   if (!selectedTask?.links.length) {
@@ -413,7 +660,9 @@ function renderTaskDetail() {
   dom.taskDeleteButton.hidden = false;
   dom.taskRelationshipsButton.hidden = false;
   dom.taskMarkdownExport.hidden = false;
+  dom.taskListsSection.hidden = false;
   dom.taskLinksSection.hidden = false;
+  renderTaskListMemberships();
   renderTaskLinks();
   void renderTaskTargetOptions();
   rememberTaskForm();
@@ -433,6 +682,7 @@ async function selectTask(taskId) {
 
 function startNewTask() {
   selectedTask = null;
+  draftTaskListIds = activeTaskListId ? [activeTaskListId] : [];
   showTaskDetail();
   dom.taskForm.reset();
   setTagField(dom.taskTags, dom.taskTagChips, []);
@@ -442,8 +692,10 @@ function startNewTask() {
   dom.taskDeleteButton.hidden = true;
   dom.taskRelationshipsButton.hidden = true;
   dom.taskMarkdownExport.hidden = true;
+  dom.taskListsSection.hidden = false;
   dom.taskLinksSection.hidden = true;
   dom.taskLinksList.replaceChildren();
+  renderTaskListMemberships();
   void renderTaskTargetOptions();
   rememberTaskForm();
   dom.taskTitle.focus();
@@ -469,10 +721,15 @@ export async function saveTaskDraft() {
       };
       const result = selectedTask
         ? await apiRequest(`/tasks/${encodeURIComponent(selectedTask.id)}`, { method: 'PATCH', body: data })
-        : await apiRequest('/tasks', { method: 'POST', body: { ...data, id: crypto.randomUUID() } });
+        : await apiRequest('/tasks', {
+          method: 'POST',
+          body: { ...data, id: crypto.randomUUID(), listIds: draftTaskListIds }
+        });
       selectedTask = result.task;
+      draftTaskListIds = [];
       targetSources = null;
       renderTaskDetail();
+      await loadTaskLists();
       await loadTasks();
       refreshTagSuggestions();
       notifyTasksChanged();
@@ -515,6 +772,7 @@ async function unlinkTask(linkId) {
     );
     selectedTask = result.task;
     renderTaskDetail();
+    await loadTaskLists();
     await loadTasks();
     notifyTasksChanged();
   } catch (error) {
@@ -528,6 +786,7 @@ async function deleteSelectedTask() {
     await runTaskOperation(() => apiRequest(`/tasks/${encodeURIComponent(selectedTask.id)}`, { method: 'DELETE' }));
     selectedTask = null;
     showTaskList();
+    await loadTaskLists();
     await loadTasks();
     notifyTasksChanged();
   } catch (error) {
@@ -543,6 +802,7 @@ export function closeTasksPanel({ force = false } = {}) {
   if (panelPinned && !force) return;
   panelPinned = false;
   selectedTask = null;
+  draftTaskListIds = [];
   dom.taskDetail.hidden = true;
   setTaskDetailOpen(false);
   setTasksPanelOpen(false);
@@ -551,6 +811,7 @@ export function closeTasksPanel({ force = false } = {}) {
 export async function openTasksPanel({ taskId = '', pinned = false } = {}) {
   if (pinned) panelPinned = true;
   setTasksPanelOpen(true);
+  await loadTaskLists();
   await loadTasks();
   if (taskId) await selectTask(taskId);
 }
@@ -629,8 +890,10 @@ async function importTaskFromMarkdown(preview) {
     }
 
     selectedTask = importedTask;
+    draftTaskListIds = [];
     targetSources = null;
     renderTaskDetail();
+    await loadTaskLists();
     await loadTasks();
     refreshTagSuggestions();
     notifyTasksChanged();
@@ -648,9 +911,107 @@ function requestTaskMarkdownImport() {
   });
 }
 
+function setTaskListError(message = '') {
+  dom.taskListTitle.setCustomValidity(message);
+  if (message) dom.taskListTitle.reportValidity();
+}
+
+function populateTaskListParentOptions(selectedParentId = '', excludedListId = '') {
+  dom.taskListParent.replaceChildren();
+  const root = document.createElement('option');
+  root.value = '';
+  root.textContent = 'Hlavná úroveň';
+  dom.taskListParent.append(root);
+
+  const appendOptions = (parentId, depth) => {
+    taskListChildren(parentId).forEach((taskList) => {
+      if (taskList.id === excludedListId || isTaskListDescendant(taskList.id, excludedListId)) return;
+      const option = document.createElement('option');
+      option.value = taskList.id;
+      option.textContent = `${'\u00a0\u00a0'.repeat(depth)}${taskList.title}`;
+      option.selected = taskList.id === selectedParentId;
+      dom.taskListParent.append(option);
+      appendOptions(taskList.id, depth + 1);
+    });
+  };
+  appendOptions('', 0);
+  dom.taskListParent.value = selectedParentId || '';
+}
+
+function openTaskListDialog(taskList = null) {
+  editingTaskListId = taskList?.id || '';
+  const parentId = taskList?.parentId || activeTaskListId || '';
+  dom.taskListForm.reset();
+  dom.taskListDialogTitle.textContent = taskList ? 'Upraviť zoznam úloh' : 'Nový zoznam úloh';
+  dom.taskListDialogDescription.textContent = taskList
+    ? 'Zmena nadradeného zoznamu presunie aj jeho podzoznamy.'
+    : parentId
+      ? `Nový zoznam bude vložený do „${taskListLabel(taskListById(parentId))}“.`
+      : 'Zoznamy slúžia len na usporiadanie úloh.';
+  dom.taskListSave.textContent = taskList ? 'Uložiť zmeny' : 'Vytvoriť zoznam';
+  dom.taskListTitle.value = taskList?.title || '';
+  populateTaskListParentOptions(parentId, editingTaskListId);
+  setTaskListError('');
+  if (!dom.taskListDialog.open) dom.taskListDialog.showModal();
+  requestAnimationFrame(() => dom.taskListTitle.focus());
+}
+
+function closeTaskListDialog() {
+  if (dom.taskListDialog.open) dom.taskListDialog.close();
+  else editingTaskListId = '';
+}
+
+async function saveTaskList() {
+  if (!dom.taskListForm.reportValidity()) return;
+  try {
+    const data = {
+      title: dom.taskListTitle.value.trim(),
+      parentId: dom.taskListParent.value
+    };
+    const result = editingTaskListId
+      ? await apiRequest(`/task-lists/${encodeURIComponent(editingTaskListId)}`, { method: 'PATCH', body: data })
+      : await apiRequest('/task-lists', { method: 'POST', body: { ...data, id: crypto.randomUUID() } });
+    activeTaskListId = result.list.id;
+    closeTaskListDialog();
+    await loadTaskLists();
+    await loadTasks();
+  } catch (error) {
+    setTaskListError(error?.message || 'Zoznam úloh sa nepodarilo uložiť.');
+  }
+}
+
+async function deleteTaskList(taskList) {
+  const childrenText = taskList.childCount
+    ? ` Podzoznamy sa presunú o jednu úroveň vyššie.`
+    : '';
+  const accepted = confirm(
+    `Zmazať zoznam „${taskList.title}“? Úlohy zostanú zachované, iba sa z neho vyradia.${childrenText}`
+  );
+  if (!accepted) return;
+  try {
+    const result = await apiRequest(`/task-lists/${encodeURIComponent(taskList.id)}`, { method: 'DELETE' });
+    if (activeTaskListId === taskList.id) activeTaskListId = result.parentId || '';
+    if (selectedTask) {
+      try {
+        selectedTask = (await apiRequest(`/tasks/${encodeURIComponent(selectedTask.id)}`)).task;
+        renderTaskDetail();
+      } catch {
+        selectedTask = null;
+        showTaskList();
+      }
+    }
+    await loadTaskLists();
+    await loadTasks();
+    notifyTasksChanged();
+  } catch (error) {
+    window.alert(error?.message || 'Zoznam úloh sa nepodarilo zmazať.');
+  }
+}
+
 export function initializeTasks() {
   dom.taskCreateButton.addEventListener('click', startNewTask);
   dom.taskImportButton.addEventListener('click', requestTaskMarkdownImport);
+  dom.taskListCreateButton.addEventListener('click', () => openTaskListDialog());
   dom.taskDetailBack.addEventListener('click', closeTaskDetail);
   dom.taskDeleteButton.addEventListener('click', () => void deleteSelectedTask());
   dom.taskRelationshipsButton.addEventListener('click', () => {
@@ -665,6 +1026,17 @@ export function initializeTasks() {
     setTaskExportBusy(false);
   });
   installDialogBackdropClose(dom.taskExportDialog, closeTaskExportDialog);
+  dom.taskListDialogClose.addEventListener('click', closeTaskListDialog);
+  dom.taskListDialog.addEventListener('close', () => {
+    editingTaskListId = '';
+    setTaskListError('');
+  });
+  installDialogBackdropClose(dom.taskListDialog, closeTaskListDialog);
+  dom.taskListForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void saveTaskList();
+  });
+  dom.taskListTitle.addEventListener('input', () => setTaskListError(''));
   dom.taskForm.addEventListener('submit', (event) => {
     event.preventDefault();
     void saveTaskDraft();
@@ -678,6 +1050,7 @@ export function initializeTasks() {
   });
   dom.taskLinkTargetType.addEventListener('change', () => void renderTaskTargetOptions());
   dom.taskLinkAddButton.addEventListener('click', () => void addTaskLink());
+  dom.taskListMembershipAdd.addEventListener('click', () => void addTaskToList());
   dom.editorTaskToggle.addEventListener('click', () => setEditorTaskMenuOpen(!editorTaskMenuOpen));
   document.addEventListener('pointerdown', (event) => {
     if (editorTaskMenuOpen && !dom.editorTaskLinks.contains(event.target)) closeEditorTaskMenu();

@@ -630,6 +630,11 @@ export function taskMarkdown(task) {
   const priority = taskPriorityLabels[task?.priority] ? task.priority : 'none';
   const dueDate = String(task?.dueDate || '').trim();
   const tags = Array.isArray(task?.tags) ? task.tags.filter(Boolean) : [];
+  const taskListPaths = Array.isArray(task?.lists)
+    ? task.lists
+      .map((taskList) => Array.isArray(taskList?.path) ? taskList.path.map((part) => String(part || '').trim()).filter(Boolean) : [])
+      .filter((path) => path.length)
+    : [];
   const description = cleanMarkdown(String(task?.description || '').replace(/\r\n?/g, '\n'));
   const metadata = [
     '---',
@@ -638,6 +643,7 @@ export function taskMarkdown(task) {
     `status: ${yamlString(status)}`,
     `priority: ${yamlString(priority)}`,
     `due: ${yamlString(dueDate)}`,
+    `taskListPaths: ${JSON.stringify(taskListPaths)}`,
     tags.length ? 'tags:' : 'tags: []',
     ...tags.map((tag) => `  - ${yamlString(tag)}`),
     '---'
@@ -684,13 +690,19 @@ function taskPackageTask(task) {
   const tags = Array.isArray(task?.tags)
     ? [...new Set(task.tags.map((tag) => manifestText(tag, 80)).filter(Boolean))].slice(0, 30)
     : [];
+  const listPaths = Array.isArray(task?.lists)
+    ? task.lists
+      .map((taskList) => Array.isArray(taskList?.path) ? taskList.path.map((part) => manifestText(part, 160)).filter(Boolean) : [])
+      .filter((path) => path.length)
+    : [];
   return {
     title: manifestText(task?.title, 240) || 'Nová úloha',
     description: manifestText(task?.description, 10_000),
     status,
     priority,
     dueDate: manifestText(task?.dueDate, 32),
-    tags
+    tags,
+    listPaths
   };
 }
 
