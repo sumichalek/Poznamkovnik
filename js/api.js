@@ -48,6 +48,20 @@ export async function uploadMusicTrack(file) {
   return payload;
 }
 
+export async function uploadDocumentProject(file) {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  const response = await fetch('/api/documents/import', {
+    method: 'POST',
+    credentials: 'same-origin',
+    body: form
+  });
+  const contentType = response.headers.get('Content-Type') || '';
+  const payload = contentType.includes('application/json') ? await response.json() : null;
+  if (!response.ok) throw new ApiError(payload?.error || 'Projekt Dielne PDF sa nepodarilo importovať.', response.status);
+  return payload;
+}
+
 export async function uploadBackupArchive(file) {
   const form = new FormData();
   form.append('file', file, file.name);
@@ -76,7 +90,7 @@ export async function previewBackupArchive(file) {
   return payload;
 }
 
-function backupFilename(response) {
+function downloadFilename(response, fallback) {
   const disposition = response.headers.get('Content-Disposition') || '';
   const utf8Name = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
   if (utf8Name) {
@@ -87,7 +101,7 @@ function backupFilename(response) {
     }
   }
   const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1];
-  return filename ? filename.replace(/[\\/]/g, '_') : 'Poznamkovnik-zaloha.zip';
+  return filename ? filename.replace(/[\\/]/g, '_') : fallback;
 }
 
 export async function downloadBackupArchive(path = '/backups/export') {
@@ -97,5 +111,17 @@ export async function downloadBackupArchive(path = '/backups/export') {
     const payload = contentType.includes('application/json') ? await response.json() : null;
     throw new ApiError(payload?.error || 'Zálohu sa nepodarilo stiahnuť.', response.status);
   }
-  return { blob: await response.blob(), filename: backupFilename(response) };
+  return { blob: await response.blob(), filename: downloadFilename(response, 'Poznamkovnik-zaloha.zip') };
+}
+
+export async function downloadDocumentProject(projectId) {
+  const response = await fetch(`/api/documents/${encodeURIComponent(projectId)}/export`, {
+    credentials: 'same-origin'
+  });
+  if (!response.ok) {
+    const contentType = response.headers.get('Content-Type') || '';
+    const payload = contentType.includes('application/json') ? await response.json() : null;
+    throw new ApiError(payload?.error || 'Projekt Dielne PDF sa nepodarilo exportovať.', response.status);
+  }
+  return { blob: await response.blob(), filename: downloadFilename(response, 'projekt-dielne-pdf.zip') };
 }

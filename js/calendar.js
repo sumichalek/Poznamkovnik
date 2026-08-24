@@ -1,5 +1,6 @@
 import { apiRequest } from './api.js';
 import { createAppIcon } from './app-icons.js';
+import { initializeCalendarTransfer } from './calendar-transfer.js';
 import { dom } from './dom.js';
 import { state } from './state.js';
 import { flushWorkspaceSync } from './storage.js';
@@ -11,13 +12,18 @@ const WEEKDAY_LABELS = ['Po', 'Ut', 'St', 'Št', 'Pi', 'So', 'Ne'];
 const MONTH_FORMATTER = new Intl.DateTimeFormat('sk-SK', { month: 'long', year: 'numeric' });
 const SHORT_DATE_FORMATTER = new Intl.DateTimeFormat('sk-SK', { day: 'numeric', month: 'short' });
 const LONG_DATE_FORMATTER = new Intl.DateTimeFormat('sk-SK', { weekday: 'long', day: 'numeric', month: 'long' });
+const REMINDER_WINDOW_DAYS = 35;
+const REMINDER_PRESET_VALUES = new Set(['-1', '0', '5', '15', '30', '60', '120', '1440', '10080']);
 
 let calendarView = 'month';
 let cursorDate = today();
 let calendarEvents = [];
 let calendarTasks = [];
+let calendarReminderEvents = [];
 let calendarLoadRequestId = 0;
 let selectedEvent = null;
+let selectedEventOccurrenceDate = '';
+let selectedEventScope = 'series';
 let panelPinned = false;
 let eventFormBaseline = '';
 let eventOperationCount = 0;
@@ -145,6 +151,58 @@ function isWithinRange(value, start, end) {
   return value >= isoDate(start) && value <= isoDate(end);
 }
 
+function reminderMoment(event) {
+  const reminderMinutes = Number(event?.reminderMinutes);
+  if (!Number.isInteger(reminderMinutes) || reminderMinutes < 0) return null;
+  const time = event.allDay ? '09:00' : event.startTime || '00:00';
+  const moment = new Date(`${event.startDate}T${time}:00`);
+  if (Number.isNaN(moment.getTime())) return null;
+  return new Date(moment.getTime() - reminderMinutes * 60_000);
+}
+
+function reminderTimeLabel(moment) {
+  const dateValue = isoDate(moment);
+  const todayValue = isoDate(today());
+  const tomorrowValue = isoDate(addDays(today(), 1));
+  const time = `${String(moment.getHours()).padStart(2, '0')}:${String(moment.getMinutes()).padStart(2, '0')}`;
+  if (dateValue === todayValue) return `Dnes o ${time}`;
+  if (dateValue === tomorrowValue) return `Zajtra o ${time}`;
+  return `${SHORT_DATE_FORMATTER.format(moment)} o ${time}`;
+}
+
+function renderCalendarReminders() {
+  dom.calendarRemindersList.replaceChildren();
+  const now = new Date();
+  const reminders = calendarReminderEvents
+    .map((event) => ({ event, moment: reminderMoment(event) }))
+    .filter((item) => item.moment && item.moment >= now)
+    .sort((left, right) => left.moment - right.moment || left.event.title.localeCompare(right.event.title, 'sk'))
+    .slice(0, 5);
+  if (!reminders.length) {
+    const empty = document.createElement('p');
+    empty.className = 'calendar-reminders-empty';
+    empty.textContent = `V nasledujúcich ${REMINDER_WINDOW_DAYS} dňoch nie sú žiadne pripomienky.`;
+    dom.calendarRemindersList.append(empty);
+    return;
+  }
+  reminders.forEach(({ event, moment }) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'calendar-reminder-item';
+    button.append(createAppIcon('timer'));
+    const copy = document.createElement('span');
+    const title = document.createElement('strong');
+    title.textContent = event.title;
+    const meta = document.createElement('small');
+    meta.textContent = reminderTimeLabel(moment);
+    copy.append(title, meta);
+    button.append(copy);
+    button.title = `Otvoriť udalosť: ${event.title}`;
+    button.addEventListener('click', () => void selectCalendarEvent(event.id, event.occurrenceDate || ''));
+    dom.calendarRemindersList.append(button);
+  });
+}
+
 function eventOccursOn(event, dateValue) {
   return event.startDate <= dateValue && event.endDate >= dateValue;
 }
@@ -184,6 +242,12 @@ function eventFormSnapshot() {
     startTime: dom.calendarEventStartTime.value,
     endDate: dom.calendarEventEndDate.value,
     endTime: dom.calendarEventEndTime.value,
+    recurrence: dom.calendarEventRecurrence.value,
+    recurrenceInterval: dom.calendarEventRecurrenceInterval.value,
+    recurrenceUnit: dom.calendarEventRecurrenceUnit.value,
+    recurrenceUntil: dom.calendarEventRecurrenceUntil.value,
+    reminder: dom.calendarEventReminder.value,
+    reminderCustom: dom.calendarEventReminder.value === 'custom' ? dom.calendarEventReminderCustom.value : '',
     description: dom.calendarEventDescription.value.trim(),
     tags: readTagField(dom.calendarEventTags)
   });
@@ -230,6 +294,80 @@ function syncAllDayFields() {
   dom.calendarEventTimeFields.hidden = !timed;
   dom.calendarEventStartTime.required = timed;
   dom.calendarEventEndTime.required = timed;
+  syncReminderFields();
+}
+
+function syncReminderFields() {
+  const custom = dom.calendarEventReminder.value === 'custom';
+  dom.calendarEventReminderCustomField.hidden = !custom;
+  dom.calendarEventReminderCustom.disabled = !custom;
+  dom.calendarEventReminderCustom.required = custom;
+  dom.calendarEventReminderNote.textContent = dom.calendarEventAllDay.checked
+    ? 'Pri celodennej udalosti sa pripomienka vyhodnotí o 9:00 v deň začiatku.'
+    : 'Pripomienka sa vyhodnotí pred časom začiatku udalosti.';
+}
+
+function setReminderMinutes(value) {
+  const minutes = Number(value);
+  if (Number.isInteger(minutes) && REMINDER_PRESET_VALUES.has(String(minutes))) {
+    dom.calendarEventReminder.value = String(minutes);
+  } else {
+    dom.calendarEventReminder.value = 'custom';
+    dom.calendarEventReminderCustom.value = String(Math.max(0, Number.isInteger(minutes) ? minutes : 15));
+  }
+  syncReminderFields();
+}
+
+function reminderMinutesFromForm() {
+  const value = dom.calendarEventReminder.value === 'custom'
+    ? dom.calendarEventReminderCustom.value
+    : dom.calendarEventReminder.value;
+  return Number(value);
+}
+
+function setEventRecurrence(event) {
+  const kind = event?.recurrenceKind || 'none';
+  const interval = Math.max(1, Number.parseInt(event?.recurrenceInterval, 10) || 1);
+  const isCustom = ['daily', 'weekly', 'monthly'].includes(kind) && interval > 1;
+  dom.calendarEventRecurrence.value = isCustom ? 'custom' : kind;
+  dom.calendarEventRecurrenceInterval.value = String(interval);
+  dom.calendarEventRecurrenceUnit.value = ['daily', 'weekly', 'monthly'].includes(kind) ? kind : 'daily';
+  dom.calendarEventRecurrenceUntil.value = event?.recurrenceUntil || '';
+  syncRecurrenceFields();
+}
+
+function recurrenceFromForm() {
+  const selected = dom.calendarEventRecurrence.value;
+  if (selected === 'none') return { recurrenceKind: 'none', recurrenceInterval: 1, recurrenceUntil: '' };
+  const custom = selected === 'custom';
+  const kind = custom ? dom.calendarEventRecurrenceUnit.value : selected;
+  const interval = custom ? Number(dom.calendarEventRecurrenceInterval.value) : 1;
+  return {
+    recurrenceKind: kind,
+    recurrenceInterval: Number.isInteger(interval) ? interval : 1,
+    recurrenceUntil: dom.calendarEventRecurrenceUntil.value
+  };
+}
+
+function syncRecurrenceFields() {
+  const selected = dom.calendarEventRecurrence.value;
+  const repeated = selected !== 'none';
+  const custom = selected === 'custom';
+  const occurrenceOnly = Boolean(selectedEventOccurrenceDate) && selectedEventScope === 'occurrence';
+  dom.calendarEventRecurrenceCustomField.hidden = !custom;
+  dom.calendarEventRecurrenceUntilField.hidden = !repeated;
+  dom.calendarEventRecurrenceInterval.disabled = !custom || occurrenceOnly;
+  dom.calendarEventRecurrenceUnit.disabled = !custom || occurrenceOnly;
+  dom.calendarEventRecurrenceUntil.disabled = !repeated || occurrenceOnly;
+  dom.calendarEventRecurrence.disabled = occurrenceOnly;
+  dom.calendarEventScopeField.hidden = !selectedEventOccurrenceDate;
+  dom.calendarEventScope.value = selectedEventScope;
+  dom.calendarEventScopeNote.hidden = !selectedEventOccurrenceDate;
+  dom.calendarEventScopeNote.textContent = occurrenceOnly
+    ? 'Menia sa len údaje vybraného výskytu. Pravidlo série ostane nezmenené.'
+    : selectedEventOccurrenceDate
+      ? 'Mení sa pôvodná udalosť a pravidlo série. Výnimky zostanú iba ak ostanú platné.'
+      : '';
 }
 
 function setView(view) {
@@ -273,20 +411,25 @@ function resetCursorToToday() {
 async function loadCalendarData() {
   if (!isCalendarPanelOpen()) return;
   const { start, end } = dateRange();
+  const reminderStart = today();
+  const reminderEnd = addDays(reminderStart, REMINDER_WINDOW_DAYS);
   const currentRequest = ++calendarLoadRequestId;
   try {
-    const [eventsResult, tasksResult] = await Promise.all([
+    const [eventsResult, tasksResult, remindersResult] = await Promise.all([
       apiRequest(`/calendar-events?from=${encodeURIComponent(isoDate(start))}&to=${encodeURIComponent(isoDate(end))}`),
-      apiRequest('/tasks')
+      apiRequest('/tasks'),
+      apiRequest(`/calendar-events?from=${encodeURIComponent(isoDate(reminderStart))}&to=${encodeURIComponent(isoDate(reminderEnd))}`)
     ]);
     if (currentRequest !== calendarLoadRequestId || !isCalendarPanelOpen()) return;
     calendarEvents = eventsResult.events;
     calendarTasks = tasksResult.tasks.filter((task) => task.dueDate && isWithinRange(task.dueDate, start, end));
+    calendarReminderEvents = remindersResult.events;
     renderCalendar();
   } catch {
     if (currentRequest !== calendarLoadRequestId || !isCalendarPanelOpen()) return;
     calendarEvents = [];
     calendarTasks = [];
+    calendarReminderEvents = [];
     renderCalendar('Kalendár sa nepodarilo načítať.');
   }
 }
@@ -344,7 +487,7 @@ function createCalendarItem(item, dateValue) {
     });
   } else {
     button.title = `Otvoriť udalosť: ${item.event.title}`;
-    button.addEventListener('click', () => void selectCalendarEvent(item.event.id));
+    button.addEventListener('click', () => void selectCalendarEvent(item.event.id, item.event.occurrenceDate || ''));
   }
   return button;
 }
@@ -447,6 +590,7 @@ function renderAgendaView() {
 
 function renderCalendar(errorMessage = '') {
   dom.calendarPeriodTitle.textContent = periodTitle();
+  renderCalendarReminders();
   dom.calendarContent.replaceChildren();
   if (errorMessage) {
     const error = document.createElement('p');
@@ -579,6 +723,8 @@ function renderCalendarEventDetail() {
   dom.calendarEventEndDate.value = selectedEvent.endDate;
   dom.calendarEventStartTime.value = selectedEvent.startTime || '';
   dom.calendarEventEndTime.value = selectedEvent.endTime || '';
+  setEventRecurrence(selectedEvent);
+  setReminderMinutes(selectedEvent.reminderMinutes);
   dom.calendarEventDescription.value = selectedEvent.description || '';
   setTagField(dom.calendarEventTags, dom.calendarEventTagChips, selectedEvent.tags || []);
   dom.calendarEventDelete.hidden = false;
@@ -590,14 +736,40 @@ function renderCalendarEventDetail() {
   rememberEventForm();
 }
 
-async function selectCalendarEvent(eventId) {
+async function selectCalendarEvent(eventId, occurrenceDate = '') {
   try {
-    const result = await apiRequest(`/calendar-events/${encodeURIComponent(eventId)}`);
+    const query = occurrenceDate ? `?occurrenceDate=${encodeURIComponent(occurrenceDate)}` : '';
+    const result = await apiRequest(`/calendar-events/${encodeURIComponent(eventId)}${query}`);
     selectedEvent = result.event;
+    selectedEventOccurrenceDate = occurrenceDate || result.event.occurrenceDate || '';
+    selectedEventScope = selectedEventOccurrenceDate ? 'occurrence' : 'series';
     renderCalendarEventDetail();
   } catch {
     selectedEvent = null;
+    selectedEventOccurrenceDate = '';
+    selectedEventScope = 'series';
     await loadCalendarData();
+  }
+}
+
+async function changeCalendarEventScope() {
+  const nextScope = dom.calendarEventScope.value;
+  if (!selectedEvent || !selectedEventOccurrenceDate || nextScope === selectedEventScope) return;
+  if (hasUnsavedCalendarEventChanges() && !confirm('Zmena rozsahu úpravy vráti neuložené zmeny udalosti. Pokračovať?')) {
+    dom.calendarEventScope.value = selectedEventScope;
+    return;
+  }
+  try {
+    const query = nextScope === 'occurrence'
+      ? `?occurrenceDate=${encodeURIComponent(selectedEventOccurrenceDate)}`
+      : '';
+    const result = await apiRequest(`/calendar-events/${encodeURIComponent(selectedEvent.id)}${query}`);
+    selectedEvent = result.event;
+    selectedEventScope = nextScope;
+    renderCalendarEventDetail();
+  } catch (error) {
+    dom.calendarEventScope.value = selectedEventScope;
+    setEventFormError(error?.message || 'Rozsah úpravy udalosti sa nepodarilo zmeniť.');
   }
 }
 
@@ -609,11 +781,19 @@ function startNewCalendarEvent(dateValue = isoDate(cursorDate)) {
   dom.calendarEventAllDay.checked = true;
   dom.calendarEventStartDate.value = dateValue;
   dom.calendarEventEndDate.value = dateValue;
+  dom.calendarEventRecurrence.value = 'none';
+  dom.calendarEventRecurrenceInterval.value = '1';
+  dom.calendarEventRecurrenceUnit.value = 'daily';
+  dom.calendarEventRecurrenceUntil.value = '';
+  selectedEventOccurrenceDate = '';
+  selectedEventScope = 'series';
+  setReminderMinutes(-1);
   dom.calendarEventDelete.hidden = true;
   dom.calendarEventRelationships.hidden = true;
   dom.calendarEventLinksSection.hidden = true;
   dom.calendarEventLinksList.replaceChildren();
   syncAllDayFields();
+  syncRecurrenceFields();
   void renderCalendarEventTargetOptions();
   rememberEventForm();
   dom.calendarEventTitle.focus();
@@ -632,12 +812,17 @@ export async function saveCalendarEventDraft() {
         startTime: dom.calendarEventStartTime.value,
         endDate: dom.calendarEventEndDate.value,
         endTime: dom.calendarEventEndTime.value,
-        tags: readTagField(dom.calendarEventTags)
+        reminderMinutes: reminderMinutesFromForm(),
+        tags: readTagField(dom.calendarEventTags),
+        ...recurrenceFromForm(),
+        scope: selectedEventScope,
+        occurrenceDate: selectedEventOccurrenceDate
       };
       const result = selectedEvent
         ? await apiRequest(`/calendar-events/${encodeURIComponent(selectedEvent.id)}`, { method: 'PATCH', body: data })
         : await apiRequest('/calendar-events', { method: 'POST', body: { ...data, id: crypto.randomUUID() } });
       selectedEvent = result.event;
+      if (selectedEventScope === 'series') selectedEventOccurrenceDate = '';
       targetSources = null;
       renderCalendarEventDetail();
       await loadCalendarData();
@@ -690,10 +875,20 @@ async function unlinkCalendarEvent(linkId) {
 }
 
 async function deleteSelectedCalendarEvent() {
-  if (!selectedEvent || !confirm(`Zmazať udalosť „${selectedEvent.title}“?`)) return;
+  if (!selectedEvent) return;
+  const occurrenceOnly = Boolean(selectedEventOccurrenceDate) && selectedEventScope === 'occurrence';
+  const question = occurrenceOnly
+    ? `Zmazať len výskyt udalosti „${selectedEvent.title}“?`
+    : `Zmazať ${selectedEventOccurrenceDate ? 'celú sériu udalosti' : 'udalosť'} „${selectedEvent.title}“?`;
+  if (!confirm(question)) return;
   try {
-    await runEventOperation(() => apiRequest(`/calendar-events/${encodeURIComponent(selectedEvent.id)}`, { method: 'DELETE' }));
+    const query = occurrenceOnly
+      ? `?scope=occurrence&occurrenceDate=${encodeURIComponent(selectedEventOccurrenceDate)}`
+      : '';
+    await runEventOperation(() => apiRequest(`/calendar-events/${encodeURIComponent(selectedEvent.id)}${query}`, { method: 'DELETE' }));
     selectedEvent = null;
+    selectedEventOccurrenceDate = '';
+    selectedEventScope = 'series';
     closeCalendarEventDetail();
     await loadCalendarData();
     notifyCalendarChanged();
@@ -706,6 +901,8 @@ export function closeCalendarPanel({ force = false } = {}) {
   if (panelPinned && !force) return;
   panelPinned = false;
   selectedEvent = null;
+  selectedEventOccurrenceDate = '';
+  selectedEventScope = 'series';
   dom.calendarEventDetail.hidden = true;
   setCalendarEventDetailOpen(false);
   setCalendarPanelOpen(false);
@@ -719,6 +916,16 @@ export async function openCalendarPanel({ eventId = '', pinned = false } = {}) {
 }
 
 export function initializeCalendar() {
+  initializeCalendarTransfer({
+    getRange: () => {
+      const range = dateRange();
+      return { start: isoDate(range.start), end: isoDate(range.end) };
+    },
+    onImported: async () => {
+      await loadCalendarData();
+      notifyCalendarChanged();
+    }
+  });
   dom.calendarViewButtons.forEach((button) => button.addEventListener('click', () => setView(button.dataset.calendarView || 'month')));
   dom.calendarTodayButton.addEventListener('click', resetCursorToToday);
   dom.calendarPreviousButton.addEventListener('click', () => moveCursor(-1));
@@ -736,6 +943,9 @@ export function initializeCalendar() {
   });
   dom.calendarEventTitle.addEventListener('input', () => setEventFormError(''));
   dom.calendarEventAllDay.addEventListener('change', syncAllDayFields);
+  dom.calendarEventRecurrence.addEventListener('change', syncRecurrenceFields);
+  dom.calendarEventScope.addEventListener('change', () => void changeCalendarEventScope());
+  dom.calendarEventReminder.addEventListener('change', syncReminderFields);
   dom.calendarEventLinkTargetType.addEventListener('change', () => void renderCalendarEventTargetOptions());
   dom.calendarEventLinkAdd.addEventListener('click', () => void addCalendarEventLink());
   dom.editorCalendarToggle.addEventListener('click', () => setEditorCalendarMenuOpen(!editorCalendarMenuOpen));
@@ -748,4 +958,7 @@ export function initializeCalendar() {
   window.addEventListener('sources-changed', () => {
     targetSources = null;
   });
+  window.setInterval(() => {
+    if (isCalendarPanelOpen()) renderCalendarReminders();
+  }, 60_000);
 }

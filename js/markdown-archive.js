@@ -58,7 +58,7 @@ function dataUrlBlob(value) {
   }
 }
 
-function downloadBlob(blob, filename) {
+export function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -107,7 +107,7 @@ async function crc32(blob) {
   return (checksum ^ 0xffffffff) >>> 0;
 }
 
-async function createStoredZip(files) {
+export async function createStoredZip(files) {
   const entries = [];
   const dataParts = [];
   const centralParts = [];

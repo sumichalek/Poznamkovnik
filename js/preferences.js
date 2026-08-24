@@ -18,7 +18,8 @@ const defaults = {
   sourceFileMaxBytes: 100 * BYTES_PER_MEGABYTE,
   musicTrackMaxBytes: 250 * BYTES_PER_MEGABYTE,
   radioRecordingMaxSeconds: 120 * 60,
-  radioRecordingMaxBytes: 500 * BYTES_PER_MEGABYTE
+  radioRecordingMaxBytes: 500 * BYTES_PER_MEGABYTE,
+  calendarNotificationsEnabled: true
 };
 
 let preferences = { ...defaults };
@@ -123,6 +124,7 @@ function updateControls() {
   dom.musicTrackLimitMb.value = String(musicTrackLimitMb());
   dom.radioRecordingLimitMinutes.value = String(radioRecordingLimitMinutes());
   dom.radioRecordingLimitMb.value = String(radioRecordingLimitMb());
+  dom.calendarNotificationsEnabled.checked = preferences.calendarNotificationsEnabled;
 }
 
 function applyPreferences(nextPreferences, { syncControls = true } = {}) {
@@ -134,7 +136,8 @@ function applyPreferences(nextPreferences, { syncControls = true } = {}) {
     sourceFileMaxBytes: normalizeSourceFileMaxBytes(nextPreferences?.sourceFileMaxBytes),
     musicTrackMaxBytes: normalizeMusicTrackMaxBytes(nextPreferences?.musicTrackMaxBytes),
     radioRecordingMaxSeconds: normalizeRadioRecordingMaxSeconds(nextPreferences?.radioRecordingMaxSeconds),
-    radioRecordingMaxBytes: normalizeRadioRecordingMaxBytes(nextPreferences?.radioRecordingMaxBytes)
+    radioRecordingMaxBytes: normalizeRadioRecordingMaxBytes(nextPreferences?.radioRecordingMaxBytes),
+    calendarNotificationsEnabled: nextPreferences?.calendarNotificationsEnabled !== false
   };
   applyPanelTransparency();
   if (syncControls) updateControls();
@@ -255,6 +258,12 @@ function updateRadioRecordingLimit() {
   scheduleSave();
 }
 
+function updateCalendarNotifications() {
+  preferences.calendarNotificationsEnabled = dom.calendarNotificationsEnabled.checked;
+  updateControls();
+  scheduleSave();
+}
+
 export function getSourceFileMaxBytes() {
   return preferences.sourceFileMaxBytes;
 }
@@ -302,4 +311,5 @@ export function initializeWorkspacePreferences() {
   dom.radioRecordingLimitMinutes.addEventListener('input', () => dom.radioRecordingLimitMinutes.setCustomValidity(''));
   dom.radioRecordingLimitMb.addEventListener('change', updateRadioRecordingLimit);
   dom.radioRecordingLimitMb.addEventListener('input', () => dom.radioRecordingLimitMb.setCustomValidity(''));
+  dom.calendarNotificationsEnabled.addEventListener('change', updateCalendarNotifications);
 }

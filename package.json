@@ -2,7 +2,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild js/main.js --bundle --format=esm --target=es2022 --minify --loader:.woff2=file --loader:.woff=file --loader:.ttf=file --outfile=assets/app.js"
+    "build": "esbuild js/main.js --bundle --format=esm --target=es2022 --minify --loader:.woff2=file --loader:.woff=file --loader:.ttf=file --outfile=assets/app.js",
+    "test": "python3 -m unittest discover -s tests -v",
+    "check": "npm run build && npm test"
   },
   "dependencies": {
     "@tiptap/core": "^3.28.0",

@@ -1,4 +1,4 @@
-export const APP_VERSION = '0.54.0';
+export const APP_VERSION = '0.55.25';
 
 export const HORIZONTAL_EDITOR_MIN_WIDTH = 1120;
 export const HORIZONTAL_EDITOR_MIN_RATIO = 1.15;
@@ -16,6 +16,8 @@ export const storageKeys = {
   sourcePreviewInlineSize: 'knowledge-source-preview-inline-size',
   tutorialPlaygroundInlineSize: 'knowledge-tutorial-playground-inline-size',
   tutorialPlaygroundBlockSize: 'knowledge-tutorial-playground-block-size',
+  documentInputsCollapsed: 'knowledge-document-inputs-collapsed',
+  documentPreviewInlineSize: 'knowledge-document-preview-inline-size',
   musicVolume: 'knowledge-music-volume',
   musicTrackId: 'knowledge-music-track-id',
   musicPosition: 'knowledge-music-position',

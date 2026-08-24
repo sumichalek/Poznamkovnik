@@ -409,10 +409,13 @@ class BackupManager:
             if not isinstance(records, list) or not all(isinstance(item, dict) for item in records):
                 raise BackupError("Záloha nemá platný zoznam príloh.")
             for record in records:
-                blob_hash = str(record.get("blob_hash", "")).lower()
-                if len(blob_hash) != 64 or any(character not in "0123456789abcdef" for character in blob_hash):
-                    raise BackupError("Záloha obsahuje neplatný kontrolný súčet prílohy.")
-                result.add(blob_hash)
+                blob_hashes = [str(record.get("blob_hash", "")).lower()]
+                if key == "documentInputs" and record.get("original_blob_hash"):
+                    blob_hashes.append(str(record.get("original_blob_hash", "")).lower())
+                for blob_hash in blob_hashes:
+                    if len(blob_hash) != 64 or any(character not in "0123456789abcdef" for character in blob_hash):
+                        raise BackupError("Záloha obsahuje neplatný kontrolný súčet prílohy.")
+                    result.add(blob_hash)
         return result
 
     def _blob_sizes(self, snapshot: dict[str, Any]) -> dict[str, int]:
@@ -424,16 +427,19 @@ class BackupManager:
             for record in records:
                 if not isinstance(record, dict):
                     raise BackupError("Záloha nemá platný zoznam príloh.")
-                blob_hash = str(record.get("blob_hash", "")).lower()
-                try:
-                    size = int(record.get("size_bytes", -1))
-                except (TypeError, ValueError) as error:
-                    raise BackupError("Príloha v zálohe nemá platnú veľkosť.") from error
-                if size < 0:
-                    raise BackupError("Príloha v zálohe nemá platnú veľkosť.")
-                if blob_hash in sizes and sizes[blob_hash] != size:
-                    raise BackupError("Záloha obsahuje nekonzistentnú prílohu.")
-                sizes[blob_hash] = size
+                blobs = [(str(record.get("blob_hash", "")).lower(), record.get("size_bytes", -1))]
+                if key == "documentInputs" and record.get("original_blob_hash"):
+                    blobs.append((str(record.get("original_blob_hash", "")).lower(), record.get("original_size_bytes", -1)))
+                for blob_hash, raw_size in blobs:
+                    try:
+                        size = int(raw_size)
+                    except (TypeError, ValueError) as error:
+                        raise BackupError("Príloha v zálohe nemá platnú veľkosť.") from error
+                    if size < 0:
+                        raise BackupError("Príloha v zálohe nemá platnú veľkosť.")
+                    if blob_hash in sizes and sizes[blob_hash] != size:
+                        raise BackupError("Záloha obsahuje nekonzistentnú prílohu.")
+                    sizes[blob_hash] = size
         return sizes
 
     @staticmethod

@@ -5,7 +5,7 @@ import mimetypes
 import os
 import uuid
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
@@ -33,7 +33,7 @@ class FileStore:
         *,
         maximum_bytes: int = MAX_UPLOAD_BYTES,
     ) -> dict[str, str | int | bool]:
-        original_name = Path(filename or "priloha").name[:240] or "priloha"
+        original_name = self.normalize_original_name(filename)
         temporary_path = self.tmp_dir / f"{uuid.uuid4().hex}.upload"
         digest = hashlib.sha256()
         size = 0
@@ -69,6 +69,16 @@ class FileStore:
             "created": created,
         }
 
+    @staticmethod
+    def normalize_original_name(filename: str) -> str:
+        """Keep browser-uploaded UTF-8 names intact when multipart used latin-1 transport."""
+        original_name = Path(filename or "priloha").name[:240] or "priloha"
+        try:
+            repaired = original_name.encode("latin-1").decode("utf-8")
+        except UnicodeError:
+            return original_name
+        return repaired if repaired != original_name else original_name
+
     def path_for_hash(self, blob_hash: str) -> Path:
         return self.blobs_dir / blob_hash[:2] / blob_hash
 
@@ -79,6 +89,55 @@ class FileStore:
             path.parent.rmdir()
         except OSError:
             pass
+
+    def inspect_blob(self, blob_hash: str) -> dict[str, Any]:
+        """Return the on-disk state of one canonical content-addressed blob."""
+        normalized_hash = str(blob_hash or "").lower()
+        if not self._is_blob_hash(normalized_hash):
+            return {"status": "invalid", "sizeBytes": 0}
+        path = self.path_for_hash(normalized_hash)
+        if not path.is_file():
+            return {"status": "missing", "sizeBytes": 0}
+
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    size += len(chunk)
+                    digest.update(chunk)
+        except FileNotFoundError:
+            return {"status": "missing", "sizeBytes": 0}
+        return {
+            "status": "ok" if digest.hexdigest() == normalized_hash else "hash_mismatch",
+            "sizeBytes": size,
+        }
+
+    def list_stored_blobs(self) -> list[dict[str, Any]]:
+        """List physical blob files without trusting their directory or file names."""
+        entries: list[dict[str, Any]] = []
+        for path in self.blobs_dir.glob("*/*"):
+            if not path.is_file() or path.is_symlink():
+                continue
+            blob_hash = path.name.lower()
+            canonical = self._is_blob_hash(blob_hash) and path.parent.name == blob_hash[:2]
+            try:
+                size_bytes = path.stat().st_size
+            except FileNotFoundError:
+                continue
+            entries.append(
+                {
+                    "blobHash": blob_hash if canonical else "",
+                    "key": path.relative_to(self.blobs_dir).as_posix(),
+                    "sizeBytes": size_bytes,
+                    "canonical": canonical,
+                }
+            )
+        return entries
+
+    @staticmethod
+    def _is_blob_hash(value: str) -> bool:
+        return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
     @staticmethod
     def can_preview_inline(mime_type: str) -> bool:

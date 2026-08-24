@@ -305,6 +305,10 @@ window.addEventListener('global-search-open', (event) => {
       if (await switchTopSection('sources')) await openSourcesPanel({ collectionId: targetId, pinned: true });
       return;
     }
+    if (result.type === 'document_project') {
+      if (await switchTopSection('documents')) await openDocumentsPanel({ projectId: targetId, pinned: true });
+      return;
+    }
     if (result.type === 'task') {
       if (await switchTopSection('tasks')) await openTasksPanel({ taskId: targetId, pinned: true });
       return;

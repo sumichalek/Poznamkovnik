@@ -19,13 +19,16 @@ from .audio_metadata import read_audio_metadata
 from .auth import AuthError, AuthService, SESSION_DAYS
 from .backups import AutomaticBackupScheduler, BackupArtifact, BackupManager, MAX_BACKUP_ARCHIVE_BYTES
 from .bibliography import BibliographyLookupError, lookup_bibliographic_metadata
+from .calendar_reminders import CalendarReminderScheduler, DesktopNotifier
 from .code_runner import CCodeRunner, CodeRunnerError
+from .data_integrity import DataIntegrityService
 from .database import Database, ValidationError
-from .document_workshop import DocumentWorkshop
+from .document_workshop import DocumentWorkshop, MAX_DOCUMENT_PROJECT_TRANSFER_BYTES
 from .files import BackgroundStore, FileStore, MAX_BACKGROUND_BYTES, UploadError
 from .podcast import PodcastFeedError, fetch_podcast_feed
 from .radio_recording import RadioRecordingManager
 from .radio_schedule import RadioRecordingScheduler
+from .source_text import SourceTextIndex
 
 
 MAX_MULTIPART_HEADER_BYTES = 64 * 1024
@@ -58,12 +61,16 @@ class AppContext:
         self.database.initialize()
         self.auth = AuthService(self.database)
         self.files = FileStore(data_dir / "files")
+        self.source_text = SourceTextIndex(self.database, self.files)
         self.documents = DocumentWorkshop(data_dir / "documents", self.database, self.files)
         self.backgrounds = BackgroundStore(data_dir / "backgrounds")
         self.backups = BackupManager(data_dir / "backups", self.database, self.files, self.backgrounds)
         self.radio_recordings = RadioRecordingManager(data_dir / "radio-recordings", self.database)
         self.radio_schedules = RadioRecordingScheduler(self.database, self.radio_recordings)
         self.radio_schedules.start()
+        self.calendar_reminders = CalendarReminderScheduler(self.database, DesktopNotifier())
+        self.calendar_reminders.start()
+        self.integrity = DataIntegrityService(self.database, self.files, self.radio_recordings)
         self.automatic_backups = AutomaticBackupScheduler(self.database, self.backups)
         self.automatic_backups.start()
         self.c_runner = CCodeRunner()
@@ -213,9 +220,13 @@ class AppHandler(SimpleHTTPRequestHandler):
             return {"tags": self.context.database.list_tags(user["id"], query)}
         if route == ["search"] and method == "GET":
             query = parse_qs(request_url.query).get("q", [""])[0]
+            if str(query).strip():
+                self.context.source_text.index_all(user["id"])
             return {"results": self.context.database.global_search(user["id"], query)}
         if route == ["backups"] and method == "GET":
             return self.context.backups.automatic_overview(user["id"])
+        if route == ["integrity"] and method == "GET":
+            return self.context.integrity.inspect(user["id"])
         if route == ["backups", "settings"] and method == "POST":
             settings = self.context.database.save_automatic_backup_preferences(user["id"], self._read_json())
             self.context.backups.prune_automatic_snapshots(user["id"], settings["retentionCount"])
@@ -420,6 +431,12 @@ class AppHandler(SimpleHTTPRequestHandler):
             data = self._read_json()
             data.setdefault("id", str(uuid.uuid4()))
             return self.context.database.create_document_project(user["id"], data)
+        if route == ["documents", "import"] and method == "POST":
+            uploaded = self._read_upload(MAX_DOCUMENT_PROJECT_TRANSFER_BYTES + 512 * 1024)
+            try:
+                return self.context.documents.import_project(user["id"], uploaded.file, uploaded.filename)
+            finally:
+                uploaded.file.close()
         if len(route) >= 2 and route[0] == "documents":
             return self._route_document_workshop(method, user["id"], route)
 
@@ -472,11 +489,18 @@ class AppHandler(SimpleHTTPRequestHandler):
             if method == "GET":
                 return self.context.database.document_project_detail(user_id, project_id)
             if method == "PATCH":
-                return self.context.database.update_document_project(user_id, project_id, self._read_json())
+                detail, orphaned = self.context.database.update_document_project(user_id, project_id, self._read_json())
+                for blob_hash in orphaned:
+                    self.context.files.delete_blob(blob_hash)
+                return detail
             if method == "DELETE":
                 for blob_hash in self.context.database.delete_document_project(user_id, project_id):
                     self.context.files.delete_blob(blob_hash)
+                self.context.documents.discard_project_previews(project_id)
                 return {"deleted": True}
+
+        if len(route) == 4 and route[2] == "history" and route[3] in {"undo", "redo"} and method == "POST":
+            return self.context.database.restore_document_project_history(user_id, project_id, route[3])
 
         if len(route) == 3 and route[2] == "inputs" and method == "POST":
             maximum = self.context.database.source_file_max_bytes(user_id)
@@ -489,12 +513,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     maximum_bytes=maximum,
                 )
                 try:
-                    page_count = self.context.documents.page_count(file_info)
-                    return self.context.database.add_document_input(
-                        user_id,
-                        project_id,
-                        {"id": str(uuid.uuid4()), **file_info, "pageCount": page_count},
-                    )
+                    return self._add_document_input_from_file(user_id, project_id, file_info, maximum)
                 except Exception:
                     if file_info["created"]:
                         self.context.files.delete_blob(str(file_info["blobHash"]))
@@ -502,51 +521,216 @@ class AppHandler(SimpleHTTPRequestHandler):
             finally:
                 uploaded.file.close()
 
+        if len(route) == 4 and route[2] == "inputs" and method == "DELETE":
+            detail, orphaned = self.context.database.delete_document_input(user_id, project_id, route[3])
+            for blob_hash in orphaned:
+                self.context.files.delete_blob(blob_hash)
+            return detail
+
+        if len(route) == 3 and route[2] == "input-stages" and method == "POST":
+            maximum = self.context.database.source_file_max_bytes(user_id)
+            uploaded = self._read_upload(maximum + 512 * 1024)
+            try:
+                file_info = self.context.files.store_upload(
+                    uploaded.file,
+                    uploaded.filename,
+                    uploaded.mime_type,
+                    maximum_bytes=maximum,
+                )
+                try:
+                    stage = self.context.documents.prepare_input(user_id, project_id, file_info, maximum)
+                except Exception:
+                    if file_info["created"]:
+                        self.context.files.delete_blob(str(file_info["blobHash"]))
+                    raise
+                return {"stage": stage}
+            finally:
+                uploaded.file.close()
+
+        if len(route) == 3 and route[2] == "source-file-stages" and method == "POST":
+            data = self._read_json()
+            file_id = str(data.get("fileId", ""))
+            file_info = self.context.database.source_file_for_user(user_id, file_id)
+            stage = self.context.documents.prepare_input(
+                user_id,
+                project_id,
+                file_info,
+                self.context.database.source_file_max_bytes(user_id),
+                source_id=str(file_info["source_id"]),
+                source_file_id=str(file_info["id"]),
+            )
+            return {"stage": stage}
+
+        if len(route) == 5 and route[2] == "input-stages" and route[4] == "confirm" and method == "POST":
+            data = self._read_json()
+            return self.context.documents.confirm_prepared_input(
+                user_id,
+                project_id,
+                route[3],
+                data.get("pageIndices"),
+            )
+
+        if len(route) == 4 and route[2] == "input-stages" and method == "DELETE":
+            self.context.documents.discard_prepared_input(user_id, project_id, route[3])
+            return {"discarded": True}
+
         if len(route) == 3 and route[2] == "source-files" and method == "POST":
             data = self._read_json()
             file_id = str(data.get("fileId", ""))
             file_info = self.context.database.source_file_for_user(user_id, file_id)
-            page_count = self.context.documents.page_count(file_info)
-            return self.context.database.add_document_input(
+            return self._add_document_input_from_file(
                 user_id,
                 project_id,
-                {
-                    "id": str(uuid.uuid4()),
-                    "sourceId": file_info["source_id"],
-                    "sourceFileId": file_info["id"],
-                    "blobHash": file_info["blob_hash"],
-                    "originalName": file_info["original_name"],
-                    "mimeType": file_info["mime_type"],
-                    "sizeBytes": file_info["size_bytes"],
-                    "pageCount": page_count,
-                },
+                file_info,
+                self.context.database.source_file_max_bytes(user_id),
+                source_id=str(file_info["source_id"]),
+                source_file_id=str(file_info["id"]),
             )
 
         if len(route) == 3 and route[2] == "build" and method == "POST":
-            source = self.context.documents.build_source(user_id, project_id, str(self._read_json().get("title", "")))
+            source = self.context.documents.build_source(user_id, project_id, self._read_json())
             return {"source": source}
 
+        if len(route) == 3 and route[2] == "export" and method in {"GET", "HEAD"}:
+            archive, filename = self.context.documents.export_project(user_id, project_id)
+            try:
+                self._send_streamed_file(
+                    archive,
+                    "application/zip",
+                    filename,
+                    download=True,
+                    head_only=method == "HEAD",
+                )
+            finally:
+                archive.unlink(missing_ok=True)
+            return None
+
+        if len(route) == 3 and route[2] == "preview" and method in {"GET", "HEAD"}:
+            preview, filename = self.context.documents.preview(user_id, project_id)
+            self._send_streamed_file(preview, "application/pdf", filename, head_only=method == "HEAD")
+            return None
+
+        if len(route) == 5 and route[2] == "inputs" and route[4] == "original" and method in {"GET", "HEAD"}:
+            original = self.context.database.document_input_original_file(user_id, project_id, route[3])
+            path = self.context.files.path_for_hash(str(original["blob_hash"]))
+            if not path.is_file():
+                raise KeyError("Pôvodný súbor sa nenašiel.")
+            self._send_streamed_file(
+                path,
+                str(original["mime_type"]),
+                str(original["original_name"]),
+                download=True,
+                head_only=method == "HEAD",
+            )
+            return None
+
         if len(route) == 4 and route[2] == "pages" and route[3] == "order" and method == "PUT":
-            return self.context.database.reorder_document_pages(user_id, project_id, self._read_json())
+            detail, orphaned = self.context.database.reorder_document_pages(user_id, project_id, self._read_json())
+            for blob_hash in orphaned:
+                self.context.files.delete_blob(blob_hash)
+            return detail
+
+        if len(route) == 4 and route[2] == "pages" and route[3] == "batch" and method == "POST":
+            detail, orphaned = self.context.database.batch_document_pages(user_id, project_id, self._read_json())
+            for blob_hash in orphaned:
+                self.context.files.delete_blob(blob_hash)
+            return detail
 
         if len(route) == 5 and route[2] == "pages" and route[4] == "thumbnail" and method in {"GET", "HEAD"}:
             thumbnail = self.context.documents.thumbnail(user_id, project_id, route[3])
             self._send_streamed_file(thumbnail, "image/jpeg", f"strana-{route[3]}.jpg", head_only=method == "HEAD")
             return None
 
+        if len(route) == 5 and route[2] == "pages" and route[4] == "crop-preview" and method in {"GET", "HEAD"}:
+            preview = self.context.documents.crop_preview(user_id, project_id, route[3])
+            self._send_streamed_file(preview, "image/jpeg", f"orezanie-{route[3]}.jpg", head_only=method == "HEAD")
+            return None
+
         if len(route) == 5 and route[2] == "pages" and route[4] == "duplicate" and method == "POST":
-            return self.context.database.duplicate_document_page(user_id, project_id, route[3])
+            detail, orphaned = self.context.database.duplicate_document_page(user_id, project_id, route[3])
+            for blob_hash in orphaned:
+                self.context.files.delete_blob(blob_hash)
+            return detail
 
         if len(route) == 4 and route[2] == "pages":
             page_id = route[3]
             if method == "PATCH":
-                return self.context.database.update_document_page(user_id, project_id, page_id, self._read_json())
+                detail, orphaned = self.context.database.update_document_page(user_id, project_id, page_id, self._read_json())
+                for blob_hash in orphaned:
+                    self.context.files.delete_blob(blob_hash)
+                return detail
             if method == "DELETE":
                 detail, orphaned = self.context.database.delete_document_page(user_id, project_id, page_id)
                 for blob_hash in orphaned:
                     self.context.files.delete_blob(blob_hash)
                 return detail
         raise ApiError(HTTPStatus.NOT_FOUND, "Neznámy endpoint Dielne dokumentov.")
+
+    def _add_document_input_from_file(
+        self,
+        user_id: str,
+        project_id: str,
+        file_info: dict[str, Any],
+        maximum_bytes: int,
+        *,
+        source_id: str = "",
+        source_file_id: str = "",
+    ) -> dict[str, Any]:
+        """Store a Dielňa input, converting supported office files into an internal PDF when needed."""
+        raw_hash = str(file_info.get("blobHash") or file_info.get("blob_hash") or "")
+        raw_name = self.context.files.normalize_original_name(
+            str(file_info.get("originalName") or file_info.get("original_name") or "dokument")
+        )
+        raw_mime = str(file_info.get("mimeType") or file_info.get("mime_type") or "application/octet-stream")
+        raw_size = int(file_info.get("sizeBytes") or file_info.get("size_bytes") or 0)
+        processing_info: dict[str, Any] = {
+            "blobHash": raw_hash,
+            "originalName": raw_name,
+            "mimeType": raw_mime,
+            "sizeBytes": raw_size,
+        }
+        temporary_pdf: Path | None = None
+        converted_created = False
+        try:
+            if self.context.documents.requires_conversion(file_info):
+                temporary_pdf = self.context.documents.convert_office_to_pdf(file_info)
+                with temporary_pdf.open("rb") as converted:
+                    processing_info = self.context.files.store_upload(
+                        converted,
+                        f"{Path(raw_name).stem or 'dokument'}.pdf",
+                        "application/pdf",
+                        maximum_bytes=maximum_bytes,
+                    )
+                converted_created = bool(processing_info["created"])
+
+            page_count = self.context.documents.page_count(processing_info)
+            data: dict[str, Any] = {
+                "id": str(uuid.uuid4()),
+                "sourceId": source_id,
+                "sourceFileId": source_file_id,
+                **processing_info,
+                "originalName": raw_name,
+                "pageCount": page_count,
+            }
+            if temporary_pdf:
+                data.update(
+                    {
+                        "originalBlobHash": raw_hash,
+                        "originalMimeType": raw_mime,
+                        "originalSizeBytes": raw_size,
+                    }
+                )
+            detail, orphaned = self.context.database.add_document_input(user_id, project_id, data)
+            for blob_hash in orphaned:
+                self.context.files.delete_blob(blob_hash)
+            return detail
+        except Exception:
+            if converted_created:
+                self.context.files.delete_blob(str(processing_info["blobHash"]))
+            raise
+        finally:
+            if temporary_pdf:
+                temporary_pdf.unlink(missing_ok=True)
 
     def _route_task(self, method: str, user_id: str, route: list[str]) -> dict[str, Any]:
         task_id = route[1]
@@ -583,13 +767,23 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def _route_calendar_event(self, method: str, user_id: str, route: list[str]) -> dict[str, Any]:
         event_id = route[1]
+        query = parse_qs(urlsplit(self.path).query)
         if len(route) == 2:
             if method == "GET":
-                return {"event": self.context.database.calendar_event_detail(user_id, event_id)}
+                return {
+                    "event": self.context.database.calendar_event_detail(
+                        user_id, event_id, query.get("occurrenceDate", [""])[0]
+                    )
+                }
             if method == "PATCH":
                 return {"event": self.context.database.update_calendar_event(user_id, event_id, self._read_json())}
             if method == "DELETE":
-                self.context.database.delete_calendar_event(user_id, event_id)
+                self.context.database.delete_calendar_event(
+                    user_id,
+                    event_id,
+                    scope=query.get("scope", ["series"])[0],
+                    occurrence_date=query.get("occurrenceDate", [""])[0],
+                )
                 return {"deleted": True}
         if len(route) == 3 and route[2] == "links" and method == "POST":
             data = self._read_json()
@@ -671,6 +865,13 @@ class AppHandler(SimpleHTTPRequestHandler):
                 for blob_hash in self.context.database.delete_source(user_id, source_id):
                     self.context.files.delete_blob(blob_hash)
                 return {"deleted": True}
+
+        if len(route) == 3 and route[2] == "content" and method == "GET":
+            query = parse_qs(urlsplit(self.path).query).get("q", [""])[0]
+            return {"content": self.context.source_text.search_source(user_id, source_id, query)}
+
+        if len(route) == 5 and route[2] == "files" and route[4] == "content" and method == "GET":
+            return {"content": self.context.source_text.read_file(user_id, source_id, route[3])}
 
         if len(route) == 3 and route[2] == "files" and method == "POST":
             maximum = self.context.database.source_file_max_bytes(user_id)
@@ -830,7 +1031,7 @@ class AppHandler(SimpleHTTPRequestHandler):
         if parameters.get("name") != "file":
             return ""
         filename = parameters.get("filename")
-        return filename if isinstance(filename, str) else ""
+        return FileStore.normalize_original_name(filename) if isinstance(filename, str) else ""
 
     def _copy_multipart_file(self, remaining: int, boundary: bytes, target: BinaryIO) -> None:
         marker = b"\r\n--" + boundary

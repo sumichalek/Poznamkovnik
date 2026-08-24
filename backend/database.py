@@ -7,6 +7,7 @@ import re
 import sqlite3
 import unicodedata
 import uuid
+from calendar import monthrange
 from contextlib import contextmanager
 from datetime import date, datetime, time as clock_time, timedelta, timezone
 from pathlib import Path
@@ -55,14 +56,27 @@ MIN_AUTOMATIC_BACKUP_RETENTION_COUNT = 3
 MAX_AUTOMATIC_BACKUP_RETENTION_COUNT = 50
 DEFAULT_AUTO_LOCK_MINUTES = 0
 AUTO_LOCK_MINUTES = {0, 5, 10, 15, 30, 60}
-SEARCH_INDEX_VERSION = "4"
+DEFAULT_CALENDAR_NOTIFICATIONS_ENABLED = True
+CALENDAR_REMINDER_GRACE_MINUTES = 15
+CALENDAR_REMINDER_PENDING_RETRY_SECONDS = 120
+SEARCH_INDEX_VERSION = "5"
 MAX_TAGS_PER_ITEM = 20
 MAX_TAG_LENGTH = 48
 TASK_STATUSES = {"open", "in_progress", "done"}
 TASK_PRIORITIES = {"none", "low", "medium", "high"}
 TASK_TARGET_TYPES = {"library", "element", "source"}
+MAX_CALENDAR_REMINDER_MINUTES = 365 * 24 * 60
+CALENDAR_RECURRENCE_KINDS = {"none", "daily", "weekdays", "weekly", "monthly"}
+MAX_CALENDAR_RECURRENCE_INTERVAL = 365
 SEMANTIC_TARGET_TYPES = {"element", "source", "tutorial_page", "task", "calendar_event"}
 SEMANTIC_RELATION_TYPES = {"related", "reference", "comparison", "study"}
+DOCUMENT_OUTPUT_PAGE_SIZES = {"keep", "a4-portrait", "a4-landscape"}
+DOCUMENT_IMAGE_DPI_OPTIONS = {144, 200, 300}
+DOCUMENT_PAGE_NUMBER_POSITIONS = {"none", "bottom-left", "bottom-center", "bottom-right"}
+DOCUMENT_PAGE_NUMBER_START_MIN = 1
+DOCUMENT_PAGE_NUMBER_START_MAX = 1_000_000
+MAX_DOCUMENT_CROP_PERCENT = 45
+DOCUMENT_HISTORY_LIMIT = 40
 BACKUP_RECORD_LIMITS = {
     "libraries": 500,
     "elements": 10_000,
@@ -88,6 +102,7 @@ BACKUP_RECORD_LIMITS = {
     "taskListMemberships": 50_000,
     "taskLinks": 50_000,
     "calendarEvents": 20_000,
+    "calendarEventOverrides": 50_000,
     "calendarEventLinks": 50_000,
     "semanticLinks": 50_000,
     "tutorialLanguages": 20,
@@ -150,6 +165,7 @@ class Database:
                     last_auto_backup_attempt_at TEXT NOT NULL DEFAULT '',
                     last_auto_backup_error TEXT NOT NULL DEFAULT '',
                     auto_lock_minutes INTEGER NOT NULL DEFAULT 0,
+                    calendar_notifications_enabled INTEGER NOT NULL DEFAULT 1 CHECK(calendar_notifications_enabled IN (0, 1)),
                     updated_at TEXT NOT NULL
                 );
 
@@ -229,10 +245,28 @@ class Database:
                 CREATE INDEX IF NOT EXISTS source_files_source_idx ON source_files(source_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS source_files_blob_idx ON source_files(blob_hash);
 
+                CREATE TABLE IF NOT EXISTS source_file_text (
+                    source_file_id TEXT PRIMARY KEY REFERENCES source_files(id) ON DELETE CASCADE,
+                    content TEXT NOT NULL DEFAULT '',
+                    locations_json TEXT NOT NULL DEFAULT '[]',
+                    extraction_status TEXT NOT NULL DEFAULT 'pending',
+                    extraction_error TEXT NOT NULL DEFAULT '',
+                    indexed_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS source_file_text_status_idx
+                    ON source_file_text(extraction_status, indexed_at DESC);
+
                 CREATE TABLE IF NOT EXISTS document_projects (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     title TEXT NOT NULL,
+                    output_page_size TEXT NOT NULL DEFAULT 'keep'
+                        CHECK(output_page_size IN ('keep', 'a4-portrait', 'a4-landscape')),
+                    image_dpi INTEGER NOT NULL DEFAULT 144 CHECK(image_dpi IN (144, 200, 300)),
+                    page_number_position TEXT NOT NULL DEFAULT 'none'
+                        CHECK(page_number_position IN ('none', 'bottom-left', 'bottom-center', 'bottom-right')),
+                    page_number_start INTEGER NOT NULL DEFAULT 1 CHECK(page_number_start BETWEEN 1 AND 1000000),
+                    history_position INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -245,9 +279,12 @@ class Database:
                     source_id TEXT REFERENCES sources(id) ON DELETE SET NULL,
                     source_file_id TEXT REFERENCES source_files(id) ON DELETE SET NULL,
                     blob_hash TEXT NOT NULL,
+                    original_blob_hash TEXT NOT NULL DEFAULT '',
                     original_name TEXT NOT NULL,
                     mime_type TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL,
+                    original_mime_type TEXT NOT NULL DEFAULT '',
+                    original_size_bytes INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS document_inputs_project_idx
@@ -261,10 +298,34 @@ class Database:
                     input_page_index INTEGER NOT NULL,
                     order_index INTEGER NOT NULL,
                     rotation INTEGER NOT NULL DEFAULT 0 CHECK(rotation IN (0, 90, 180, 270)),
+                    crop_top INTEGER NOT NULL DEFAULT 0 CHECK(crop_top BETWEEN 0 AND 45),
+                    crop_right INTEGER NOT NULL DEFAULT 0 CHECK(crop_right BETWEEN 0 AND 45),
+                    crop_bottom INTEGER NOT NULL DEFAULT 0 CHECK(crop_bottom BETWEEN 0 AND 45),
+                    crop_left INTEGER NOT NULL DEFAULT 0 CHECK(crop_left BETWEEN 0 AND 45),
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS document_pages_project_idx
                     ON document_pages(project_id, order_index, created_at);
+
+                CREATE TABLE IF NOT EXISTS document_project_history (
+                    project_id TEXT NOT NULL REFERENCES document_projects(id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL,
+                    operation TEXT NOT NULL,
+                    state_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(project_id, position)
+                );
+
+                CREATE TABLE IF NOT EXISTS document_project_history_blobs (
+                    project_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    blob_hash TEXT NOT NULL,
+                    PRIMARY KEY(project_id, position, blob_hash),
+                    FOREIGN KEY(project_id, position)
+                        REFERENCES document_project_history(project_id, position) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS document_project_history_blobs_hash_idx
+                    ON document_project_history_blobs(blob_hash);
 
                 CREATE TABLE IF NOT EXISTS music_tracks (
                     id TEXT PRIMARY KEY,
@@ -460,11 +521,39 @@ class Database:
                     start_time TEXT NOT NULL DEFAULT '',
                     end_date TEXT NOT NULL,
                     end_time TEXT NOT NULL DEFAULT '',
+                    reminder_minutes INTEGER NOT NULL DEFAULT -1 CHECK(reminder_minutes BETWEEN -1 AND 525600),
+                    recurrence_kind TEXT NOT NULL DEFAULT 'none' CHECK(recurrence_kind IN ('none', 'daily', 'weekdays', 'weekly', 'monthly')),
+                    recurrence_interval INTEGER NOT NULL DEFAULT 1 CHECK(recurrence_interval BETWEEN 1 AND 365),
+                    recurrence_until TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS calendar_events_user_date_idx
                     ON calendar_events(user_id, start_date, end_date, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS calendar_event_occurrence_overrides (
+                    event_id TEXT NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
+                    occurrence_date TEXT NOT NULL,
+                    cancelled INTEGER NOT NULL DEFAULT 0 CHECK(cancelled IN (0, 1)),
+                    override_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(event_id, occurrence_date)
+                );
+                CREATE INDEX IF NOT EXISTS calendar_event_occurrence_overrides_event_idx
+                    ON calendar_event_occurrence_overrides(event_id, occurrence_date);
+
+                CREATE TABLE IF NOT EXISTS calendar_reminder_deliveries (
+                    event_id TEXT NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
+                    reminder_at TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('pending', 'sent', 'unavailable')),
+                    error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(event_id, reminder_at)
+                );
+                CREATE INDEX IF NOT EXISTS calendar_reminder_deliveries_status_idx
+                    ON calendar_reminder_deliveries(status, updated_at);
 
                 CREATE TABLE IF NOT EXISTS calendar_event_links (
                     id TEXT PRIMARY KEY,
@@ -648,6 +737,10 @@ class Database:
                 connection.execute("ALTER TABLE user_preferences ADD COLUMN last_auto_backup_error TEXT NOT NULL DEFAULT ''")
             if "auto_lock_minutes" not in columns:
                 connection.execute("ALTER TABLE user_preferences ADD COLUMN auto_lock_minutes INTEGER NOT NULL DEFAULT 0")
+            if "calendar_notifications_enabled" not in columns:
+                connection.execute(
+                    "ALTER TABLE user_preferences ADD COLUMN calendar_notifications_enabled INTEGER NOT NULL DEFAULT 1"
+                )
             session_columns = {row["name"] for row in connection.execute("PRAGMA table_info(sessions)")}
             if "last_active_at" not in session_columns:
                 connection.execute("ALTER TABLE sessions ADD COLUMN last_active_at TEXT NOT NULL DEFAULT ''")
@@ -669,6 +762,14 @@ class Database:
             calendar_event_columns = {row["name"] for row in connection.execute("PRAGMA table_info(calendar_events)")}
             if "tags_json" not in calendar_event_columns:
                 connection.execute("ALTER TABLE calendar_events ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'")
+            if "reminder_minutes" not in calendar_event_columns:
+                connection.execute("ALTER TABLE calendar_events ADD COLUMN reminder_minutes INTEGER NOT NULL DEFAULT -1")
+            if "recurrence_kind" not in calendar_event_columns:
+                connection.execute("ALTER TABLE calendar_events ADD COLUMN recurrence_kind TEXT NOT NULL DEFAULT 'none'")
+            if "recurrence_interval" not in calendar_event_columns:
+                connection.execute("ALTER TABLE calendar_events ADD COLUMN recurrence_interval INTEGER NOT NULL DEFAULT 1")
+            if "recurrence_until" not in calendar_event_columns:
+                connection.execute("ALTER TABLE calendar_events ADD COLUMN recurrence_until TEXT NOT NULL DEFAULT ''")
             music_track_columns = {row["name"] for row in connection.execute("PRAGMA table_info(music_tracks)")}
             if "release_year" not in music_track_columns:
                 connection.execute("ALTER TABLE music_tracks ADD COLUMN release_year TEXT NOT NULL DEFAULT ''")
@@ -682,6 +783,32 @@ class Database:
             semantic_link_columns = {row["name"] for row in connection.execute("PRAGMA table_info(semantic_links)")}
             if "note" not in semantic_link_columns:
                 connection.execute("ALTER TABLE semantic_links ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+            document_input_columns = {row["name"] for row in connection.execute("PRAGMA table_info(document_inputs)")}
+            if "original_blob_hash" not in document_input_columns:
+                connection.execute("ALTER TABLE document_inputs ADD COLUMN original_blob_hash TEXT NOT NULL DEFAULT ''")
+            if "original_mime_type" not in document_input_columns:
+                connection.execute("ALTER TABLE document_inputs ADD COLUMN original_mime_type TEXT NOT NULL DEFAULT ''")
+            if "original_size_bytes" not in document_input_columns:
+                connection.execute("ALTER TABLE document_inputs ADD COLUMN original_size_bytes INTEGER NOT NULL DEFAULT 0")
+            document_project_columns = {row["name"] for row in connection.execute("PRAGMA table_info(document_projects)")}
+            if "output_page_size" not in document_project_columns:
+                connection.execute("ALTER TABLE document_projects ADD COLUMN output_page_size TEXT NOT NULL DEFAULT 'keep'")
+            if "image_dpi" not in document_project_columns:
+                connection.execute("ALTER TABLE document_projects ADD COLUMN image_dpi INTEGER NOT NULL DEFAULT 144")
+            if "page_number_position" not in document_project_columns:
+                connection.execute(
+                    "ALTER TABLE document_projects ADD COLUMN page_number_position TEXT NOT NULL DEFAULT 'none'"
+                )
+            if "page_number_start" not in document_project_columns:
+                connection.execute(
+                    "ALTER TABLE document_projects ADD COLUMN page_number_start INTEGER NOT NULL DEFAULT 1"
+                )
+            if "history_position" not in document_project_columns:
+                connection.execute("ALTER TABLE document_projects ADD COLUMN history_position INTEGER NOT NULL DEFAULT 0")
+            document_page_columns = {row["name"] for row in connection.execute("PRAGMA table_info(document_pages)")}
+            for column in ("crop_top", "crop_right", "crop_bottom", "crop_left"):
+                if column not in document_page_columns:
+                    connection.execute(f"ALTER TABLE document_pages ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
             self._initialize_search_index(connection)
 
     def _initialize_search_index(self, connection: sqlite3.Connection) -> None:
@@ -777,6 +904,19 @@ class Database:
             END;
             CREATE TRIGGER IF NOT EXISTS global_search_source_files_ad AFTER DELETE ON source_files BEGIN
                 DELETE FROM global_search_index WHERE item_type = 'source_file' AND item_id = old.id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS global_search_source_file_text_ai AFTER INSERT ON source_file_text BEGIN
+                DELETE FROM global_search_index WHERE item_type = 'source_file' AND item_id = new.source_file_id;
+                INSERT INTO global_search_index
+                SELECT s.user_id, 'source_file', f.id, f.source_id, f.original_name, f.mime_type || ' ' || new.content
+                FROM source_files f JOIN sources s ON s.id = f.source_id WHERE f.id = new.source_file_id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS global_search_source_file_text_au AFTER UPDATE ON source_file_text BEGIN
+                DELETE FROM global_search_index WHERE item_type = 'source_file' AND item_id = new.source_file_id;
+                INSERT INTO global_search_index
+                SELECT s.user_id, 'source_file', f.id, f.source_id, f.original_name, f.mime_type || ' ' || new.content
+                FROM source_files f JOIN sources s ON s.id = f.source_id WHERE f.id = new.source_file_id;
             END;
 
             CREATE TRIGGER IF NOT EXISTS global_search_music_tracks_ai AFTER INSERT ON music_tracks BEGIN
@@ -933,6 +1073,7 @@ class Database:
             "sources",
             "source_collections",
             "source_files",
+            "source_file_text",
             "music_tracks",
             "music_playlists",
             "radio_stations",
@@ -964,8 +1105,11 @@ class Database:
             INSERT INTO global_search_index
             SELECT user_id, 'source_collection', id, id, title, '' FROM source_collections;
             INSERT INTO global_search_index
-            SELECT s.user_id, 'source_file', f.id, f.source_id, f.original_name, f.mime_type
-            FROM source_files f JOIN sources s ON s.id = f.source_id;
+            SELECT s.user_id, 'source_file', f.id, f.source_id, f.original_name,
+                   f.mime_type || ' ' || COALESCE(t.content, '')
+            FROM source_files f
+            JOIN sources s ON s.id = f.source_id
+            LEFT JOIN source_file_text t ON t.source_file_id = f.id;
             INSERT INTO global_search_index
             SELECT user_id, 'music_track', id, id, title, artist || ' ' || album || ' ' || genre || ' ' || original_name FROM music_tracks;
             INSERT INTO global_search_index
@@ -1186,7 +1330,8 @@ class Database:
                 SELECT main_panel_transparency, workspace_panel_transparency, editor_surface_transparency,
                        music_panel_transparency,
                        source_file_max_bytes, music_track_max_bytes,
-                       radio_recording_max_seconds, radio_recording_max_bytes
+                       radio_recording_max_seconds, radio_recording_max_bytes,
+                       calendar_notifications_enabled
                 FROM user_preferences WHERE user_id = ?
                 """,
                 (user_id,),
@@ -1210,6 +1355,9 @@ class Database:
             ),
             "radioRecordingMaxBytes": (
                 int(row["radio_recording_max_bytes"]) if row else DEFAULT_RADIO_RECORDING_MAX_BYTES
+            ),
+            "calendarNotificationsEnabled": (
+                bool(row["calendar_notifications_enabled"]) if row else DEFAULT_CALENDAR_NOTIFICATIONS_ENABLED
             ),
         }
 
@@ -1433,15 +1581,20 @@ class Database:
             MIN_RADIO_RECORDING_MAX_BYTES,
             MAX_RADIO_RECORDING_MAX_BYTES,
         )
+        calendar_notifications_enabled = self._preference_boolean(
+            data.get("calendarNotificationsEnabled", current["calendarNotificationsEnabled"]),
+            "Desktopové upozornenia kalendára",
+        )
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO user_preferences(
                     user_id, main_panel_transparency, workspace_panel_transparency, editor_surface_transparency,
                     music_panel_transparency, source_file_max_bytes, music_track_max_bytes,
-                    radio_recording_max_seconds, radio_recording_max_bytes, updated_at
+                    radio_recording_max_seconds, radio_recording_max_bytes,
+                    calendar_notifications_enabled, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     main_panel_transparency = excluded.main_panel_transparency,
                     workspace_panel_transparency = excluded.workspace_panel_transparency,
@@ -1451,6 +1604,7 @@ class Database:
                     music_track_max_bytes = excluded.music_track_max_bytes,
                     radio_recording_max_seconds = excluded.radio_recording_max_seconds,
                     radio_recording_max_bytes = excluded.radio_recording_max_bytes,
+                    calendar_notifications_enabled = excluded.calendar_notifications_enabled,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -1463,6 +1617,7 @@ class Database:
                     music_track_max_bytes,
                     radio_recording_max_seconds,
                     radio_recording_max_bytes,
+                    calendar_notifications_enabled,
                     now_iso(),
                 ),
             )
@@ -1479,6 +1634,14 @@ class Database:
         if numeric < minimum or numeric > maximum:
             raise ValidationError(f"{label} musí byť v rozsahu {minimum} až {maximum}.")
         return numeric
+
+    @staticmethod
+    def _preference_boolean(value: Any, label: str) -> int:
+        if isinstance(value, bool):
+            return int(value)
+        if value in {0, 1}:
+            return int(value)
+        raise ValidationError(f"{label} musí byť zapnuté alebo vypnuté.")
 
     def save_background_preference(
         self, user_id: str, filename: str, mime_type: str, version: str
@@ -2089,7 +2252,8 @@ class Database:
                        source_file_max_bytes, music_track_max_bytes,
                        radio_recording_max_seconds, radio_recording_max_bytes,
                        automatic_backup_enabled, automatic_backup_interval_hours,
-                       automatic_backup_retention_count, auto_lock_minutes, updated_at
+                       automatic_backup_retention_count, auto_lock_minutes,
+                       calendar_notifications_enabled, updated_at
                 FROM user_preferences WHERE user_id = ?
                 """,
                 (user_id,),
@@ -2134,12 +2298,13 @@ class Database:
                     """
                 ),
                 "documentProjects": rows(
-                    "SELECT id, title, created_at, updated_at FROM document_projects WHERE user_id = ? ORDER BY created_at"
+                    "SELECT id, title, output_page_size, image_dpi, page_number_position, page_number_start, created_at, updated_at FROM document_projects WHERE user_id = ? ORDER BY created_at"
                 ),
                 "documentInputs": rows(
                     """
                     SELECT i.id, i.project_id, i.source_id, i.source_file_id, i.blob_hash, i.original_name,
-                           i.mime_type, i.size_bytes, i.created_at
+                           i.mime_type, i.size_bytes, i.original_blob_hash, i.original_mime_type,
+                           i.original_size_bytes, i.created_at
                     FROM document_inputs i
                     JOIN document_projects p ON p.id = i.project_id
                     WHERE p.user_id = ? ORDER BY i.created_at
@@ -2148,7 +2313,8 @@ class Database:
                 "documentPages": rows(
                     """
                     SELECT page.id, page.project_id, page.input_id, page.input_page_index, page.order_index,
-                           page.rotation, page.created_at
+                           page.rotation, page.crop_top, page.crop_right, page.crop_bottom, page.crop_left,
+                           page.created_at
                     FROM document_pages page
                     JOIN document_projects p ON p.id = page.project_id
                     WHERE p.user_id = ? ORDER BY page.project_id, page.order_index, page.created_at
@@ -2252,8 +2418,18 @@ class Database:
                 ),
                 "calendarEvents": rows(
                     """
-                    SELECT id, title, description, tags_json, all_day, start_date, start_time, end_date, end_time, created_at, updated_at
+                    SELECT id, title, description, tags_json, all_day, start_date, start_time, end_date, end_time,
+                           reminder_minutes, recurrence_kind, recurrence_interval, recurrence_until, created_at, updated_at
                     FROM calendar_events WHERE user_id = ? ORDER BY created_at
+                    """
+                ),
+                "calendarEventOverrides": rows(
+                    """
+                    SELECT override.event_id, override.occurrence_date, override.cancelled, override.override_json,
+                           override.created_at, override.updated_at
+                    FROM calendar_event_occurrence_overrides AS override
+                    JOIN calendar_events AS event ON event.id = override.event_id
+                    WHERE event.user_id = ? ORDER BY override.created_at
                     """
                 ),
                 "calendarEventLinks": rows(
@@ -2324,6 +2500,7 @@ class Database:
         optional_backup_keys = {
             "taskLists",
             "taskListMemberships",
+            "calendarEventOverrides",
             "tutorialLanguages",
             "tutorialPages",
             "tutorialExamples",
@@ -2462,7 +2639,15 @@ class Database:
         document_projects = [
             {
                 "id": self._backup_id(row, "id"),
-                "title": self._backup_text(row, "title", 240) or "Nový dokument",
+                "title": self._backup_text(row, "title", 240) or "Nový projekt PDF",
+                "output_page_size": self._backup_document_output_page_size(row.get("output_page_size")),
+                "image_dpi": self._backup_allowed_preference(
+                    row, "image_dpi", 144, DOCUMENT_IMAGE_DPI_OPTIONS
+                ),
+                "page_number_position": self._backup_document_page_number_position(row.get("page_number_position")),
+                "page_number_start": self._backup_preference(
+                    row, "page_number_start", 1, DOCUMENT_PAGE_NUMBER_START_MIN, DOCUMENT_PAGE_NUMBER_START_MAX
+                ),
                 "created_at": self._timestamp(row.get("created_at")),
                 "updated_at": self._timestamp(row.get("updated_at")),
             }
@@ -2483,6 +2668,14 @@ class Database:
                 continue
             source_id = self._clean_id(row.get("source_id")) or None
             source_file_id = self._clean_id(row.get("source_file_id")) or None
+            original_blob_hash = self._backup_blob_hash(row.get("original_blob_hash"))
+            original_mime_type = self._backup_text(row, "original_mime_type", 160)
+            try:
+                original_size_bytes = int(row.get("original_size_bytes", 0))
+            except (TypeError, ValueError):
+                original_size_bytes = 0
+            if original_size_bytes < 0:
+                original_size_bytes = 0
             if source_id not in source_ids:
                 source_id = None
                 source_file_id = None
@@ -2495,9 +2688,12 @@ class Database:
                     "source_id": source_id,
                     "source_file_id": source_file_id,
                     "blob_hash": blob_hash,
+                    "original_blob_hash": original_blob_hash,
                     "original_name": self._backup_text(row, "original_name", 240) or "dokument",
                     "mime_type": self._backup_text(row, "mime_type", 160) or "application/octet-stream",
                     "size_bytes": size_bytes,
+                    "original_mime_type": original_mime_type,
+                    "original_size_bytes": original_size_bytes,
                     "created_at": self._timestamp(row.get("created_at")),
                 }
             )
@@ -2510,11 +2706,22 @@ class Database:
                 input_page_index = int(row.get("input_page_index", -1))
                 order_index = int(row.get("order_index", -1))
                 rotation = int(row.get("rotation", 0))
+                crop_top = int(row.get("crop_top", 0))
+                crop_right = int(row.get("crop_right", 0))
+                crop_bottom = int(row.get("crop_bottom", 0))
+                crop_left = int(row.get("crop_left", 0))
             except (TypeError, ValueError):
                 continue
             if project_id not in document_project_ids or input_id not in document_input_ids:
                 continue
-            if not 0 <= input_page_index <= 100_000 or not 0 <= order_index <= 500_000 or rotation not in {0, 90, 180, 270}:
+            if (
+                not 0 <= input_page_index <= 100_000
+                or not 0 <= order_index <= 500_000
+                or rotation not in {0, 90, 180, 270}
+                or any(value < 0 or value > MAX_DOCUMENT_CROP_PERCENT for value in (crop_top, crop_right, crop_bottom, crop_left))
+                or crop_top + crop_bottom >= 100
+                or crop_left + crop_right >= 100
+            ):
                 continue
             document_pages.append(
                 {
@@ -2524,6 +2731,10 @@ class Database:
                     "input_page_index": input_page_index,
                     "order_index": order_index,
                     "rotation": rotation,
+                    "crop_top": crop_top,
+                    "crop_right": crop_right,
+                    "crop_bottom": crop_bottom,
+                    "crop_left": crop_left,
                     "created_at": self._timestamp(row.get("created_at")),
                 }
             )
@@ -2802,7 +3013,16 @@ class Database:
                         "startTime": row.get("start_time"),
                         "endDate": row.get("end_date"),
                         "endTime": row.get("end_time"),
+                        "reminderMinutes": row.get("reminder_minutes", -1),
                     }
+                )
+                recurrence = self._calendar_event_recurrence(
+                    {
+                        "recurrenceKind": row.get("recurrence_kind", "none"),
+                        "recurrenceInterval": row.get("recurrence_interval", 1),
+                        "recurrenceUntil": row.get("recurrence_until", ""),
+                    },
+                    start_date=fields[3],
                 )
             except ValidationError:
                 continue
@@ -2817,11 +3037,55 @@ class Database:
                     "start_time": fields[4],
                     "end_date": fields[5],
                     "end_time": fields[6],
+                    "reminder_minutes": self._calendar_event_reminder_minutes(row.get("reminder_minutes", -1)),
+                    "recurrence_kind": recurrence[0],
+                    "recurrence_interval": recurrence[1],
+                    "recurrence_until": recurrence[2],
                     "created_at": self._timestamp(row.get("created_at")),
                     "updated_at": self._timestamp(row.get("updated_at")),
                 }
             )
         calendar_event_ids = self._backup_unique_ids(calendar_events, "udalostí")
+        calendar_event_by_id = {row["id"]: row for row in calendar_events}
+        calendar_event_overrides = []
+        for row in records["calendarEventOverrides"]:
+            event_id = self._clean_id(row.get("event_id"))
+            if event_id not in calendar_event_ids:
+                continue
+            try:
+                occurrence_date = self._calendar_event_date(row.get("occurrence_date"), "Výskyt udalosti")
+            except ValidationError:
+                continue
+            cancelled = 1 if row.get("cancelled") in {1, True, "1"} else 0
+            payload: dict[str, Any] = {}
+            if not cancelled:
+                try:
+                    raw_payload = json.loads(str(row.get("override_json", "{}")))
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(raw_payload, dict):
+                    continue
+                current = self._calendar_event_row(calendar_event_by_id[event_id])
+                try:
+                    fields = self._calendar_event_fields(raw_payload, current)
+                    payload = {
+                        "title": fields[0], "description": fields[1],
+                        "tags": self._clean_tags(raw_payload.get("tags", current["tags"])),
+                        "allDay": bool(fields[2]), "startDate": fields[3], "startTime": fields[4],
+                        "endDate": fields[5], "endTime": fields[6],
+                        "reminderMinutes": self._calendar_event_reminder_minutes(
+                            raw_payload.get("reminderMinutes", current["reminderMinutes"])
+                        ),
+                    }
+                except ValidationError:
+                    continue
+            calendar_event_overrides.append(
+                {
+                    "event_id": event_id, "occurrence_date": occurrence_date, "cancelled": cancelled,
+                    "override_json": json.dumps(payload, ensure_ascii=False),
+                    "created_at": self._timestamp(row.get("created_at")), "updated_at": self._timestamp(row.get("updated_at")),
+                }
+            )
 
         tutorial_languages = []
         language_codes: set[str] = set()
@@ -3139,6 +3403,9 @@ class Database:
                 DEFAULT_AUTO_LOCK_MINUTES,
                 AUTO_LOCK_MINUTES,
             ),
+            "calendar_notifications_enabled": self._backup_boolean(
+                preferences.get("calendar_notifications_enabled"), DEFAULT_CALENDAR_NOTIFICATIONS_ENABLED
+            ),
             "updated_at": self._timestamp(preferences.get("updated_at")),
         }
 
@@ -3167,8 +3434,9 @@ class Database:
                     music_panel_transparency, source_file_max_bytes, music_track_max_bytes,
                     radio_recording_max_seconds, radio_recording_max_bytes,
                     automatic_backup_enabled, automatic_backup_interval_hours,
-                    automatic_backup_retention_count, auto_lock_minutes, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    automatic_backup_retention_count, auto_lock_minutes,
+                    calendar_notifications_enabled, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (user_id, *preference_values.values()),
             )
@@ -3203,25 +3471,35 @@ class Database:
             )
             connection.executemany(
                 """
-                INSERT INTO document_projects(id, user_id, title, created_at, updated_at)
-                VALUES (:id, :user_id, :title, :created_at, :updated_at)
+                INSERT INTO document_projects(
+                    id, user_id, title, output_page_size, image_dpi, page_number_position, page_number_start, created_at, updated_at
+                ) VALUES (
+                    :id, :user_id, :title, :output_page_size, :image_dpi, :page_number_position, :page_number_start, :created_at, :updated_at
+                )
                 """,
                 [{**row, "user_id": user_id} for row in document_projects],
             )
             connection.executemany(
                 """
                 INSERT INTO document_inputs(
-                    id, project_id, source_id, source_file_id, blob_hash, original_name, mime_type, size_bytes, created_at
+                    id, project_id, source_id, source_file_id, blob_hash, original_blob_hash, original_name,
+                    mime_type, size_bytes, original_mime_type, original_size_bytes, created_at
                 ) VALUES (
-                    :id, :project_id, :source_id, :source_file_id, :blob_hash, :original_name, :mime_type, :size_bytes, :created_at
+                    :id, :project_id, :source_id, :source_file_id, :blob_hash, :original_blob_hash, :original_name,
+                    :mime_type, :size_bytes, :original_mime_type, :original_size_bytes, :created_at
                 )
                 """,
                 document_inputs,
             )
             connection.executemany(
                 """
-                INSERT INTO document_pages(id, project_id, input_id, input_page_index, order_index, rotation, created_at)
-                VALUES (:id, :project_id, :input_id, :input_page_index, :order_index, :rotation, :created_at)
+                INSERT INTO document_pages(
+                    id, project_id, input_id, input_page_index, order_index, rotation,
+                    crop_top, crop_right, crop_bottom, crop_left, created_at
+                ) VALUES (
+                    :id, :project_id, :input_id, :input_page_index, :order_index, :rotation,
+                    :crop_top, :crop_right, :crop_bottom, :crop_left, :created_at
+                )
                 """,
                 document_pages,
             )
@@ -3333,10 +3611,23 @@ class Database:
             )
             connection.executemany(
                 """
-                INSERT INTO calendar_events(id, user_id, title, description, tags_json, all_day, start_date, start_time, end_date, end_time, created_at, updated_at)
-                VALUES (:id, :user_id, :title, :description, :tags_json, :all_day, :start_date, :start_time, :end_date, :end_time, :created_at, :updated_at)
+                INSERT INTO calendar_events(
+                    id, user_id, title, description, tags_json, all_day, start_date, start_time, end_date, end_time,
+                    reminder_minutes, recurrence_kind, recurrence_interval, recurrence_until, created_at, updated_at
+                ) VALUES (
+                    :id, :user_id, :title, :description, :tags_json, :all_day, :start_date, :start_time, :end_date, :end_time,
+                    :reminder_minutes, :recurrence_kind, :recurrence_interval, :recurrence_until, :created_at, :updated_at
+                )
                 """,
                 [{**row, "user_id": user_id} for row in calendar_events],
+            )
+            connection.executemany(
+                """
+                INSERT INTO calendar_event_occurrence_overrides(
+                    event_id, occurrence_date, cancelled, override_json, created_at, updated_at
+                ) VALUES (:event_id, :occurrence_date, :cancelled, :override_json, :created_at, :updated_at)
+                """,
+                calendar_event_overrides,
             )
             connection.executemany(
                 "INSERT INTO calendar_event_links(id, event_id, target_type, target_id, created_at) VALUES (:id, :event_id, :target_type, :target_id, :created_at)",
@@ -3438,6 +3729,16 @@ class Database:
         except (TypeError, ValueError):
             return fallback
         return value if value in allowed else fallback
+
+    @staticmethod
+    def _backup_document_output_page_size(value: Any) -> str:
+        page_size = str(value or "").strip()
+        return page_size if page_size in DOCUMENT_OUTPUT_PAGE_SIZES else "keep"
+
+    @staticmethod
+    def _backup_document_page_number_position(value: Any) -> str:
+        position = str(value or "").strip()
+        return position if position in DOCUMENT_PAGE_NUMBER_POSITIONS else "none"
 
     @staticmethod
     def _backup_boolean(value: Any, fallback: bool) -> int:
@@ -4234,15 +4535,21 @@ class Database:
         if not event_id:
             raise ValidationError("Udalosť potrebuje identifikátor.")
         fields = self._calendar_event_fields(data)
+        reminder_minutes = self._calendar_event_reminder_minutes(data.get("reminderMinutes", -1))
+        recurrence = self._calendar_event_recurrence(data, start_date=fields[3])
         timestamp = now_iso()
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO calendar_events(
-                    id, user_id, title, description, tags_json, all_day, start_date, start_time, end_date, end_time, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, user_id, title, description, tags_json, all_day, start_date, start_time, end_date, end_time,
+                    reminder_minutes, recurrence_kind, recurrence_interval, recurrence_until, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (event_id, user_id, fields[0], fields[1], self._tags_json(self._clean_tags(data.get("tags"))), *fields[2:], timestamp, timestamp),
+                (
+                    event_id, user_id, fields[0], fields[1], self._tags_json(self._clean_tags(data.get("tags"))), *fields[2:],
+                    reminder_minutes, *recurrence, timestamp, timestamp,
+                ),
             )
         return self.calendar_event_detail(user_id, event_id)
 
@@ -4253,21 +4560,47 @@ class Database:
             raise ValidationError("Koniec rozsahu kalendára nemôže byť pred začiatkom.")
         with self.connect() as connection:
             rows = connection.execute(
-                """
-                SELECT *
-                FROM calendar_events
-                WHERE user_id = ?
-                  AND (? = '' OR end_date >= ?)
-                  AND (? = '' OR start_date <= ?)
-                ORDER BY start_date ASC, start_time ASC, end_date ASC, title COLLATE NOCASE
-                """,
-                (user_id, start_date, start_date, end_date, end_date),
+                "SELECT * FROM calendar_events WHERE user_id = ? ORDER BY start_date, start_time, end_date, title COLLATE NOCASE",
+                (user_id,),
             ).fetchall()
-        return [self._calendar_event_row(row) for row in rows]
+            if not start_date and not end_date:
+                return [self._calendar_event_row(row) for row in rows]
 
-    def calendar_event_detail(self, user_id: str, event_id: str) -> dict[str, Any]:
+            events: list[dict[str, Any]] = []
+            seen: set[tuple[str, str]] = set()
+            for row in rows:
+                overrides = self._calendar_occurrence_overrides(connection, str(row["id"]))
+                candidates = self._calendar_occurrences_in_range(row, start_date, end_date)
+                # Presunutá výnimka môže ležať mimo pôvodného pravidla série.
+                candidates.extend(
+                    occurrence_date for occurrence_date in overrides
+                    if occurrence_date not in candidates
+                )
+                for occurrence_date in candidates:
+                    event = self._calendar_occurrence_from_root(row, occurrence_date, overrides)
+                    if not event or not self._calendar_event_in_range(event, start_date, end_date):
+                        continue
+                    identity = (event["id"], event.get("occurrenceDate", event["startDate"]))
+                    if identity not in seen:
+                        seen.add(identity)
+                        events.append(event)
+        return sorted(events, key=lambda event: (event["startDate"], event["startTime"], event["endDate"], event["title"].casefold()))
+
+    def calendar_event_detail(self, user_id: str, event_id: str, occurrence_date: str = "") -> dict[str, Any]:
         with self.connect() as connection:
             event = self._calendar_event(connection, user_id, event_id)
+            overrides = self._calendar_occurrence_overrides(connection, event_id)
+            if occurrence_date:
+                occurrence_date = self._calendar_event_date(occurrence_date, "Výskyt udalosti")
+                result = self._calendar_occurrence_from_root(
+                    event,
+                    occurrence_date,
+                    overrides,
+                )
+                if not result:
+                    raise KeyError("Výskyt udalosti neexistuje.")
+            else:
+                result = self._calendar_event_row(event)
             links = []
             for link in connection.execute(
                 "SELECT id, target_type, target_id, created_at FROM calendar_event_links WHERE event_id = ? ORDER BY created_at DESC",
@@ -4276,43 +4609,200 @@ class Database:
                 target = self._task_link_target(connection, user_id, link)
                 if target:
                     links.append(target)
-        result = self._calendar_event_row(event)
         result["links"] = links
+        if not occurrence_date:
+            result["occurrenceOverrides"] = [
+                {
+                    "occurrenceDate": date_value,
+                    "cancelled": bool(value.get("cancelled")),
+                    "data": value.get("payload", {}),
+                }
+                for date_value, value in sorted(overrides.items())
+            ]
         return result
 
     def update_calendar_event(self, user_id: str, event_id: str, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise ValidationError("Úprava udalosti musí byť objekt.")
+        detail_occurrence_date = ""
         with self.connect() as connection:
             current = self._calendar_event(connection, user_id, event_id)
-            fields = self._calendar_event_fields(
-                data,
-                {
-                    "title": current["title"],
-                    "description": current["description"],
-                    "allDay": bool(current["all_day"]),
-                    "startDate": current["start_date"],
-                    "startTime": current["start_time"],
-                    "endDate": current["end_date"],
-                    "endTime": current["end_time"],
-                },
-            )
-            tags = self._clean_tags(data.get("tags", self._tags_from_json(current["tags_json"])))
-            connection.execute(
-                """
-                UPDATE calendar_events
-                SET title = ?, description = ?, tags_json = ?, all_day = ?, start_date = ?, start_time = ?, end_date = ?, end_time = ?, updated_at = ?
-                WHERE id = ? AND user_id = ?
-                """,
-                (fields[0], fields[1], self._tags_json(tags), *fields[2:], now_iso(), event_id, user_id),
-            )
-        return self.calendar_event_detail(user_id, event_id)
+            scope = str(data.get("scope", "series")).strip() or "series"
+            if scope not in {"series", "occurrence"}:
+                raise ValidationError("Rozsah úpravy udalosti nie je platný.")
+            occurrence_date = str(data.get("occurrenceDate", "")).strip()
+            if scope == "occurrence":
+                if str(current["recurrence_kind"]) == "none":
+                    raise ValidationError("Jednorazová udalosť nemá samostatné výskyty.")
+                occurrence_date = self._calendar_event_date(occurrence_date, "Výskyt udalosti")
+                overrides = self._calendar_occurrence_overrides(connection, event_id)
+                occurrence = self._calendar_occurrence_from_root(current, occurrence_date, overrides)
+                if not occurrence:
+                    raise ValidationError("Vybraný výskyt udalosti už neexistuje.")
+                fields = self._calendar_event_fields(data, occurrence)
+                reminder_minutes = self._calendar_event_reminder_minutes(
+                    data.get("reminderMinutes", occurrence["reminderMinutes"])
+                )
+                tags = self._clean_tags(data.get("tags", occurrence["tags"]))
+                payload = {
+                    "title": fields[0], "description": fields[1], "tags": tags, "allDay": bool(fields[2]),
+                    "startDate": fields[3], "startTime": fields[4], "endDate": fields[5], "endTime": fields[6],
+                    "reminderMinutes": reminder_minutes,
+                }
+                timestamp = now_iso()
+                connection.execute(
+                    """
+                    INSERT INTO calendar_event_occurrence_overrides(
+                        event_id, occurrence_date, cancelled, override_json, created_at, updated_at
+                    ) VALUES (?, ?, 0, ?, ?, ?)
+                    ON CONFLICT(event_id, occurrence_date) DO UPDATE SET
+                        cancelled = 0, override_json = excluded.override_json, updated_at = excluded.updated_at
+                    """,
+                    (event_id, occurrence_date, json.dumps(payload, ensure_ascii=False), timestamp, timestamp),
+                )
+                detail_occurrence_date = occurrence_date
+            else:
+                fields = self._calendar_event_fields(
+                    data,
+                    {
+                        "title": current["title"],
+                        "description": current["description"],
+                        "allDay": bool(current["all_day"]),
+                        "startDate": current["start_date"],
+                        "startTime": current["start_time"],
+                        "endDate": current["end_date"],
+                        "endTime": current["end_time"],
+                    },
+                )
+                reminder_minutes = self._calendar_event_reminder_minutes(
+                    data.get("reminderMinutes", current["reminder_minutes"])
+                )
+                tags = self._clean_tags(data.get("tags", self._tags_from_json(current["tags_json"])))
+                recurrence = self._calendar_event_recurrence(
+                    data,
+                    {
+                        "recurrenceKind": current["recurrence_kind"],
+                        "recurrenceInterval": current["recurrence_interval"],
+                        "recurrenceUntil": current["recurrence_until"],
+                    },
+                    fields[3],
+                )
+                connection.execute(
+                    """
+                    UPDATE calendar_events
+                    SET title = ?, description = ?, tags_json = ?, all_day = ?, start_date = ?, start_time = ?, end_date = ?, end_time = ?,
+                        reminder_minutes = ?, recurrence_kind = ?, recurrence_interval = ?, recurrence_until = ?, updated_at = ?
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (fields[0], fields[1], self._tags_json(tags), *fields[2:], reminder_minutes, *recurrence, now_iso(), event_id, user_id),
+                )
+                if (
+                    fields[3] != current["start_date"]
+                    or recurrence[0] != current["recurrence_kind"]
+                    or recurrence[1] != current["recurrence_interval"]
+                ):
+                    connection.execute("DELETE FROM calendar_event_occurrence_overrides WHERE event_id = ?", (event_id,))
+        return self.calendar_event_detail(user_id, event_id, detail_occurrence_date)
 
-    def delete_calendar_event(self, user_id: str, event_id: str) -> None:
+    def delete_calendar_event(self, user_id: str, event_id: str, *, scope: str = "series", occurrence_date: str = "") -> None:
         with self.connect() as connection:
-            self._calendar_event(connection, user_id, event_id)
+            event = self._calendar_event(connection, user_id, event_id)
+            if scope == "occurrence":
+                if str(event["recurrence_kind"]) == "none":
+                    raise ValidationError("Jednorazová udalosť nemá samostatné výskyty.")
+                occurrence_date = self._calendar_event_date(occurrence_date, "Výskyt udalosti")
+                if not self._calendar_occurs_on_date(event, occurrence_date):
+                    raise ValidationError("Vybraný výskyt udalosti neexistuje.")
+                timestamp = now_iso()
+                connection.execute(
+                    """
+                    INSERT INTO calendar_event_occurrence_overrides(
+                        event_id, occurrence_date, cancelled, override_json, created_at, updated_at
+                    ) VALUES (?, ?, 1, '{}', ?, ?)
+                    ON CONFLICT(event_id, occurrence_date) DO UPDATE SET
+                        cancelled = 1, override_json = '{}', updated_at = excluded.updated_at
+                    """,
+                    (event_id, occurrence_date, timestamp, timestamp),
+                )
+                return
+            if scope != "series":
+                raise ValidationError("Rozsah odstránenia udalosti nie je platný.")
             self._delete_semantic_links_for_target(connection, user_id, "calendar_event", event_id)
             connection.execute("DELETE FROM calendar_events WHERE id = ? AND user_id = ?", (event_id, user_id))
+
+    def claim_due_calendar_reminders(self, now: datetime | None = None) -> list[dict[str, Any]]:
+        """Reserve reminders due in the recent window so a daemon can deliver each one once."""
+        current_time = (now or datetime.now()).replace(second=0, microsecond=0)
+        earliest_time = current_time - timedelta(minutes=CALENDAR_REMINDER_GRACE_MINUTES)
+        retry_before = (datetime.now(timezone.utc) - timedelta(seconds=CALENDAR_REMINDER_PENDING_RETRY_SECONDS)).isoformat(
+            timespec="seconds"
+        )
+        timestamp = now_iso()
+        claimed: list[dict[str, Any]] = []
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT event.*, COALESCE(preferences.calendar_notifications_enabled, 1) AS notifications_enabled
+                FROM calendar_events AS event
+                LEFT JOIN user_preferences AS preferences ON preferences.user_id = event.user_id
+                WHERE event.reminder_minutes >= 0
+                  AND COALESCE(preferences.calendar_notifications_enabled, 1) = 1
+                """
+            ).fetchall()
+            for row in rows:
+                overrides = self._calendar_occurrence_overrides(connection, str(row["id"]))
+                for occurrence_date in self._calendar_reminder_occurrences(row, overrides, earliest_time, current_time):
+                    event = self._calendar_occurrence_from_root(row, occurrence_date, overrides)
+                    if not event:
+                        continue
+                    base_time = "09:00" if event["allDay"] else str(event["startTime"])
+                    try:
+                        event_start = datetime.combine(
+                            date.fromisoformat(str(event["startDate"])),
+                            clock_time.fromisoformat(base_time),
+                        )
+                    except ValueError:
+                        continue
+                    reminder_time = event_start - timedelta(minutes=int(event["reminderMinutes"]))
+                    if reminder_time < earliest_time or reminder_time > current_time:
+                        continue
+                    reminder_at = reminder_time.isoformat(timespec="seconds")
+                    delivery = connection.execute(
+                    """
+                    INSERT INTO calendar_reminder_deliveries(
+                        event_id, reminder_at, status, error, created_at, updated_at
+                    ) VALUES (?, ?, 'pending', '', ?, ?)
+                    ON CONFLICT(event_id, reminder_at) DO UPDATE SET
+                        status = 'pending', error = '', updated_at = excluded.updated_at
+                    WHERE calendar_reminder_deliveries.status = 'pending'
+                      AND calendar_reminder_deliveries.updated_at <= ?
+                    """,
+                        (str(row["id"]), reminder_at, timestamp, timestamp, retry_before),
+                    )
+                    if delivery.rowcount == 1:
+                        claimed.append(
+                            {
+                                "userId": str(row["user_id"]),
+                                "event": event,
+                                "reminderAt": reminder_at,
+                            }
+                        )
+        return claimed
+
+    def finish_calendar_reminder_delivery(
+        self, user_id: str, event_id: str, reminder_at: str, *, delivered: bool, error: str = ""
+    ) -> None:
+        status = "sent" if delivered else "unavailable"
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE calendar_reminder_deliveries
+                SET status = ?, error = ?, updated_at = ?
+                WHERE event_id = ? AND reminder_at = ?
+                  AND event_id IN (SELECT id FROM calendar_events WHERE id = ? AND user_id = ?)
+                """,
+                (status, str(error).strip()[:600], now_iso(), event_id, reminder_at, event_id, user_id),
+            )
 
     def link_calendar_event(self, user_id: str, event_id: str, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
@@ -4399,6 +4889,80 @@ class Database:
                 (user_id, search, search, search, search),
             ).fetchall()
         return [self._source_row(row) for row in rows]
+
+    def data_integrity_blob_references(self, user_id: str) -> list[dict[str, Any]]:
+        """Return every user-visible reference to a FileStore blob.
+
+        A single physical blob can appear in several places.  The caller groups these
+        rows by hash before reading the file so verification remains inexpensive.
+        """
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT sf.blob_hash, sf.size_bytes AS expected_size_bytes,
+                       'source' AS target_type, s.id AS target_id, s.title AS title,
+                       sf.original_name AS detail
+                FROM source_files sf
+                JOIN sources s ON s.id = sf.source_id
+                WHERE s.user_id = ?
+                UNION ALL
+                SELECT i.blob_hash, i.size_bytes,
+                       'document_project', p.id, p.title, i.original_name
+                FROM document_inputs i
+                JOIN document_projects p ON p.id = i.project_id
+                WHERE p.user_id = ?
+                UNION ALL
+                SELECT i.original_blob_hash, i.original_size_bytes,
+                       'document_project', p.id, p.title, i.original_name
+                FROM document_inputs i
+                JOIN document_projects p ON p.id = i.project_id
+                WHERE p.user_id = ? AND i.original_blob_hash != ''
+                UNION ALL
+                SELECT m.blob_hash, m.size_bytes,
+                       'music_track', m.id, m.title, m.original_name
+                FROM music_tracks m
+                WHERE m.user_id = ?
+                UNION ALL
+                SELECT hb.blob_hash, NULL,
+                       'document_project', p.id, p.title, 'Zachovaný stav projektu'
+                FROM document_project_history_blobs hb
+                JOIN document_projects p ON p.id = hb.project_id
+                WHERE p.user_id = ?
+                """,
+                (user_id, user_id, user_id, user_id, user_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def all_referenced_blob_hashes(self) -> set[str]:
+        """Used only to identify file-store blobs with no database reference."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT blob_hash FROM source_files
+                UNION
+                SELECT blob_hash FROM music_tracks
+                UNION
+                SELECT blob_hash FROM document_inputs
+                UNION
+                SELECT original_blob_hash FROM document_inputs WHERE original_blob_hash != ''
+                UNION
+                SELECT blob_hash FROM document_project_history_blobs
+                """
+            ).fetchall()
+        return {str(row["blob_hash"]).lower() for row in rows if str(row["blob_hash"] or "")}
+
+    def data_integrity_radio_recordings(self, user_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, station_title, filename, size_bytes, status
+                FROM radio_recordings
+                WHERE user_id = ? AND status IN ('completed', 'stopped')
+                ORDER BY started_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def find_source_identifier_duplicates(
         self,
@@ -4581,12 +5145,19 @@ class Database:
                     "sizeBytes": file["size_bytes"],
                     "annotationCount": file["annotation_count"],
                     "createdAt": file["created_at"],
+                    "textIndexStatus": file["text_index_status"],
+                    "textIndexError": file["text_index_error"],
+                    "textLength": int(file["text_length"] or 0),
                 }
                 for file in connection.execute(
                     """
-                    SELECT sf.*, COUNT(sa.id) AS annotation_count
+                    SELECT sf.*, COUNT(sa.id) AS annotation_count,
+                           COALESCE(t.extraction_status, 'pending') AS text_index_status,
+                           COALESCE(t.extraction_error, '') AS text_index_error,
+                           COALESCE(LENGTH(t.content), 0) AS text_length
                     FROM source_files sf
                     LEFT JOIN source_annotations sa ON sa.source_file_id = sf.id
+                    LEFT JOIN source_file_text t ON t.source_file_id = sf.id
                     WHERE sf.source_id = ?
                     GROUP BY sf.id
                     ORDER BY sf.created_at DESC
@@ -4810,6 +5381,211 @@ class Database:
             still_used = self._blob_is_referenced(connection, blob_hash)
         return self.source_detail(user_id, source_id), None if still_used else blob_hash
 
+    def source_text_files(self, user_id: str, source_id: str = "") -> list[dict[str, Any]]:
+        """Return attachment rows together with their optional local text-index state."""
+        parameters: list[Any] = [user_id]
+        source_condition = ""
+        if source_id:
+            source_condition = "AND s.id = ?"
+            parameters.append(source_id)
+        with self.connect() as connection:
+            if source_id:
+                self._assert_source(connection, user_id, source_id)
+            rows = connection.execute(
+                f"""
+                SELECT sf.id, sf.source_id, sf.blob_hash, sf.original_name, sf.mime_type, sf.size_bytes,
+                       sf.created_at, s.title AS source_title,
+                       COALESCE(t.extraction_status, 'pending') AS extraction_status,
+                       COALESCE(t.extraction_error, '') AS extraction_error,
+                       COALESCE(LENGTH(t.content), 0) AS text_length,
+                       COALESCE(t.indexed_at, '') AS indexed_at
+                FROM source_files sf
+                JOIN sources s ON s.id = sf.source_id
+                LEFT JOIN source_file_text t ON t.source_file_id = sf.id
+                WHERE s.user_id = ? {source_condition}
+                ORDER BY s.updated_at DESC, sf.created_at DESC
+                """,
+                parameters,
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "sourceId": row["source_id"],
+                "sourceTitle": row["source_title"],
+                "blobHash": row["blob_hash"],
+                "originalName": row["original_name"],
+                "mimeType": row["mime_type"],
+                "sizeBytes": int(row["size_bytes"]),
+                "createdAt": row["created_at"],
+                "textIndexStatus": row["extraction_status"],
+                "textIndexError": row["extraction_error"],
+                "textLength": int(row["text_length"]),
+                "textIndexedAt": row["indexed_at"],
+            }
+            for row in rows
+        ]
+
+    def save_source_file_text(
+        self,
+        user_id: str,
+        file_id: str,
+        *,
+        status: str,
+        content: str = "",
+        locations: list[dict[str, Any]] | None = None,
+        error: str = "",
+    ) -> None:
+        if status not in {"ready", "unsupported", "too_large", "missing", "failed"}:
+            raise ValidationError("Neplatný stav textu prílohy.")
+        content = str(content or "")[:3_000_000]
+        safe_locations = locations if isinstance(locations, list) else []
+        with self.connect() as connection:
+            owned = connection.execute(
+                """
+                SELECT 1 FROM source_files sf JOIN sources s ON s.id = sf.source_id
+                WHERE sf.id = ? AND s.user_id = ?
+                """,
+                (file_id, user_id),
+            ).fetchone()
+            if not owned:
+                raise KeyError("Príloha neexistuje.")
+            connection.execute(
+                """
+                INSERT INTO source_file_text(
+                    source_file_id, content, locations_json, extraction_status, extraction_error, indexed_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_file_id) DO UPDATE SET
+                    content = excluded.content,
+                    locations_json = excluded.locations_json,
+                    extraction_status = excluded.extraction_status,
+                    extraction_error = excluded.extraction_error,
+                    indexed_at = excluded.indexed_at
+                """,
+                (
+                    file_id,
+                    content,
+                    json.dumps(safe_locations, ensure_ascii=False, separators=(",", ":")),
+                    status,
+                    self._clean_text(error, 500),
+                    now_iso(),
+                ),
+            )
+
+    def source_file_text_content(self, user_id: str, source_id: str, file_id: str) -> dict[str, Any]:
+        """Return the bounded extracted text for one owned source attachment."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT sf.id AS file_id, sf.original_name, sf.mime_type, sf.size_bytes,
+                       COALESCE(t.content, '') AS content,
+                       COALESCE(t.locations_json, '[]') AS locations_json,
+                       COALESCE(t.extraction_status, 'pending') AS extraction_status,
+                       COALESCE(t.extraction_error, '') AS extraction_error,
+                       COALESCE(t.indexed_at, '') AS indexed_at
+                FROM source_files sf
+                JOIN sources s ON s.id = sf.source_id
+                LEFT JOIN source_file_text t ON t.source_file_id = sf.id
+                WHERE s.user_id = ? AND sf.source_id = ? AND sf.id = ?
+                """,
+                (user_id, source_id, file_id),
+            ).fetchone()
+        if not row:
+            raise KeyError("Príloha neexistuje.")
+        try:
+            locations = json.loads(row["locations_json"] or "[]")
+        except json.JSONDecodeError:
+            locations = []
+        return {
+            "fileId": row["file_id"],
+            "fileName": row["original_name"],
+            "mimeType": row["mime_type"],
+            "sizeBytes": int(row["size_bytes"]),
+            "content": str(row["content"] or ""),
+            "locations": locations if isinstance(locations, list) else [],
+            "textIndexStatus": row["extraction_status"],
+            "textIndexError": row["extraction_error"],
+            "textIndexedAt": row["indexed_at"],
+        }
+
+    def search_source_file_text(
+        self,
+        user_id: str,
+        source_id: str,
+        query: Any,
+        *,
+        limit: int = 60,
+    ) -> list[dict[str, Any]]:
+        raw_query = str(query or "")[:400].strip()
+        if not raw_query:
+            return []
+        maximum = min(100, max(1, int(limit)))
+        with self.connect() as connection:
+            self._assert_source(connection, user_id, source_id)
+            rows = connection.execute(
+                """
+                SELECT sf.id AS file_id, sf.original_name, t.content, t.locations_json
+                FROM source_file_text t
+                JOIN source_files sf ON sf.id = t.source_file_id
+                JOIN sources s ON s.id = sf.source_id
+                WHERE s.user_id = ? AND sf.source_id = ? AND t.extraction_status = 'ready' AND t.content != ''
+                ORDER BY sf.created_at DESC
+                """,
+                (user_id, source_id),
+            ).fetchall()
+        matches: list[dict[str, Any]] = []
+        has_pattern = self._has_glob_pattern(raw_query)
+        terms = re.findall(r"[^\W_]+", raw_query.casefold(), flags=re.UNICODE)
+        for row in rows:
+            content = str(row["content"] or "")
+            try:
+                locations = json.loads(row["locations_json"] or "[]")
+            except json.JSONDecodeError:
+                locations = []
+            if not isinstance(locations, list) or not locations:
+                locations = [{"locator": "Obsah", "start": 0, "end": len(content)}]
+            for location in locations:
+                start = min(max(0, int(location.get("start", 0))), len(content)) if isinstance(location, dict) else 0
+                end = min(max(start, int(location.get("end", len(content)))), len(content)) if isinstance(location, dict) else len(content)
+                fragment = content[start:end]
+                if not fragment or not self._source_text_matches(fragment, raw_query, terms, has_pattern):
+                    continue
+                quote = self._source_text_excerpt(fragment, raw_query, terms, has_pattern)
+                matches.append(
+                    {
+                        "fileId": row["file_id"],
+                        "fileName": row["original_name"],
+                        "locator": str(location.get("locator") or "Obsah") if isinstance(location, dict) else "Obsah",
+                        "quote": quote,
+                    }
+                )
+                if len(matches) >= maximum:
+                    return matches
+        return matches
+
+    @classmethod
+    def _source_text_matches(cls, text: str, query: str, terms: list[str], has_pattern: bool) -> bool:
+        if has_pattern:
+            return bool(cls._glob_search_match(text, query))
+        normalised = cls._glob_search_text(text)
+        normalised_terms = re.findall(r"[^\W_]+", cls._glob_search_text(" ".join(terms)), flags=re.UNICODE)
+        return bool(normalised_terms) and all(term in normalised for term in normalised_terms)
+
+    @classmethod
+    def _source_text_excerpt(cls, text: str, query: str, terms: list[str], has_pattern: bool) -> str:
+        del query, has_pattern
+        first_term = next((term for term in terms if term), "")
+        position = text.casefold().find(first_term) if first_term else -1
+        if position < 0:
+            position = 0
+        start = max(0, position - 120)
+        end = min(len(text), position + 320)
+        excerpt = re.sub(r"\s+", " ", text[start:end]).strip()
+        if start:
+            excerpt = f"...{excerpt}"
+        if end < len(text):
+            excerpt = f"{excerpt}..."
+        return excerpt[:1_200]
+
     def list_document_projects(self, user_id: str) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
@@ -4825,6 +5601,326 @@ class Database:
                 (user_id,),
             ).fetchall()
         return [self._document_project_row(row) for row in rows]
+
+    def _document_history_state(self, connection: sqlite3.Connection, project_id: str) -> dict[str, Any]:
+        project = connection.execute(
+            "SELECT title, output_page_size, image_dpi, page_number_position, page_number_start FROM document_projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        if not project:
+            raise KeyError("Projekt dielne neexistuje.")
+        inputs = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT id, source_id, source_file_id, blob_hash, original_blob_hash, original_name, mime_type,
+                       size_bytes, original_mime_type, original_size_bytes, created_at
+                FROM document_inputs WHERE project_id = ? ORDER BY created_at, id
+                """,
+                (project_id,),
+            )
+        ]
+        pages = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT id, input_id, input_page_index, order_index, rotation,
+                       crop_top, crop_right, crop_bottom, crop_left, created_at
+                FROM document_pages WHERE project_id = ? ORDER BY order_index, created_at, id
+                """,
+                (project_id,),
+            )
+        ]
+        return {"project": dict(project), "inputs": inputs, "pages": pages}
+
+    @staticmethod
+    def _document_history_blob_hashes(state: dict[str, Any]) -> set[str]:
+        blobs: set[str] = set()
+        for item in state.get("inputs", []):
+            if not isinstance(item, dict):
+                continue
+            for key in ("blob_hash", "original_blob_hash"):
+                value = str(item.get(key) or "").lower()
+                if len(value) == 64 and all(character in "0123456789abcdef" for character in value):
+                    blobs.add(value)
+        return blobs
+
+    def _write_document_history_snapshot(
+        self,
+        connection: sqlite3.Connection,
+        project_id: str,
+        position: int,
+        operation: str,
+        state: dict[str, Any],
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO document_project_history(project_id, position, operation, state_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                project_id,
+                position,
+                self._clean_text(operation, 120) or "Úprava projektu",
+                json.dumps(state, ensure_ascii=False, separators=(",", ":")),
+                now_iso(),
+            ),
+        )
+        connection.executemany(
+            """
+            INSERT INTO document_project_history_blobs(project_id, position, blob_hash)
+            VALUES (?, ?, ?)
+            """,
+            [(project_id, position, blob_hash) for blob_hash in self._document_history_blob_hashes(state)],
+        )
+
+    def _ensure_document_history(self, connection: sqlite3.Connection, project_id: str) -> int:
+        project = connection.execute(
+            "SELECT history_position FROM document_projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        if not project:
+            raise KeyError("Projekt dielne neexistuje.")
+        row = connection.execute(
+            "SELECT COUNT(*) AS count FROM document_project_history WHERE project_id = ?", (project_id,)
+        ).fetchone()
+        if row["count"]:
+            return int(project["history_position"])
+        self._write_document_history_snapshot(
+            connection,
+            project_id,
+            0,
+            "Vytvorenie projektu",
+            self._document_history_state(connection, project_id),
+        )
+        connection.execute("UPDATE document_projects SET history_position = 0 WHERE id = ?", (project_id,))
+        return 0
+
+    def _commit_document_history(
+        self, connection: sqlite3.Connection, project_id: str, operation: str
+    ) -> list[str]:
+        """Save the changed state and release blobs that left the bounded undo timeline."""
+        position = self._ensure_document_history(connection, project_id)
+        displaced = {
+            str(row["blob_hash"])
+            for row in connection.execute(
+                """
+                SELECT blob_hash FROM document_project_history_blobs
+                WHERE project_id = ? AND position > ?
+                """,
+                (project_id, position),
+            )
+        }
+        connection.execute(
+            "DELETE FROM document_project_history WHERE project_id = ? AND position > ?", (project_id, position)
+        )
+        next_position = position + 1
+        self._write_document_history_snapshot(
+            connection, project_id, next_position, operation, self._document_history_state(connection, project_id)
+        )
+        oldest_position = max(0, next_position - DOCUMENT_HISTORY_LIMIT)
+        displaced.update(
+            str(row["blob_hash"])
+            for row in connection.execute(
+                """
+                SELECT blob_hash FROM document_project_history_blobs
+                WHERE project_id = ? AND position < ?
+                """,
+                (project_id, oldest_position),
+            )
+        )
+        connection.execute(
+            "DELETE FROM document_project_history WHERE project_id = ? AND position < ?",
+            (project_id, oldest_position),
+        )
+        connection.execute(
+            "UPDATE document_projects SET history_position = ? WHERE id = ?", (next_position, project_id)
+        )
+        return [blob_hash for blob_hash in displaced if not self._blob_is_referenced(connection, blob_hash)]
+
+    def _document_history_summary(self, connection: sqlite3.Connection, project_id: str) -> dict[str, Any]:
+        project = connection.execute(
+            "SELECT history_position FROM document_projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        if not project:
+            return {"canUndo": False, "canRedo": False, "undoLabel": "", "redoLabel": ""}
+        position = int(project["history_position"])
+        undo = connection.execute(
+            """
+            SELECT operation FROM document_project_history
+            WHERE project_id = ? AND position < ? ORDER BY position DESC LIMIT 1
+            """,
+            (project_id, position),
+        ).fetchone()
+        redo = connection.execute(
+            """
+            SELECT operation FROM document_project_history
+            WHERE project_id = ? AND position > ? ORDER BY position LIMIT 1
+            """,
+            (project_id, position),
+        ).fetchone()
+        return {
+            "canUndo": bool(undo),
+            "canRedo": bool(redo),
+            "undoLabel": str(undo["operation"]) if undo else "",
+            "redoLabel": str(redo["operation"]) if redo else "",
+        }
+
+    def _restore_document_history_state(
+        self, connection: sqlite3.Connection, user_id: str, project_id: str, state: dict[str, Any]
+    ) -> None:
+        project = state.get("project")
+        inputs = state.get("inputs")
+        pages = state.get("pages")
+        if not isinstance(project, dict) or not isinstance(inputs, list) or not isinstance(pages, list):
+            raise ValidationError("História projektu je poškodená.")
+        title = self._clean_text(project.get("title"), 240) or "Nový projekt PDF"
+        output_page_size = self._clean_text(project.get("output_page_size"), 32)
+        if output_page_size not in DOCUMENT_OUTPUT_PAGE_SIZES:
+            output_page_size = "keep"
+        try:
+            image_dpi = int(project.get("image_dpi", 144))
+        except (TypeError, ValueError):
+            image_dpi = 144
+        if image_dpi not in DOCUMENT_IMAGE_DPI_OPTIONS:
+            image_dpi = 144
+        page_number_position = self._clean_text(project.get("page_number_position"), 32)
+        if page_number_position not in DOCUMENT_PAGE_NUMBER_POSITIONS:
+            page_number_position = "none"
+        try:
+            page_number_start = int(project.get("page_number_start", 1))
+        except (TypeError, ValueError):
+            page_number_start = 1
+        page_number_start = min(DOCUMENT_PAGE_NUMBER_START_MAX, max(DOCUMENT_PAGE_NUMBER_START_MIN, page_number_start))
+        owned_sources = {
+            str(row["id"])
+            for row in connection.execute("SELECT id FROM sources WHERE user_id = ?", (user_id,))
+        }
+        owned_files = {
+            str(row["id"])
+            for row in connection.execute(
+                """
+                SELECT sf.id FROM source_files sf
+                JOIN sources s ON s.id = sf.source_id
+                WHERE s.user_id = ?
+                """,
+                (user_id,),
+            )
+        }
+        connection.execute("DELETE FROM document_inputs WHERE project_id = ?", (project_id,))
+        saved_input_ids: set[str] = set()
+        for item in inputs:
+            if not isinstance(item, dict):
+                raise ValidationError("História projektu obsahuje neplatný vstup.")
+            input_id = self._clean_id(item.get("id"))
+            blob_hash = self._clean_text(item.get("blob_hash"), 64).lower()
+            if not input_id or len(blob_hash) != 64:
+                raise ValidationError("História projektu obsahuje neplatný súbor.")
+            source_id = self._clean_id(item.get("source_id"))
+            source_file_id = self._clean_id(item.get("source_file_id"))
+            if source_id not in owned_sources:
+                source_id = ""
+            if source_file_id not in owned_files:
+                source_file_id = ""
+            try:
+                size_bytes = max(0, int(item.get("size_bytes", 0)))
+                original_size_bytes = max(0, int(item.get("original_size_bytes", 0)))
+            except (TypeError, ValueError) as error:
+                raise ValidationError("História projektu má neplatnú veľkosť súboru.") from error
+            connection.execute(
+                """
+                INSERT INTO document_inputs(
+                    id, project_id, source_id, source_file_id, blob_hash, original_blob_hash, original_name,
+                    mime_type, size_bytes, original_mime_type, original_size_bytes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    input_id,
+                    project_id,
+                    source_id or None,
+                    source_file_id or None,
+                    blob_hash,
+                    self._clean_text(item.get("original_blob_hash"), 64).lower(),
+                    self._clean_text(item.get("original_name"), 240) or "dokument",
+                    self._clean_text(item.get("mime_type"), 160) or "application/octet-stream",
+                    size_bytes,
+                    self._clean_text(item.get("original_mime_type"), 160),
+                    original_size_bytes,
+                    self._clean_text(item.get("created_at"), 64) or now_iso(),
+                ),
+            )
+            saved_input_ids.add(input_id)
+        for item in pages:
+            if not isinstance(item, dict):
+                raise ValidationError("História projektu obsahuje neplatnú stranu.")
+            page_id = self._clean_id(item.get("id"))
+            input_id = self._clean_id(item.get("input_id"))
+            if not page_id or input_id not in saved_input_ids:
+                raise ValidationError("História projektu obsahuje stranu bez vstupu.")
+            try:
+                values = (
+                    int(item.get("input_page_index", 0)),
+                    int(item.get("order_index", 0)),
+                    int(item.get("rotation", 0)),
+                    int(item.get("crop_top", 0)),
+                    int(item.get("crop_right", 0)),
+                    int(item.get("crop_bottom", 0)),
+                    int(item.get("crop_left", 0)),
+                )
+            except (TypeError, ValueError) as error:
+                raise ValidationError("História projektu obsahuje neplatné nastavenie strany.") from error
+            connection.execute(
+                """
+                INSERT INTO document_pages(
+                    id, project_id, input_id, input_page_index, order_index, rotation,
+                    crop_top, crop_right, crop_bottom, crop_left, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    page_id,
+                    project_id,
+                    input_id,
+                    *values,
+                    self._clean_text(item.get("created_at"), 64) or now_iso(),
+                ),
+            )
+        connection.execute(
+            """
+            UPDATE document_projects
+            SET title = ?, output_page_size = ?, image_dpi = ?, page_number_position = ?, page_number_start = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (title, output_page_size, image_dpi, page_number_position, page_number_start, now_iso(), project_id),
+        )
+
+    def restore_document_project_history(
+        self, user_id: str, project_id: str, direction: str
+    ) -> dict[str, Any]:
+        if direction not in {"undo", "redo"}:
+            raise ValidationError("Smer histórie nie je platný.")
+        with self.connect() as connection:
+            project = self._document_project(connection, user_id, project_id)
+            position = self._ensure_document_history(connection, project_id)
+            ordering = "DESC" if direction == "undo" else "ASC"
+            comparator = "<" if direction == "undo" else ">"
+            target = connection.execute(
+                f"""
+                SELECT position, state_json FROM document_project_history
+                WHERE project_id = ? AND position {comparator} ?
+                ORDER BY position {ordering} LIMIT 1
+                """,
+                (project_id, position),
+            ).fetchone()
+            if not target:
+                raise ValidationError("Pre tento krok už nie je dostupná história.")
+            try:
+                state = json.loads(str(target["state_json"]))
+            except (TypeError, json.JSONDecodeError) as error:
+                raise ValidationError("História projektu je poškodená.") from error
+            self._restore_document_history_state(connection, user_id, project_id, state)
+            connection.execute(
+                "UPDATE document_projects SET history_position = ? WHERE id = ?",
+                (int(target["position"]), project_id),
+            )
+        return self.document_project_detail(user_id, project_id)
 
     def document_project_detail(self, user_id: str, project_id: str) -> dict[str, Any]:
         with self.connect() as connection:
@@ -4846,7 +5942,9 @@ class Database:
                 self._document_page_row(row)
                 for row in connection.execute(
                     """
-                    SELECT page.*, i.blob_hash, i.original_name, i.mime_type, i.source_id, i.source_file_id, s.title AS source_title
+                    SELECT page.*, i.blob_hash, i.original_blob_hash, i.original_name, i.mime_type,
+                           i.original_mime_type, i.original_size_bytes, i.source_id, i.source_file_id,
+                           s.title AS source_title
                     FROM document_pages page
                     JOIN document_inputs i ON i.id = page.input_id
                     LEFT JOIN sources s ON s.id = i.source_id
@@ -4856,71 +5954,343 @@ class Database:
                     (project_id,),
                 )
             ]
+            history = self._document_history_summary(connection, project_id)
         return {
             "project": self._document_project_row(project),
             "inputs": inputs,
             "pages": pages,
+            "history": history,
         }
 
     def create_document_project(self, user_id: str, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise ValidationError("Projekt dielne musí byť objekt.")
         project_id = self._clean_id(data.get("id"))
-        title = self._clean_text(data.get("title"), 240) or "Nový dokument"
+        title = self._clean_text(data.get("title"), 240) or "Nový projekt PDF"
         if not project_id:
             raise ValidationError("Projekt dielne potrebuje identifikátor.")
         timestamp = now_iso()
         with self.connect() as connection:
             connection.execute(
-                "INSERT INTO document_projects(id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                """
+                INSERT INTO document_projects(id, user_id, title, history_position, created_at, updated_at)
+                VALUES (?, ?, ?, 0, ?, ?)
+                """,
                 (project_id, user_id, title, timestamp, timestamp),
+            )
+            self._write_document_history_snapshot(
+                connection, project_id, 0, "Vytvorenie projektu", self._document_history_state(connection, project_id)
             )
         return self.document_project_detail(user_id, project_id)
 
-    def update_document_project(self, user_id: str, project_id: str, data: Any) -> dict[str, Any]:
+    def import_document_project(self, user_id: str, data: Any) -> dict[str, Any]:
+        """Persist a self-contained Dielňa PDF transfer as one new project."""
+        if not isinstance(data, dict):
+            raise ValidationError("Import projektu dielne musí byť objekt.")
+        project_id = self._clean_id(data.get("id"))
+        project = data.get("project")
+        inputs = data.get("inputs")
+        pages = data.get("pages")
+        if not project_id or not isinstance(project, dict) or not isinstance(inputs, list) or not isinstance(pages, list):
+            raise ValidationError("Import projektu dielne nemá platný tvar.")
+        if len(inputs) > 500 or len(pages) > 2_000:
+            raise ValidationError("Importovaný projekt obsahuje priveľa vstupov alebo strán.")
+
+        title = self._clean_text(project.get("title"), 240) or "Importovaný projekt PDF"
+        output_page_size = self._clean_text(project.get("outputPageSize"), 32)
+        if output_page_size not in DOCUMENT_OUTPUT_PAGE_SIZES:
+            raise ValidationError("Formát výstupného PDF v importe nie je platný.")
+        try:
+            image_dpi = int(project.get("imageDpi"))
+            page_number_start = int(project.get("pageNumberStart"))
+        except (TypeError, ValueError) as error:
+            raise ValidationError("Nastavenie výstupného PDF v importe nie je platné.") from error
+        if image_dpi not in DOCUMENT_IMAGE_DPI_OPTIONS:
+            raise ValidationError("Kvalita obrázkov v importe nie je platná.")
+        page_number_position = self._clean_text(project.get("pageNumberPosition"), 32)
+        if page_number_position not in DOCUMENT_PAGE_NUMBER_POSITIONS:
+            raise ValidationError("Poloha číslovania strán v importe nie je platná.")
+        if not DOCUMENT_PAGE_NUMBER_START_MIN <= page_number_start <= DOCUMENT_PAGE_NUMBER_START_MAX:
+            raise ValidationError("Počiatočné číslo strany v importe nie je platné.")
+
+        def clean_hash(value: Any, *, allow_empty: bool = False) -> str:
+            result = self._clean_text(value, 64).lower()
+            if allow_empty and not result:
+                return ""
+            if len(result) != 64 or any(character not in "0123456789abcdef" for character in result):
+                raise ValidationError("Import projektu obsahuje neplatný súbor.")
+            return result
+
+        saved_inputs: list[dict[str, Any]] = []
+        input_ids: set[str] = set()
+        for item in inputs:
+            if not isinstance(item, dict):
+                raise ValidationError("Import projektu obsahuje neplatný vstup.")
+            input_id = self._clean_id(item.get("id"))
+            if not input_id or input_id in input_ids:
+                raise ValidationError("Import projektu obsahuje duplicitný vstup.")
+            try:
+                size_bytes = int(item.get("sizeBytes", 0))
+                original_size_bytes = int(item.get("originalSizeBytes", 0))
+                page_count = int(item.get("pageCount", 0))
+            except (TypeError, ValueError) as error:
+                raise ValidationError("Importovaný vstup má neplatnú veľkosť alebo počet strán.") from error
+            if size_bytes < 1 or original_size_bytes < 0 or not 1 <= page_count <= 500:
+                raise ValidationError("Importovaný vstup má neplatnú veľkosť alebo počet strán.")
+            saved_inputs.append(
+                {
+                    "id": input_id,
+                    "blobHash": clean_hash(item.get("blobHash")),
+                    "originalBlobHash": clean_hash(item.get("originalBlobHash"), allow_empty=True),
+                    "originalName": self._clean_text(item.get("originalName"), 240) or "dokument",
+                    "mimeType": self._clean_text(item.get("mimeType"), 160) or "application/octet-stream",
+                    "sizeBytes": size_bytes,
+                    "originalMimeType": self._clean_text(item.get("originalMimeType"), 160),
+                    "originalSizeBytes": original_size_bytes,
+                    "pageCount": page_count,
+                }
+            )
+            input_ids.add(input_id)
+
+        saved_pages: list[dict[str, Any]] = []
+        page_ids: set[str] = set()
+        input_page_counts = {item["id"]: item["pageCount"] for item in saved_inputs}
+        for item in pages:
+            if not isinstance(item, dict):
+                raise ValidationError("Import projektu obsahuje neplatnú stranu.")
+            page_id = self._clean_id(item.get("id"))
+            input_id = self._clean_id(item.get("inputId"))
+            if not page_id or page_id in page_ids or input_id not in input_page_counts:
+                raise ValidationError("Import projektu obsahuje stranu bez platného vstupu.")
+            try:
+                input_page_index = int(item.get("inputPageIndex"))
+                order_index = int(item.get("orderIndex"))
+                rotation = int(item.get("rotation", 0))
+                crops = (
+                    int(item.get("cropTop", 0)),
+                    int(item.get("cropRight", 0)),
+                    int(item.get("cropBottom", 0)),
+                    int(item.get("cropLeft", 0)),
+                )
+            except (TypeError, ValueError) as error:
+                raise ValidationError("Import projektu obsahuje neplatné nastavenie strany.") from error
+            if (
+                not 0 <= input_page_index < input_page_counts[input_id]
+                or not 0 <= order_index < len(pages)
+                or rotation not in {0, 90, 180, 270}
+                or any(value < 0 or value > MAX_DOCUMENT_CROP_PERCENT for value in crops)
+                or crops[0] + crops[2] >= 100
+                or crops[1] + crops[3] >= 100
+            ):
+                raise ValidationError("Import projektu obsahuje neplatné nastavenie strany.")
+            saved_pages.append(
+                {
+                    "id": page_id,
+                    "inputId": input_id,
+                    "inputPageIndex": input_page_index,
+                    "orderIndex": order_index,
+                    "rotation": rotation,
+                    "cropTop": crops[0],
+                    "cropRight": crops[1],
+                    "cropBottom": crops[2],
+                    "cropLeft": crops[3],
+                }
+            )
+            page_ids.add(page_id)
+        if len({item["orderIndex"] for item in saved_pages}) != len(saved_pages):
+            raise ValidationError("Import projektu obsahuje duplicitné poradie strán.")
+
+        timestamp = now_iso()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO document_projects(
+                    id, user_id, title, output_page_size, image_dpi, page_number_position,
+                    page_number_start, history_position, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    project_id,
+                    user_id,
+                    title,
+                    output_page_size,
+                    image_dpi,
+                    page_number_position,
+                    page_number_start,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO document_inputs(
+                    id, project_id, source_id, source_file_id, blob_hash, original_blob_hash, original_name,
+                    mime_type, size_bytes, original_mime_type, original_size_bytes, created_at
+                ) VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item["id"],
+                        project_id,
+                        item["blobHash"],
+                        item["originalBlobHash"],
+                        item["originalName"],
+                        item["mimeType"],
+                        item["sizeBytes"],
+                        item["originalMimeType"],
+                        item["originalSizeBytes"],
+                        timestamp,
+                    )
+                    for item in saved_inputs
+                ],
+            )
+            connection.executemany(
+                """
+                INSERT INTO document_pages(
+                    id, project_id, input_id, input_page_index, order_index, rotation,
+                    crop_top, crop_right, crop_bottom, crop_left, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item["id"],
+                        project_id,
+                        item["inputId"],
+                        item["inputPageIndex"],
+                        item["orderIndex"],
+                        item["rotation"],
+                        item["cropTop"],
+                        item["cropRight"],
+                        item["cropBottom"],
+                        item["cropLeft"],
+                        timestamp,
+                    )
+                    for item in saved_pages
+                ],
+            )
+            self._write_document_history_snapshot(
+                connection,
+                project_id,
+                0,
+                "Importovaný projekt",
+                self._document_history_state(connection, project_id),
+            )
+        return self.document_project_detail(user_id, project_id)
+
+    def update_document_project(self, user_id: str, project_id: str, data: Any) -> tuple[dict[str, Any], list[str]]:
         if not isinstance(data, dict):
             raise ValidationError("Úprava projektu dielne musí byť objekt.")
+        orphaned: list[str] = []
         with self.connect() as connection:
             project = self._document_project(connection, user_id, project_id)
             title = self._clean_text(data.get("title", project["title"]), 240)
             if not title:
                 raise ValidationError("Projekt dielne potrebuje názov.")
-            connection.execute(
-                "UPDATE document_projects SET title = ?, updated_at = ? WHERE id = ?",
-                (title, now_iso(), project_id),
+            output_page_size = self._clean_text(data.get("outputPageSize", project["output_page_size"]), 32)
+            if output_page_size not in DOCUMENT_OUTPUT_PAGE_SIZES:
+                raise ValidationError("Formát výstupného PDF nie je platný.")
+            try:
+                image_dpi = int(data.get("imageDpi", project["image_dpi"]))
+            except (TypeError, ValueError) as error:
+                raise ValidationError("Kvalita obrázkov nie je platná.") from error
+            if image_dpi not in DOCUMENT_IMAGE_DPI_OPTIONS:
+                raise ValidationError("Pre obrázky vyber jednu z ponúkaných kvalít.")
+            page_number_position = self._clean_text(
+                data.get("pageNumberPosition", project["page_number_position"]), 32
             )
-        return self.document_project_detail(user_id, project_id)
+            if page_number_position not in DOCUMENT_PAGE_NUMBER_POSITIONS:
+                raise ValidationError("Poloha číslovania strán nie je platná.")
+            try:
+                page_number_start = int(data.get("pageNumberStart", project["page_number_start"]))
+            except (TypeError, ValueError) as error:
+                raise ValidationError("Počiatočné číslo strany nie je platné.") from error
+            if not DOCUMENT_PAGE_NUMBER_START_MIN <= page_number_start <= DOCUMENT_PAGE_NUMBER_START_MAX:
+                raise ValidationError("Počiatočné číslo strany musí byť v povolenom rozsahu.")
+            changed_title = title != project["title"]
+            changed_output = (
+                output_page_size != project["output_page_size"]
+                or image_dpi != project["image_dpi"]
+                or page_number_position != project["page_number_position"]
+                or page_number_start != project["page_number_start"]
+            )
+            if changed_title or changed_output:
+                self._ensure_document_history(connection, project_id)
+                connection.execute(
+                    "UPDATE document_projects SET title = ?, output_page_size = ?, image_dpi = ?, page_number_position = ?, page_number_start = ?, updated_at = ? WHERE id = ?",
+                    (title, output_page_size, image_dpi, page_number_position, page_number_start, now_iso(), project_id),
+                )
+                operation = "Názov projektu upravený" if changed_title and not changed_output else "Nastavenie projektu upravené"
+                orphaned = self._commit_document_history(connection, project_id, operation)
+        return self.document_project_detail(user_id, project_id), orphaned
 
     def delete_document_project(self, user_id: str, project_id: str) -> list[str]:
         with self.connect() as connection:
             self._document_project(connection, user_id, project_id)
-            blob_hashes = [
-                row["blob_hash"]
+            blob_hashes = {
+                value
                 for row in connection.execute(
-                    "SELECT DISTINCT blob_hash FROM document_inputs WHERE project_id = ?", (project_id,)
+                    "SELECT blob_hash, original_blob_hash FROM document_inputs WHERE project_id = ?", (project_id,)
                 )
-            ]
+                for value in (row["blob_hash"], row["original_blob_hash"])
+                if value
+            }
+            blob_hashes.update(
+                str(row["blob_hash"])
+                for row in connection.execute(
+                    "SELECT blob_hash FROM document_project_history_blobs WHERE project_id = ?", (project_id,)
+                )
+            )
             connection.execute("DELETE FROM document_projects WHERE id = ? AND user_id = ?", (project_id, user_id))
             return [blob_hash for blob_hash in blob_hashes if not self._blob_is_referenced(connection, blob_hash)]
 
-    def add_document_input(self, user_id: str, project_id: str, data: Any) -> dict[str, Any]:
+    def add_document_input(self, user_id: str, project_id: str, data: Any) -> tuple[dict[str, Any], list[str]]:
         if not isinstance(data, dict):
             raise ValidationError("Vstup dokumentu musí byť objekt.")
         input_id = self._clean_id(data.get("id"))
         blob_hash = self._clean_text(data.get("blobHash"), 64).lower()
+        original_blob_hash = self._clean_text(data.get("originalBlobHash"), 64).lower()
         original_name = self._clean_text(data.get("originalName"), 240) or "dokument"
         mime_type = self._clean_text(data.get("mimeType"), 160) or "application/octet-stream"
+        original_mime_type = self._clean_text(data.get("originalMimeType"), 160)
         source_id = self._clean_id(data.get("sourceId")) or None
         source_file_id = self._clean_id(data.get("sourceFileId")) or None
         try:
             size_bytes = int(data.get("sizeBytes", 0))
             page_count = int(data.get("pageCount", 0))
+            original_size_bytes = int(data.get("originalSizeBytes", 0))
         except (TypeError, ValueError) as error:
             raise ValidationError("Vstup dokumentu nemá platnú veľkosť alebo počet strán.") from error
         if not input_id or len(blob_hash) != 64 or any(character not in "0123456789abcdef" for character in blob_hash):
             raise ValidationError("Vstup dokumentu nemá platný súbor.")
-        if size_bytes < 0 or not 1 <= page_count <= 500:
+        if original_blob_hash and (
+            len(original_blob_hash) != 64 or any(character not in "0123456789abcdef" for character in original_blob_hash)
+        ):
+            raise ValidationError("Vstup dokumentu nemá platný pôvodný súbor.")
+        if size_bytes < 0 or original_size_bytes < 0 or not 1 <= page_count <= 500:
             raise ValidationError("Do jedného vstupu môžeš pridať najviac 500 strán.")
+        requested_indices = data.get("pageIndices")
+        if requested_indices is None:
+            page_indices = list(range(page_count))
+        elif isinstance(requested_indices, list):
+            page_indices = []
+            for value in requested_indices:
+                if isinstance(value, bool):
+                    raise ValidationError("Výber strán dokumentu nie je platný.")
+                try:
+                    index = int(value)
+                except (TypeError, ValueError) as error:
+                    raise ValidationError("Výber strán dokumentu nie je platný.") from error
+                page_indices.append(index)
+            if (
+                not page_indices
+                or len(page_indices) > page_count
+                or len(set(page_indices)) != len(page_indices)
+                or any(index < 0 or index >= page_count for index in page_indices)
+            ):
+                raise ValidationError("Vyber aspoň jednu platnú stranu dokumentu.")
+            page_indices.sort()
+        else:
+            raise ValidationError("Výber strán dokumentu nie je platný.")
         with self.connect() as connection:
             self._document_project(connection, user_id, project_id)
             if source_id:
@@ -4938,16 +6308,31 @@ class Database:
             current_count = connection.execute(
                 "SELECT COUNT(*) AS count FROM document_pages WHERE project_id = ?", (project_id,)
             ).fetchone()["count"]
-            if current_count + page_count > 2_000:
+            if current_count + len(page_indices) > 2_000:
                 raise ValidationError("Jeden projekt dielne môže mať najviac 2 000 strán.")
+            self._ensure_document_history(connection, project_id)
             timestamp = now_iso()
             connection.execute(
                 """
                 INSERT INTO document_inputs(
-                    id, project_id, source_id, source_file_id, blob_hash, original_name, mime_type, size_bytes, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, project_id, source_id, source_file_id, blob_hash, original_blob_hash, original_name,
+                    mime_type, size_bytes, original_mime_type, original_size_bytes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (input_id, project_id, source_id, source_file_id, blob_hash, original_name, mime_type, size_bytes, timestamp),
+                (
+                    input_id,
+                    project_id,
+                    source_id,
+                    source_file_id,
+                    blob_hash,
+                    original_blob_hash,
+                    original_name,
+                    mime_type,
+                    size_bytes,
+                    original_mime_type,
+                    original_size_bytes,
+                    timestamp,
+                ),
             )
             start_index = connection.execute(
                 "SELECT COALESCE(MAX(order_index), -1) + 1 AS next_index FROM document_pages WHERE project_id = ?",
@@ -4959,34 +6344,78 @@ class Database:
                 VALUES (?, ?, ?, ?, ?, 0, ?)
                 """,
                 [
-                    (str(uuid.uuid4()), project_id, input_id, page_index, start_index + page_index, timestamp)
-                    for page_index in range(page_count)
+                    (str(uuid.uuid4()), project_id, input_id, page_index, start_index + order_index, timestamp)
+                    for order_index, page_index in enumerate(page_indices)
                 ],
             )
             connection.execute("UPDATE document_projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
-        return self.document_project_detail(user_id, project_id)
+            orphaned = self._commit_document_history(connection, project_id, "Vstup pridaný")
+        return self.document_project_detail(user_id, project_id), orphaned
 
-    def update_document_page(self, user_id: str, project_id: str, page_id: str, data: Any) -> dict[str, Any]:
+    def unreferenced_blob_hashes(self, blob_hashes: list[str] | set[str] | tuple[str, ...]) -> list[str]:
+        """Return only blobs that may be safely deleted from private file storage."""
+        valid_hashes = {
+            str(blob_hash).lower()
+            for blob_hash in blob_hashes
+            if len(str(blob_hash)) == 64 and all(character in "0123456789abcdef" for character in str(blob_hash).lower())
+        }
+        if not valid_hashes:
+            return []
+        with self.connect() as connection:
+            return [blob_hash for blob_hash in valid_hashes if not self._blob_is_referenced(connection, blob_hash)]
+
+    def update_document_page(
+        self, user_id: str, project_id: str, page_id: str, data: Any
+    ) -> tuple[dict[str, Any], list[str]]:
         if not isinstance(data, dict):
             raise ValidationError("Úprava strany musí byť objekt.")
-        try:
-            rotation = int(data.get("rotation"))
-        except (TypeError, ValueError) as error:
-            raise ValidationError("Otočenie strany nie je platné.") from error
-        if rotation not in {0, 90, 180, 270}:
-            raise ValidationError("Stranu možno otočiť len po pravom uhle.")
+        orphaned: list[str] = []
         with self.connect() as connection:
             self._document_project(connection, user_id, project_id)
-            result = connection.execute(
-                "UPDATE document_pages SET rotation = ? WHERE id = ? AND project_id = ?",
-                (rotation, page_id, project_id),
-            )
-            if result.rowcount != 1:
+            page = connection.execute(
+                "SELECT rotation, crop_top, crop_right, crop_bottom, crop_left FROM document_pages WHERE id = ? AND project_id = ?",
+                (page_id, project_id),
+            ).fetchone()
+            if not page:
                 raise KeyError("Strana projektu neexistuje.")
-            connection.execute("UPDATE document_projects SET updated_at = ? WHERE id = ?", (now_iso(), project_id))
-        return self.document_project_detail(user_id, project_id)
+            try:
+                rotation = int(data.get("rotation", page["rotation"]))
+                crop_top = int(data.get("cropTop", page["crop_top"]))
+                crop_right = int(data.get("cropRight", page["crop_right"]))
+                crop_bottom = int(data.get("cropBottom", page["crop_bottom"]))
+                crop_left = int(data.get("cropLeft", page["crop_left"]))
+            except (TypeError, ValueError) as error:
+                raise ValidationError("Orezanie alebo otočenie strany nie je platné.") from error
+            if rotation not in {0, 90, 180, 270}:
+                raise ValidationError("Stranu možno otočiť len po pravom uhle.")
+            crop_values = (crop_top, crop_right, crop_bottom, crop_left)
+            if any(value < 0 or value > MAX_DOCUMENT_CROP_PERCENT for value in crop_values):
+                raise ValidationError(f"Orezanie jednej strany môže byť od 0 do {MAX_DOCUMENT_CROP_PERCENT} %.")
+            if crop_top + crop_bottom >= 100 or crop_left + crop_right >= 100:
+                raise ValidationError("Protiľahlé okraje nemôžu odstrániť celú stranu.")
+            changed = not (
+                rotation == page["rotation"]
+                and crop_top == page["crop_top"]
+                and crop_right == page["crop_right"]
+                and crop_bottom == page["crop_bottom"]
+                and crop_left == page["crop_left"]
+            )
+            if changed:
+                self._ensure_document_history(connection, project_id)
+                connection.execute(
+                    """
+                    UPDATE document_pages
+                    SET rotation = ?, crop_top = ?, crop_right = ?, crop_bottom = ?, crop_left = ?
+                    WHERE id = ? AND project_id = ?
+                    """,
+                    (rotation, crop_top, crop_right, crop_bottom, crop_left, page_id, project_id),
+                )
+                connection.execute("UPDATE document_projects SET updated_at = ? WHERE id = ?", (now_iso(), project_id))
+                operation = "Strana otočená" if rotation != page["rotation"] else "Orezanie strany upravené"
+                orphaned = self._commit_document_history(connection, project_id, operation)
+        return self.document_project_detail(user_id, project_id), orphaned
 
-    def duplicate_document_page(self, user_id: str, project_id: str, page_id: str) -> dict[str, Any]:
+    def duplicate_document_page(self, user_id: str, project_id: str, page_id: str) -> tuple[dict[str, Any], list[str]]:
         with self.connect() as connection:
             self._document_project(connection, user_id, project_id)
             page = connection.execute(
@@ -4994,6 +6423,7 @@ class Database:
             ).fetchone()
             if not page:
                 raise KeyError("Strana projektu neexistuje.")
+            self._ensure_document_history(connection, project_id)
             position = page["order_index"] + 1
             connection.execute(
                 "UPDATE document_pages SET order_index = order_index + 1 WHERE project_id = ? AND order_index >= ?",
@@ -5001,8 +6431,10 @@ class Database:
             )
             connection.execute(
                 """
-                INSERT INTO document_pages(id, project_id, input_id, input_page_index, order_index, rotation, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO document_pages(
+                    id, project_id, input_id, input_page_index, order_index, rotation,
+                    crop_top, crop_right, crop_bottom, crop_left, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid.uuid4()),
@@ -5011,11 +6443,186 @@ class Database:
                     page["input_page_index"],
                     position,
                     page["rotation"],
+                    page["crop_top"],
+                    page["crop_right"],
+                    page["crop_bottom"],
+                    page["crop_left"],
                     now_iso(),
                 ),
             )
             connection.execute("UPDATE document_projects SET updated_at = ? WHERE id = ?", (now_iso(), project_id))
-        return self.document_project_detail(user_id, project_id)
+            orphaned = self._commit_document_history(connection, project_id, "Strana skopírovaná")
+        return self.document_project_detail(user_id, project_id), orphaned
+
+    def batch_document_pages(self, user_id: str, project_id: str, data: Any) -> tuple[dict[str, Any], list[str]]:
+        """Apply one atomic edit to several pages of a document workshop project."""
+        if not isinstance(data, dict):
+            raise ValidationError("Hromadná úprava strán musí byť objekt.")
+        action = self._clean_text(data.get("action"), 24)
+        if action not in {"rotate", "crop", "duplicate", "delete"}:
+            raise ValidationError("Hromadná úprava strán nie je podporovaná.")
+        raw_page_ids = data.get("pageIds")
+        if not isinstance(raw_page_ids, list):
+            raise ValidationError("Vybrané strany musia byť zoznam.")
+        page_ids = [self._clean_id(page_id) for page_id in raw_page_ids]
+        if not page_ids or len(page_ids) != len(set(page_ids)):
+            raise ValidationError("Vyber aspoň jednu platnú stranu.")
+
+        orphaned: list[str] = []
+        with self.connect() as connection:
+            self._document_project(connection, user_id, project_id)
+            placeholders = ", ".join("?" for _ in page_ids)
+            selected_rows = connection.execute(
+                f"""
+                SELECT * FROM document_pages
+                WHERE project_id = ? AND id IN ({placeholders})
+                ORDER BY order_index, created_at, id
+                """,
+                [project_id, *page_ids],
+            ).fetchall()
+            if len(selected_rows) != len(page_ids):
+                raise ValidationError("Niektorá vybraná strana už v projekte neexistuje.")
+            selected_ids = [str(row["id"]) for row in selected_rows]
+            timestamp = now_iso()
+            self._ensure_document_history(connection, project_id)
+
+            if action == "rotate":
+                try:
+                    delta = int(data.get("delta", 0))
+                except (TypeError, ValueError) as error:
+                    raise ValidationError("Uhol otočenia strán nie je platný.") from error
+                if delta not in {-90, 90}:
+                    raise ValidationError("Strany možno otočiť len o 90 stupňov.")
+                connection.executemany(
+                    """
+                    UPDATE document_pages
+                    SET rotation = (rotation + ? + 360) % 360
+                    WHERE id = ? AND project_id = ?
+                    """,
+                    [(delta, page_id, project_id) for page_id in selected_ids],
+                )
+
+            elif action == "crop":
+                raw_crops = data.get("crops")
+                if not isinstance(raw_crops, list) or len(raw_crops) != len(selected_ids):
+                    raise ValidationError("Orezanie musí obsahovať nastavenie pre každú vybranú stranu.")
+                crop_by_id: dict[str, tuple[int, int, int, int]] = {}
+                for crop in raw_crops:
+                    if not isinstance(crop, dict):
+                        raise ValidationError("Orezanie strany nie je platné.")
+                    page_id = self._clean_id(crop.get("pageId"))
+                    try:
+                        values = (
+                            int(crop.get("cropTop")),
+                            int(crop.get("cropRight")),
+                            int(crop.get("cropBottom")),
+                            int(crop.get("cropLeft")),
+                        )
+                    except (TypeError, ValueError) as error:
+                        raise ValidationError("Orezanie strany nie je platné.") from error
+                    if (
+                        not page_id
+                        or page_id in crop_by_id
+                        or any(value < 0 or value > MAX_DOCUMENT_CROP_PERCENT for value in values)
+                        or values[0] + values[2] >= 100
+                        or values[1] + values[3] >= 100
+                    ):
+                        raise ValidationError("Orezanie vybraných strán nie je platné.")
+                    crop_by_id[page_id] = values
+                if set(crop_by_id) != set(selected_ids):
+                    raise ValidationError("Orezanie sa nezhoduje s vybranými stranami.")
+                connection.executemany(
+                    """
+                    UPDATE document_pages
+                    SET crop_top = ?, crop_right = ?, crop_bottom = ?, crop_left = ?
+                    WHERE id = ? AND project_id = ?
+                    """,
+                    [(*crop_by_id[page_id], page_id, project_id) for page_id in selected_ids],
+                )
+
+            elif action == "duplicate":
+                current_count = connection.execute(
+                    "SELECT COUNT(*) AS count FROM document_pages WHERE project_id = ?", (project_id,)
+                ).fetchone()["count"]
+                if current_count + len(selected_ids) > 2_000:
+                    raise ValidationError("Jeden projekt dielne môže mať najviac 2 000 strán.")
+                all_rows = connection.execute(
+                    "SELECT * FROM document_pages WHERE project_id = ? ORDER BY order_index, created_at, id",
+                    (project_id,),
+                ).fetchall()
+                selected_set = set(selected_ids)
+                clone_rows: list[tuple[Any, ...]] = []
+                final_order: list[str] = []
+                for row in all_rows:
+                    final_order.append(str(row["id"]))
+                    if row["id"] not in selected_set:
+                        continue
+                    clone_id = str(uuid.uuid4())
+                    final_order.append(clone_id)
+                    clone_rows.append(
+                        (
+                            clone_id,
+                            project_id,
+                            row["input_id"],
+                            row["input_page_index"],
+                            current_count + len(clone_rows),
+                            row["rotation"],
+                            row["crop_top"],
+                            row["crop_right"],
+                            row["crop_bottom"],
+                            row["crop_left"],
+                            timestamp,
+                        )
+                    )
+                connection.executemany(
+                    """
+                    INSERT INTO document_pages(
+                        id, project_id, input_id, input_page_index, order_index, rotation,
+                        crop_top, crop_right, crop_bottom, crop_left, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    clone_rows,
+                )
+                connection.executemany(
+                    "UPDATE document_pages SET order_index = ? WHERE id = ? AND project_id = ?",
+                    [(index, page_id, project_id) for index, page_id in enumerate(final_order)],
+                )
+
+            else:
+                selected_input_ids = {str(row["input_id"]) for row in selected_rows}
+                connection.execute(
+                    f"DELETE FROM document_pages WHERE project_id = ? AND id IN ({placeholders})",
+                    [project_id, *selected_ids],
+                )
+                input_placeholders = ", ".join("?" for _ in selected_input_ids)
+                removable_inputs = connection.execute(
+                    f"""
+                    SELECT id, blob_hash, original_blob_hash
+                    FROM document_inputs input
+                    WHERE id IN ({input_placeholders})
+                      AND NOT EXISTS (SELECT 1 FROM document_pages page WHERE page.input_id = input.id)
+                    """,
+                    list(selected_input_ids),
+                ).fetchall()
+                if removable_inputs:
+                    connection.executemany(
+                        "DELETE FROM document_inputs WHERE id = ?",
+                        [(row["id"],) for row in removable_inputs],
+                    )
+                    for row in removable_inputs:
+                        for blob_hash in {row["blob_hash"], row["original_blob_hash"]} - {""}:
+                            if not self._blob_is_referenced(connection, blob_hash):
+                                orphaned.append(blob_hash)
+
+            connection.execute("UPDATE document_projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
+            labels = {
+                "rotate": "Strany otočené",
+                "crop": "Orezanie strán upravené",
+                "duplicate": "Strany skopírované",
+                "delete": "Strany odstránené",
+            }
+            orphaned.extend(self._commit_document_history(connection, project_id, labels[action]))
+        return self.document_project_detail(user_id, project_id), orphaned
 
     def delete_document_page(self, user_id: str, project_id: str, page_id: str) -> tuple[dict[str, Any], list[str]]:
         with self.connect() as connection:
@@ -5025,8 +6632,11 @@ class Database:
             ).fetchone()
             if not page:
                 raise KeyError("Strana projektu neexistuje.")
+            self._ensure_document_history(connection, project_id)
             input_id = page["input_id"]
-            input_row = connection.execute("SELECT blob_hash FROM document_inputs WHERE id = ?", (input_id,)).fetchone()
+            input_row = connection.execute(
+                "SELECT blob_hash, original_blob_hash FROM document_inputs WHERE id = ?", (input_id,)
+            ).fetchone()
             connection.execute("DELETE FROM document_pages WHERE id = ? AND project_id = ?", (page_id, project_id))
             remaining = connection.execute(
                 "SELECT COUNT(*) AS count FROM document_pages WHERE input_id = ?", (input_id,)
@@ -5035,16 +6645,44 @@ class Database:
                 connection.execute("DELETE FROM document_inputs WHERE id = ?", (input_id,))
             connection.execute("UPDATE document_projects SET updated_at = ? WHERE id = ?", (now_iso(), project_id))
             orphaned = []
-            if not remaining and input_row and not self._blob_is_referenced(connection, input_row["blob_hash"]):
-                orphaned.append(input_row["blob_hash"])
+            if not remaining and input_row:
+                for blob_hash in {input_row["blob_hash"], input_row["original_blob_hash"]} - {""}:
+                    if not self._blob_is_referenced(connection, blob_hash):
+                        orphaned.append(blob_hash)
+            orphaned.extend(self._commit_document_history(connection, project_id, "Strana odstránená"))
         return self.document_project_detail(user_id, project_id), orphaned
 
-    def reorder_document_pages(self, user_id: str, project_id: str, data: Any) -> dict[str, Any]:
+    def delete_document_input(self, user_id: str, project_id: str, input_id: str) -> tuple[dict[str, Any], list[str]]:
+        """Remove one complete input and every result page that came from it."""
+        with self.connect() as connection:
+            self._document_project(connection, user_id, project_id)
+            input_row = connection.execute(
+                """
+                SELECT blob_hash, original_blob_hash FROM document_inputs
+                WHERE id = ? AND project_id = ?
+                """,
+                (input_id, project_id),
+            ).fetchone()
+            if not input_row:
+                raise KeyError("Vstup projektu neexistuje.")
+            self._ensure_document_history(connection, project_id)
+            connection.execute("DELETE FROM document_inputs WHERE id = ? AND project_id = ?", (input_id, project_id))
+            connection.execute("UPDATE document_projects SET updated_at = ? WHERE id = ?", (now_iso(), project_id))
+            orphaned = [
+                blob_hash
+                for blob_hash in {input_row["blob_hash"], input_row["original_blob_hash"]} - {""}
+                if not self._blob_is_referenced(connection, blob_hash)
+            ]
+            orphaned.extend(self._commit_document_history(connection, project_id, "Vstup odstránený"))
+        return self.document_project_detail(user_id, project_id), orphaned
+
+    def reorder_document_pages(self, user_id: str, project_id: str, data: Any) -> tuple[dict[str, Any], list[str]]:
         if not isinstance(data, dict) or not isinstance(data.get("pageIds"), list):
             raise ValidationError("Poradie strán musí byť zoznam.")
         page_ids = [self._clean_id(page_id) for page_id in data["pageIds"]]
         if not page_ids or len(page_ids) != len(set(page_ids)):
             raise ValidationError("Poradie strán nie je platné.")
+        orphaned: list[str] = []
         with self.connect() as connection:
             self._document_project(connection, user_id, project_id)
             existing = [
@@ -5055,20 +6693,28 @@ class Database:
             ]
             if set(existing) != set(page_ids):
                 raise ValidationError("Poradie neobsahuje presne stránky projektu.")
-            connection.executemany(
-                "UPDATE document_pages SET order_index = ? WHERE id = ? AND project_id = ?",
-                [(index, page_id, project_id) for index, page_id in enumerate(page_ids)],
-            )
-            connection.execute("UPDATE document_projects SET updated_at = ? WHERE id = ?", (now_iso(), project_id))
-        return self.document_project_detail(user_id, project_id)
+            if existing != page_ids:
+                self._ensure_document_history(connection, project_id)
+                connection.executemany(
+                    "UPDATE document_pages SET order_index = ? WHERE id = ? AND project_id = ?",
+                    [(index, page_id, project_id) for index, page_id in enumerate(page_ids)],
+                )
+                connection.execute("UPDATE document_projects SET updated_at = ? WHERE id = ?", (now_iso(), project_id))
+                orphaned = self._commit_document_history(connection, project_id, "Poradie strán upravené")
+        return self.document_project_detail(user_id, project_id), orphaned
 
     def document_page_file(self, user_id: str, project_id: str, page_id: str) -> dict[str, Any]:
         with self.connect() as connection:
             self._document_project(connection, user_id, project_id)
             row = connection.execute(
                 """
-                SELECT page.id, page.input_page_index, page.rotation, i.blob_hash, i.original_name, i.mime_type
-                FROM document_pages page JOIN document_inputs i ON i.id = page.input_id
+                SELECT page.id, page.input_page_index, page.rotation,
+                       page.crop_top, page.crop_right, page.crop_bottom, page.crop_left,
+                       i.blob_hash, i.original_blob_hash, i.original_name, i.mime_type, i.original_mime_type,
+                       project.output_page_size, project.image_dpi
+                FROM document_pages page
+                JOIN document_inputs i ON i.id = page.input_id
+                JOIN document_projects project ON project.id = page.project_id
                 WHERE page.id = ? AND page.project_id = ?
                 """,
                 (page_id, project_id),
@@ -5076,6 +6722,32 @@ class Database:
         if not row:
             raise KeyError("Strana projektu neexistuje.")
         return dict(row)
+
+    def document_input_original_file(self, user_id: str, project_id: str, input_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            self._document_project(connection, user_id, project_id)
+            row = connection.execute(
+                """
+                SELECT i.blob_hash, i.original_blob_hash, i.original_name, i.mime_type, i.original_mime_type
+                FROM document_inputs i
+                WHERE i.id = ? AND i.project_id = ?
+                """,
+                (input_id, project_id),
+            ).fetchone()
+        if not row:
+            raise KeyError("Vstup projektu neexistuje.")
+        value = dict(row)
+        if value["original_blob_hash"]:
+            return {
+                "blob_hash": value["original_blob_hash"],
+                "original_name": self._repair_legacy_filename(value["original_name"]),
+                "mime_type": value["original_mime_type"] or "application/octet-stream",
+            }
+        return {
+            "blob_hash": value["blob_hash"],
+            "original_name": self._repair_legacy_filename(value["original_name"]),
+            "mime_type": value["mime_type"],
+        }
 
     def source_file_for_user(self, user_id: str, file_id: str) -> dict[str, Any]:
         with self.connect() as connection:
@@ -6156,6 +7828,22 @@ class Database:
         return title, description, 0, start_date, start_time, end_date, end_time
 
     @staticmethod
+    def _calendar_event_reminder_minutes(value: Any) -> int:
+        if value is None or value == "":
+            return -1
+        if isinstance(value, bool):
+            raise ValidationError("Predstih pripomienky musí byť počet minút.")
+        if isinstance(value, float) and not value.is_integer():
+            raise ValidationError("Predstih pripomienky musí byť celý počet minút.")
+        try:
+            minutes = int(value)
+        except (TypeError, ValueError) as error:
+            raise ValidationError("Predstih pripomienky musí byť počet minút.") from error
+        if minutes < -1 or minutes > MAX_CALENDAR_REMINDER_MINUTES:
+            raise ValidationError("Predstih pripomienky môže byť najviac jeden rok.")
+        return minutes
+
+    @staticmethod
     def _calendar_event_all_day(value: Any) -> bool:
         if isinstance(value, bool):
             return value
@@ -6180,6 +7868,169 @@ class Database:
             return datetime.strptime(value, "%H:%M").strftime("%H:%M")
         except ValueError as error:
             raise ValidationError(f"{label} musí mať čas vo formáte HH:MM.") from error
+
+    def _calendar_event_recurrence(
+        self, data: dict[str, Any], current: dict[str, Any] | None = None, start_date: str = ""
+    ) -> tuple[str, int, str]:
+        current = current or {}
+        kind = str(data.get("recurrenceKind", current.get("recurrenceKind", "none"))).strip().lower() or "none"
+        if kind not in CALENDAR_RECURRENCE_KINDS:
+            raise ValidationError("Neznámy spôsob opakovania udalosti.")
+        raw_interval = data.get("recurrenceInterval", current.get("recurrenceInterval", 1))
+        if isinstance(raw_interval, bool) or (isinstance(raw_interval, float) and not raw_interval.is_integer()):
+            raise ValidationError("Interval opakovania musí byť celé číslo.")
+        try:
+            interval = int(raw_interval)
+        except (TypeError, ValueError) as error:
+            raise ValidationError("Interval opakovania musí byť celé číslo.") from error
+        if interval < 1 or interval > MAX_CALENDAR_RECURRENCE_INTERVAL:
+            raise ValidationError("Interval opakovania môže byť od 1 do 365.")
+        raw_until = data.get("recurrenceUntil", current.get("recurrenceUntil", ""))
+        until = "" if raw_until in {None, ""} else self._calendar_event_date(raw_until, "Koniec opakovania")
+        if kind == "none":
+            return "none", 1, ""
+        if kind == "weekdays":
+            interval = 1
+        if until and start_date and until < start_date:
+            raise ValidationError("Koniec opakovania nemôže byť pred začiatkom udalosti.")
+        return kind, interval, until
+
+    @staticmethod
+    def _calendar_event_in_range(event: dict[str, Any], start_date: str, end_date: str) -> bool:
+        return (not start_date or event["endDate"] >= start_date) and (not end_date or event["startDate"] <= end_date)
+
+    def _calendar_occurs_on_date(self, event: sqlite3.Row | dict[str, Any], occurrence_date: str) -> bool:
+        source = dict(event)
+        try:
+            root_start = date.fromisoformat(str(source["start_date"]))
+            candidate = date.fromisoformat(occurrence_date)
+        except (KeyError, TypeError, ValueError):
+            return False
+        kind = str(source.get("recurrence_kind", "none"))
+        interval = max(1, int(source.get("recurrence_interval", 1) or 1))
+        until = str(source.get("recurrence_until", ""))
+        if candidate < root_start or (until and occurrence_date > until):
+            return False
+        delta = (candidate - root_start).days
+        if kind == "none":
+            return candidate == root_start
+        if kind == "daily":
+            return delta % interval == 0
+        if kind == "weekdays":
+            return candidate.weekday() < 5
+        if kind == "weekly":
+            return delta % (7 * interval) == 0
+        if kind == "monthly":
+            months = (candidate.year - root_start.year) * 12 + candidate.month - root_start.month
+            if months < 0 or months % interval:
+                return False
+            return candidate.day == min(root_start.day, monthrange(candidate.year, candidate.month)[1])
+        return False
+
+    def _calendar_occurrence_overrides(self, connection: sqlite3.Connection, event_id: str) -> dict[str, dict[str, Any]]:
+        result: dict[str, dict[str, Any]] = {}
+        rows = connection.execute(
+            "SELECT occurrence_date, cancelled, override_json FROM calendar_event_occurrence_overrides WHERE event_id = ?",
+            (event_id,),
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["override_json"]))
+            except json.JSONDecodeError:
+                payload = {}
+            result[str(row["occurrence_date"])] = {
+                "cancelled": bool(row["cancelled"]),
+                "payload": payload if isinstance(payload, dict) else {},
+            }
+        return result
+
+    def _calendar_occurrence_from_root(
+        self,
+        event: sqlite3.Row | dict[str, Any],
+        occurrence_date: str,
+        overrides: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        source = dict(event)
+        if not self._calendar_occurs_on_date(source, occurrence_date):
+            return None
+        override = (overrides or {}).get(occurrence_date, {})
+        if override.get("cancelled"):
+            return None
+        try:
+            root_start = date.fromisoformat(str(source["start_date"]))
+            root_end = date.fromisoformat(str(source["end_date"]))
+            shifted_start = date.fromisoformat(occurrence_date)
+        except (KeyError, TypeError, ValueError):
+            return None
+        source["start_date"] = shifted_start.isoformat()
+        source["end_date"] = (shifted_start + (root_end - root_start)).isoformat()
+        result = self._calendar_event_row(source)
+        payload = override.get("payload")
+        if payload:
+            try:
+                fields = self._calendar_event_fields(payload, result)
+                reminder = self._calendar_event_reminder_minutes(payload.get("reminderMinutes", result["reminderMinutes"]))
+                tags = self._clean_tags(payload.get("tags", result["tags"]))
+            except ValidationError:
+                fields = None
+            if fields:
+                result.update(
+                    {
+                        "title": fields[0], "description": fields[1], "tags": tags, "allDay": bool(fields[2]),
+                        "startDate": fields[3], "startTime": fields[4], "endDate": fields[5], "endTime": fields[6],
+                        "reminderMinutes": reminder,
+                    }
+                )
+        is_occurrence = str(source.get("recurrence_kind", "none")) != "none"
+        if is_occurrence:
+            result["occurrenceDate"] = occurrence_date
+        result["isOccurrence"] = is_occurrence
+        result["isOverride"] = bool(payload)
+        return result
+
+    def _calendar_occurrences_in_range(
+        self, event: sqlite3.Row | dict[str, Any], start_date: str, end_date: str
+    ) -> list[str]:
+        source = dict(event)
+        root_start = date.fromisoformat(str(source["start_date"]))
+        root_end = date.fromisoformat(str(source["end_date"]))
+        duration = max(0, (root_end - root_start).days)
+        if str(source.get("recurrence_kind", "none")) == "none":
+            return [root_start.isoformat()]
+        range_start = date.fromisoformat(start_date) - timedelta(days=duration) if start_date else root_start
+        if end_date:
+            range_end = date.fromisoformat(end_date)
+        elif source.get("recurrence_until"):
+            range_end = date.fromisoformat(str(source["recurrence_until"]))
+        else:
+            range_end = root_start + timedelta(days=366)
+        current = max(root_start, range_start)
+        occurrences: list[str] = []
+        while current <= range_end:
+            value = current.isoformat()
+            if self._calendar_occurs_on_date(source, value):
+                occurrences.append(value)
+            current += timedelta(days=1)
+        return occurrences
+
+    def _calendar_reminder_occurrences(
+        self,
+        event: sqlite3.Row | dict[str, Any],
+        overrides: dict[str, dict[str, Any]],
+        earliest_time: datetime,
+        current_time: datetime,
+    ) -> list[str]:
+        source = dict(event)
+        if str(source.get("recurrence_kind", "none")) == "none":
+            return [str(source["start_date"])]
+        reminder = int(source.get("reminder_minutes", -1))
+        first = (earliest_time + timedelta(minutes=reminder)).date()
+        last = (current_time + timedelta(minutes=reminder)).date()
+        candidates = set(overrides)
+        while first <= last:
+            candidates.add(first.isoformat())
+            first += timedelta(days=1)
+        return sorted(value for value in candidates if self._calendar_occurs_on_date(source, value))
 
     @staticmethod
     def _task_status(value: Any) -> str:
@@ -6424,9 +8275,13 @@ class Database:
                 SELECT 1 FROM music_tracks WHERE blob_hash = ?
                 UNION ALL
                 SELECT 1 FROM document_inputs WHERE blob_hash = ?
+                UNION ALL
+                SELECT 1 FROM document_inputs WHERE original_blob_hash = ?
+                UNION ALL
+                SELECT 1 FROM document_project_history_blobs WHERE blob_hash = ?
                 LIMIT 1
                 """,
-                (blob_hash, blob_hash, blob_hash),
+                (blob_hash, blob_hash, blob_hash, blob_hash, blob_hash),
             ).fetchone()
         )
 
@@ -6502,7 +8357,7 @@ class Database:
         return result
 
     @staticmethod
-    def _calendar_event_row(row: sqlite3.Row) -> dict[str, Any]:
+    def _calendar_event_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         event = dict(row)
         return {
             "id": event["id"],
@@ -6514,6 +8369,10 @@ class Database:
             "startTime": event["start_time"],
             "endDate": event["end_date"],
             "endTime": event["end_time"],
+            "reminderMinutes": int(event.get("reminder_minutes", -1)),
+            "recurrenceKind": str(event.get("recurrence_kind", "none")),
+            "recurrenceInterval": int(event.get("recurrence_interval", 1) or 1),
+            "recurrenceUntil": str(event.get("recurrence_until", "")),
             "createdAt": event["created_at"],
             "updatedAt": event["updated_at"],
         }
@@ -6558,6 +8417,11 @@ class Database:
         project.pop("user_id", None)
         project["createdAt"] = project.pop("created_at")
         project["updatedAt"] = project.pop("updated_at")
+        project["outputPageSize"] = project.pop("output_page_size", "keep")
+        project["imageDpi"] = project.pop("image_dpi", 144)
+        project["pageNumberPosition"] = project.pop("page_number_position", "none")
+        project["pageNumberStart"] = project.pop("page_number_start", 1)
+        project.pop("history_position", None)
         if "input_count" in project:
             project["inputCount"] = project.pop("input_count")
         if "page_count" in project:
@@ -6571,9 +8435,12 @@ class Database:
         item["sourceId"] = item.pop("source_id") or ""
         item["sourceFileId"] = item.pop("source_file_id") or ""
         item["blobHash"] = item.pop("blob_hash")
-        item["originalName"] = item.pop("original_name")
+        item["originalBlobHash"] = item.pop("original_blob_hash", "")
+        item["originalName"] = Database._repair_legacy_filename(item.pop("original_name"))
         item["mimeType"] = item.pop("mime_type")
         item["sizeBytes"] = item.pop("size_bytes")
+        item["originalMimeType"] = item.pop("original_mime_type", "")
+        item["originalSizeBytes"] = item.pop("original_size_bytes", 0)
         item["createdAt"] = item.pop("created_at")
         if "source_title" in item:
             item["sourceTitle"] = item.pop("source_title") or ""
@@ -6586,15 +8453,32 @@ class Database:
         page["inputId"] = page.pop("input_id")
         page["inputPageIndex"] = page.pop("input_page_index")
         page["orderIndex"] = page.pop("order_index")
+        page["cropTop"] = page.pop("crop_top", 0)
+        page["cropRight"] = page.pop("crop_right", 0)
+        page["cropBottom"] = page.pop("crop_bottom", 0)
+        page["cropLeft"] = page.pop("crop_left", 0)
         page["createdAt"] = page.pop("created_at")
         if "original_name" in page:
             page["blobHash"] = page.pop("blob_hash")
-            page["originalName"] = page.pop("original_name")
+            page["originalBlobHash"] = page.pop("original_blob_hash", "")
+            page["originalName"] = Database._repair_legacy_filename(page.pop("original_name"))
             page["mimeType"] = page.pop("mime_type")
+            page["originalMimeType"] = page.pop("original_mime_type", "")
+            page["originalSizeBytes"] = page.pop("original_size_bytes", 0)
             page["sourceId"] = page.pop("source_id") or ""
             page["sourceFileId"] = page.pop("source_file_id") or ""
             page["sourceTitle"] = page.pop("source_title") or ""
         return page
+
+    @staticmethod
+    def _repair_legacy_filename(value: Any) -> str:
+        """Repair names saved before multipart filenames were decoded as UTF-8."""
+        original = str(value or "")
+        try:
+            repaired = original.encode("latin-1").decode("utf-8")
+        except UnicodeError:
+            return original
+        return repaired if repaired != original else original
 
     @staticmethod
     def _source_annotation_row(row: sqlite3.Row) -> dict[str, Any]:

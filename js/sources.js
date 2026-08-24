@@ -33,7 +33,9 @@ const relationLabels = {
   annotation: 'Anotácia'
 };
 
-const TEXT_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
+const EXTRACTED_TEXT_EXTENSIONS = new Set([
+  'c', 'css', 'csv', 'docx', 'epub', 'h', 'htm', 'html', 'js', 'json', 'log', 'markdown', 'md', 'py', 'sh', 'ts', 'txt', 'xml'
+]);
 
 let sources = [];
 let selectedSource = null;
@@ -45,6 +47,9 @@ let previewRequestId = 0;
 let previewAnnotations = [];
 let previewAnnotationsError = '';
 let previewSelectedText = '';
+let previewSelectedLocator = '';
+let previewReaderData = null;
+let previewReaderSearchTimer = 0;
 let previewFullscreen = false;
 let loadedSourcesQuery = null;
 let loadingSourcesQuery = null;
@@ -55,6 +60,9 @@ let sourceFormBaseline = '';
 let sourceOperationCount = 0;
 let sourceIdleResolvers = [];
 let sourceFileDropDepth = 0;
+let sourceContentSearchTimer = 0;
+let sourceContentRequestId = 0;
+let sourceContentResults = [];
 let sourceCollections = [];
 let activeSourceCollectionId = '';
 let activeSourceCollectionDetail = null;
@@ -376,7 +384,26 @@ function supportsInlinePreview(file) {
     file.mimeType === 'application/pdf' ||
     (file.mimeType.startsWith('image/') && file.mimeType !== 'image/svg+xml') ||
     file.mimeType.startsWith('text/') ||
-    file.mimeType === 'application/json'
+    file.mimeType === 'application/json' ||
+    supportsExtractedTextReader(file)
+  );
+}
+
+function sourceFileExtension(file) {
+  const name = String(file?.originalName || '').trim();
+  const index = name.lastIndexOf('.');
+  return index >= 0 ? name.slice(index + 1).toLowerCase() : '';
+}
+
+function supportsExtractedTextReader(file) {
+  if (!file || file.mimeType === 'application/pdf' || file.mimeType.startsWith('image/')) return false;
+  return (
+    EXTRACTED_TEXT_EXTENSIONS.has(sourceFileExtension(file)) ||
+    file.mimeType.startsWith('text/') ||
+    file.mimeType === 'application/json' ||
+    file.mimeType === 'application/xhtml+xml' ||
+    file.mimeType === 'application/epub+zip' ||
+    file.mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
   );
 }
 
@@ -394,6 +421,11 @@ function previewFallbackMessage(file) {
 function setSourceFilesStatus(message = '', { error = false } = {}) {
   dom.sourceFilesStatus.textContent = message;
   dom.sourceFilesStatus.classList.toggle('is-error', error);
+}
+
+function setSourceContentStatus(message = '', { error = false } = {}) {
+  dom.sourceContentStatus.textContent = message;
+  dom.sourceContentStatus.classList.toggle('is-error', error);
 }
 
 function setSourceFilesBusy(busy) {
@@ -468,10 +500,18 @@ function hideSourcePreviewViews() {
   dom.sourcePreviewImage.hidden = true;
   dom.sourcePreviewImage.removeAttribute('src');
   dom.sourcePreviewImage.alt = '';
-  dom.sourcePreviewText.hidden = true;
-  dom.sourcePreviewText.textContent = '';
+  dom.sourcePreviewReader.hidden = true;
+  dom.sourcePreviewText.replaceChildren();
+  dom.sourcePreviewReaderLocations.replaceChildren();
+  dom.sourcePreviewReaderLocations.hidden = true;
+  dom.sourcePreviewReaderQuery.value = '';
+  dom.sourcePreviewReaderStatus.textContent = '';
   dom.sourcePreviewFallback.hidden = true;
   dom.sourcePreviewFallbackMessage.textContent = '';
+  previewReaderData = null;
+  previewSelectedLocator = '';
+  window.clearTimeout(previewReaderSearchTimer);
+  previewReaderSearchTimer = 0;
 }
 
 function clearSourcePreviewRelations() {
@@ -528,6 +568,8 @@ function captureSourcePreviewSelection() {
   if (!selection?.rangeCount || !selection.toString().trim()) return;
   if (!dom.sourcePreviewText.contains(selection.anchorNode) || !dom.sourcePreviewText.contains(selection.focusNode)) return;
   previewSelectedText = selection.toString().trim().slice(0, 10_000);
+  const anchor = selection.anchorNode?.nodeType === Node.ELEMENT_NODE ? selection.anchorNode : selection.anchorNode?.parentElement;
+  previewSelectedLocator = anchor?.closest('[data-source-locator]')?.dataset.sourceLocator || previewSelectedLocator;
 }
 
 function openSourceAnnotationForm() {
@@ -535,7 +577,7 @@ function openSourceAnnotationForm() {
   renderSourceAnnotationElementOptions();
   dom.sourcePreviewAnnotationForm.hidden = false;
   dom.sourcePreviewAnnotationQuote.value = previewSelectedText;
-  dom.sourcePreviewAnnotationLocator.value = '';
+  dom.sourcePreviewAnnotationLocator.value = previewSelectedLocator;
   dom.sourcePreviewAnnotationNote.value = '';
   dom.sourcePreviewAnnotationQuote.setCustomValidity('');
   setSourcePreviewAnnotationStatus('');
@@ -738,6 +780,140 @@ export function closeSourcePreview() {
   setSourcePreviewOpen(false);
 }
 
+function normaliseReaderSearch(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLocaleLowerCase('sk');
+}
+
+function readerMatchRanges(value, query) {
+  const needle = normaliseReaderSearch(query).trim();
+  if (!needle) return [];
+  const haystack = normaliseReaderSearch(value);
+  const ranges = [];
+  let from = 0;
+  while (from < haystack.length && ranges.length < 240) {
+    const start = haystack.indexOf(needle, from);
+    if (start < 0) break;
+    ranges.push({ start, end: start + needle.length });
+    from = start + Math.max(needle.length, 1);
+  }
+  return ranges;
+}
+
+function appendReaderText(target, value, query) {
+  const ranges = readerMatchRanges(value, query);
+  if (!ranges.length) {
+    target.textContent = value;
+    return 0;
+  }
+  let cursor = 0;
+  ranges.forEach((range) => {
+    if (range.start > cursor) target.append(document.createTextNode(value.slice(cursor, range.start)));
+    const mark = document.createElement('mark');
+    mark.textContent = value.slice(range.start, range.end);
+    target.append(mark);
+    cursor = range.end;
+  });
+  if (cursor < value.length) target.append(document.createTextNode(value.slice(cursor)));
+  return ranges.length;
+}
+
+function readerLocations(content, rawLocations) {
+  const textLength = content.length;
+  const locations = Array.isArray(rawLocations) ? rawLocations : [];
+  const clean = locations
+    .filter((location) => location && typeof location === 'object')
+    .map((location, index) => {
+      const start = Math.min(Math.max(0, Number(location.start) || 0), textLength);
+      const end = Math.min(Math.max(start, Number(location.end) || textLength), textLength);
+      return {
+        id: `source-reader-location-${index}`,
+        locator: String(location.locator || 'Obsah'),
+        start,
+        end
+      };
+    })
+    .filter((location) => location.end > location.start);
+  return clean.length ? clean : [{ id: 'source-reader-location-0', locator: 'Obsah', start: 0, end: textLength }];
+}
+
+function readerResultLabel(count) {
+  if (!count) return 'Nenašli sa žiadne zhody.';
+  if (count === 1) return 'Našla sa 1 zhoda.';
+  if (count >= 2 && count <= 4) return `Našli sa ${count} zhody.`;
+  return `Našlo sa ${count} zhôd.`;
+}
+
+function scrollSourcePreviewToLocator(locator) {
+  if (!locator) return;
+  const target = Array.from(dom.sourcePreviewText.querySelectorAll('[data-source-locator]')).find(
+    (section) => section.dataset.sourceLocator === locator
+  );
+  target?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+
+function renderSourcePreviewReader({ locator = '', query } = {}) {
+  if (!previewReaderData) return;
+  const content = String(previewReaderData.content || '');
+  const locations = readerLocations(content, previewReaderData.locations);
+  const activeLocator = locator || previewSelectedLocator || locations[0]?.locator || '';
+  const searchQuery = query === undefined ? dom.sourcePreviewReaderQuery.value : String(query || '');
+  const hasParts = locations.length > 1;
+
+  dom.sourcePreviewReaderLocations.replaceChildren();
+  locations.forEach((location) => {
+    const option = document.createElement('option');
+    option.value = location.locator;
+    option.textContent = location.locator;
+    dom.sourcePreviewReaderLocations.append(option);
+  });
+  dom.sourcePreviewReaderLocations.hidden = !hasParts;
+  dom.sourcePreviewReaderLocations.value = locations.some((location) => location.locator === activeLocator)
+    ? activeLocator
+    : locations[0]?.locator || '';
+  dom.sourcePreviewReaderQuery.value = searchQuery;
+  dom.sourcePreviewText.replaceChildren();
+
+  let matches = 0;
+  locations.forEach((location) => {
+    const section = document.createElement('article');
+    section.className = 'source-preview-reader-section';
+    section.id = location.id;
+    section.dataset.sourceLocator = location.locator;
+    if (hasParts) {
+      const heading = document.createElement('h3');
+      heading.textContent = location.locator;
+      section.append(heading);
+    }
+    const text = document.createElement('p');
+    text.className = 'source-preview-reader-copy';
+    matches += appendReaderText(text, content.slice(location.start, location.end), searchQuery);
+    section.append(text);
+    dom.sourcePreviewText.append(section);
+  });
+
+  previewSelectedLocator = dom.sourcePreviewReaderLocations.value;
+  dom.sourcePreviewReaderStatus.textContent = searchQuery.trim()
+    ? readerResultLabel(matches)
+    : hasParts
+      ? `${locations.length} častí dokumentu.`
+      : '';
+  dom.sourcePreviewReader.hidden = false;
+  if (locator) requestAnimationFrame(() => scrollSourcePreviewToLocator(dom.sourcePreviewReaderLocations.value));
+}
+
+function refreshSourcePreviewReaderSearch() {
+  if (!previewReaderData) return;
+  renderSourcePreviewReader({ locator: dom.sourcePreviewReaderLocations.value });
+}
+
+function scheduleSourcePreviewReaderSearch() {
+  window.clearTimeout(previewReaderSearchTimer);
+  previewReaderSearchTimer = window.setTimeout(refreshSourcePreviewReaderSearch, 180);
+}
+
 function setEditorSourceMenuOpen(open) {
   const visible = open && !dom.editorSourceLinks.hidden;
   editorSourceMenuOpen = visible;
@@ -753,11 +929,13 @@ export function closeEditorSourceMenu() {
   setEditorSourceMenuOpen(false);
 }
 
-async function openSourceFile(file) {
+async function openSourceFile(file, locator = '', query = '') {
   if (!selectedSource) return;
 
   const requestId = ++previewRequestId;
   const fileUrl = sourceFileUrl(file);
+  const pageNumber = String(locator || '').match(/^Strana\s+(\d+)$/i)?.[1] || '';
+  const previewUrl = pageNumber && file.mimeType === 'application/pdf' ? `${fileUrl}#page=${pageNumber}` : fileUrl;
   previewSourceId = selectedSource.id;
   previewFileId = file.id;
   dom.sourcePreviewSource.textContent = selectedSource.title;
@@ -776,7 +954,7 @@ async function openSourceFile(file) {
   void loadSourcePreviewAnnotations(file, requestId);
 
   if (file.mimeType === 'application/pdf') {
-    dom.sourcePreviewFrame.src = fileUrl;
+    dom.sourcePreviewFrame.src = previewUrl;
     dom.sourcePreviewFrame.hidden = false;
     return;
   }
@@ -788,18 +966,25 @@ async function openSourceFile(file) {
     return;
   }
 
-  if ((file.mimeType.startsWith('text/') || file.mimeType === 'application/json') && file.sizeBytes <= TEXT_PREVIEW_MAX_BYTES) {
+  if (supportsExtractedTextReader(file)) {
+    dom.sourcePreviewReader.hidden = false;
     dom.sourcePreviewText.textContent = 'Načítavam text...';
-    dom.sourcePreviewText.hidden = false;
     try {
-      const response = await fetch(fileUrl, { credentials: 'same-origin' });
-      if (!response.ok) throw new Error('Súbor sa nepodarilo načítať.');
-      const text = await response.text();
+      const response = await apiRequest(
+        `/sources/${encodeURIComponent(selectedSource.id)}/files/${encodeURIComponent(file.id)}/content`
+      );
       if (requestId !== previewRequestId || !isSourcePreviewOpen()) return;
-      dom.sourcePreviewText.textContent = text;
-    } catch {
+      const content = response.content || {};
+      if (content.textIndexStatus !== 'ready' || !String(content.content || '').trim()) {
+        showSourcePreviewFallback(content.textIndexError || 'V tejto prílohe sa nenašiel čitateľný text. Súbor môžeš stiahnuť.');
+        return;
+      }
+      previewReaderData = content;
+      previewSelectedLocator = locator;
+      renderSourcePreviewReader({ locator, query });
+    } catch (error) {
       if (requestId === previewRequestId) {
-        showSourcePreviewFallback('Textový náhľad sa nepodarilo načítať. Súbor môžeš otvoriť v novom okne alebo stiahnuť.');
+        showSourcePreviewFallback(error?.message || 'Textový náhľad sa nepodarilo načítať. Súbor môžeš otvoriť v novom okne alebo stiahnuť.');
       }
     }
     return;
@@ -1256,6 +1441,7 @@ async function selectSource(sourceId, { focusTitle = false } = {}) {
     const result = await apiRequest(`/sources/${encodeURIComponent(sourceId)}`);
     selectedSource = result.source;
     setSourceFilesStatus('');
+    resetSourceContentSearch();
     showSourceDetail();
     renderSourceDetail();
     if (focusTitle) {
@@ -1307,6 +1493,7 @@ function startNewSource() {
   dom.sourceTransferExportButton.hidden = true;
   dom.sourceCitationSection.hidden = true;
   dom.sourceCitationPreview.textContent = '';
+  resetSourceContentSearch();
   dom.sourceDetailEmpty.hidden = true;
   dom.sourceForm.hidden = false;
   hideSourceSections();
@@ -1317,6 +1504,7 @@ function startNewSource() {
 function hideSourceSections() {
   dom.sourceCollectionSection.hidden = true;
   dom.sourceFilesSection.hidden = true;
+  dom.sourceContentSection.hidden = true;
   dom.sourceLibrarySection.hidden = true;
   dom.sourceElementSection.hidden = true;
   dom.sourceAnnotationSection.hidden = true;
@@ -1350,12 +1538,14 @@ function renderSourceDetail() {
   dom.sourceCitationPreview.textContent = bibliographicReference(selectedSource);
   dom.sourceCollectionSection.hidden = false;
   dom.sourceFilesSection.hidden = false;
+  dom.sourceContentSection.hidden = false;
   dom.sourceLibrarySection.hidden = false;
   dom.sourceElementSection.hidden = false;
   dom.sourceAnnotationSection.hidden = false;
   dom.sourceTaskSection.hidden = false;
   dom.sourceCalendarSection.hidden = false;
   renderFiles();
+  renderSourceContentResults();
   renderSourceCollections();
   renderLibraries();
   renderElements();
@@ -1485,6 +1675,150 @@ function renderFiles() {
     row.append(fileIcon, copy, download, remove);
     dom.sourceFilesList.append(row);
   });
+}
+
+function resetSourceContentSearch() {
+  window.clearTimeout(sourceContentSearchTimer);
+  sourceContentSearchTimer = 0;
+  sourceContentRequestId += 1;
+  sourceContentResults = [];
+  dom.sourceContentQuery.value = '';
+  setSourceContentStatus('');
+  if (selectedSource) renderSourceContentResults();
+}
+
+function sourceContentResultMessage(count) {
+  if (count === 1) return 'Našiel sa 1 úryvok.';
+  if (count >= 2 && count <= 4) return `Našli sa ${count} úryvky.`;
+  return `Našlo sa ${count} úryvkov.`;
+}
+
+function renderSourceContentResults() {
+  const query = dom.sourceContentQuery.value.trim();
+  const activeElement = state.activeLibraryElementId ? activeElementTitle() : '';
+  dom.sourceContentCount.textContent = sourceContentResults.length ? String(sourceContentResults.length) : '';
+  dom.sourceContentCount.hidden = !sourceContentResults.length;
+  dom.sourceContentResults.replaceChildren();
+  if (!query) {
+    const empty = document.createElement('p');
+    empty.className = 'source-content-empty';
+    empty.textContent = selectedSource?.files?.length
+      ? 'Vyhľadaj text priamo v priložených súboroch.'
+      : 'Zdroj zatiaľ nemá prílohy s obsahom na prehľadanie.';
+    dom.sourceContentResults.append(empty);
+    return;
+  }
+  if (!sourceContentResults.length) {
+    const empty = document.createElement('p');
+    empty.className = 'source-content-empty';
+    empty.textContent = 'V spracovaných prílohách sa nič nenašlo.';
+    dom.sourceContentResults.append(empty);
+    return;
+  }
+  sourceContentResults.forEach((result) => {
+    const row = document.createElement('div');
+    row.className = 'source-content-result';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'source-content-result-open';
+    const copy = document.createElement('span');
+    copy.className = 'source-content-result-copy';
+    const heading = document.createElement('strong');
+    heading.textContent = result.fileName;
+    const meta = document.createElement('small');
+    meta.textContent = result.locator || 'Obsah';
+    const quote = document.createElement('span');
+    quote.className = 'source-content-result-quote';
+    quote.textContent = result.quote;
+    copy.append(heading, meta, quote);
+    open.append(createAppIcon('search', 'source-content-result-icon'), copy);
+    open.title = `Otvoriť ${result.fileName}${result.locator ? `, ${result.locator}` : ''}`;
+    open.addEventListener('click', () => {
+      const file = selectedSource?.files?.find((candidate) => candidate.id === result.fileId);
+      if (file) void openSourceFile(file, result.locator, dom.sourceContentQuery.value);
+    });
+    row.append(open);
+    if (activeElement) {
+      const attach = document.createElement('button');
+      attach.type = 'button';
+      attach.className = 'panel-icon-button primary source-content-attach';
+      attach.append(createAppIcon('quote'));
+      attach.title = `Pripojiť úryvok k: ${activeElement}`;
+      attach.setAttribute('aria-label', `Pripojiť úryvok k: ${activeElement}`);
+      attach.addEventListener('click', () => void attachSourceContentResult(result));
+      row.append(attach);
+    }
+    dom.sourceContentResults.append(row);
+  });
+}
+
+async function searchSourceContent() {
+  const sourceId = selectedSource?.id;
+  const query = dom.sourceContentQuery.value.trim();
+  if (!sourceId) return;
+  if (!query) {
+    sourceContentResults = [];
+    setSourceContentStatus('');
+    renderSourceContentResults();
+    return;
+  }
+  const requestId = ++sourceContentRequestId;
+  dom.sourceContentSearchButton.disabled = true;
+  setSourceContentStatus('Načítavam obsah príloh...');
+  try {
+    const response = await apiRequest(`/sources/${encodeURIComponent(sourceId)}/content?q=${encodeURIComponent(query)}`);
+    if (requestId !== sourceContentRequestId || selectedSource?.id !== sourceId) return;
+    const content = response.content || {};
+    const indexedFiles = new Map((content.files || []).map((file) => [file.id, file]));
+    selectedSource.files = (selectedSource.files || []).map((file) => ({ ...file, ...(indexedFiles.get(file.id) || {}) }));
+    sourceContentResults = content.results || [];
+    const unavailable = (content.files || []).filter((file) => !['ready', 'pending'].includes(file.textIndexStatus)).length;
+    setSourceContentStatus(
+      `${sourceContentResultMessage(sourceContentResults.length)}${unavailable ? ` Bez textu: ${unavailable}.` : ''}`,
+      { error: false }
+    );
+    renderFiles();
+    renderSourceContentResults();
+  } catch (error) {
+    if (requestId !== sourceContentRequestId || selectedSource?.id !== sourceId) return;
+    sourceContentResults = [];
+    setSourceContentStatus(error?.message || 'Obsah príloh sa nepodarilo prehľadať.', { error: true });
+    renderSourceContentResults();
+  } finally {
+    if (requestId === sourceContentRequestId) dom.sourceContentSearchButton.disabled = false;
+  }
+}
+
+function scheduleSourceContentSearch() {
+  window.clearTimeout(sourceContentSearchTimer);
+  sourceContentSearchTimer = window.setTimeout(() => void searchSourceContent(), 280);
+}
+
+async function attachSourceContentResult(result) {
+  if (!selectedSource || !state.activeLibraryElementId) return;
+  const sourceId = selectedSource.id;
+  try {
+    await runSourceOperation(async () => {
+      await flushWorkspaceSync();
+      const response = await apiRequest(`/sources/${encodeURIComponent(sourceId)}/files/${encodeURIComponent(result.fileId)}/annotations`, {
+        method: 'POST',
+        body: {
+          id: crypto.randomUUID(),
+          elementId: state.activeLibraryElementId,
+          quote: result.quote,
+          locator: result.locator
+        }
+      });
+      if (selectedSource?.id !== sourceId) return;
+      selectedSource.annotations = [response.annotation, ...(selectedSource.annotations || [])];
+      renderSourceAnnotations();
+      await refreshElementSourceLinks();
+      await refreshSourceCatalog();
+      setSourceContentStatus(`Úryvok je pripojený k: ${activeElementTitle()}.`);
+    });
+  } catch (error) {
+    setSourceContentStatus(error?.message || 'Úryvok sa nepodarilo pripojiť.', { error: true });
+  }
 }
 
 function renderSourceCollections() {
@@ -1933,6 +2267,13 @@ export function initializeSources() {
     dom.sourcePreviewAnnotationQuote.setCustomValidity('');
     setSourcePreviewAnnotationStatus('');
   });
+  dom.sourcePreviewReaderLocations.addEventListener('change', () => {
+    previewSelectedLocator = dom.sourcePreviewReaderLocations.value;
+    scrollSourcePreviewToLocator(previewSelectedLocator);
+  });
+  dom.sourcePreviewReaderQuery.addEventListener('input', scheduleSourcePreviewReaderSearch);
+  dom.sourcePreviewReaderQuery.addEventListener('search', refreshSourcePreviewReaderSearch);
+  dom.sourcePreviewReaderSearchButton.addEventListener('click', refreshSourcePreviewReaderSearch);
   dom.sourcePreviewText.addEventListener('mouseup', captureSourcePreviewSelection);
   dom.sourcePreviewText.addEventListener('keyup', captureSourcePreviewSelection);
   dom.editorSourceToggle.addEventListener('click', () => setEditorSourceMenuOpen(!editorSourceMenuOpen));
@@ -2051,6 +2392,17 @@ export function initializeSources() {
     const files = [...dom.sourceFileInput.files];
     dom.sourceFileInput.value = '';
     void addSourceFiles(files);
+  });
+  dom.sourceContentQuery.addEventListener('input', scheduleSourceContentSearch);
+  dom.sourceContentQuery.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    window.clearTimeout(sourceContentSearchTimer);
+    void searchSourceContent();
+  });
+  dom.sourceContentSearchButton.addEventListener('click', () => {
+    window.clearTimeout(sourceContentSearchTimer);
+    void searchSourceContent();
   });
   dom.sourceCollectionLinkButton.addEventListener('click', async () => {
     if (!selectedSource || !dom.sourceCollectionSelect.value) return;

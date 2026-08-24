@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sk" data-app-version="0.54.0">
+<html lang="sk" data-app-version="0.55.25">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,8 +8,8 @@
       const savedTheme = localStorage.getItem('knowledge-theme') || 'focus';
       document.documentElement.dataset.theme = savedTheme === 'contrast' ? 'contrast-light' : savedTheme;
     </script>
-    <link rel="stylesheet" href="style.css?v=0.54.0" />
-    <link rel="stylesheet" href="assets/app.css?v=0.54.0" />
+    <link rel="stylesheet" href="style.css?v=0.55.25" />
+    <link rel="stylesheet" href="assets/app.css?v=0.55.25" />
   </head>
   <body>
     <main id="login-screen" class="login-screen" aria-labelledby="login-title">
@@ -38,7 +38,7 @@
         <div class="topbar-primary">
           <button id="libraries-button" class="nav-button" type="button" aria-controls="libraries-panel">Knižnice</button>
           <button id="sources-button" class="nav-button" type="button" aria-controls="sources-panel" aria-expanded="false">Zdroje</button>
-          <button id="documents-button" class="nav-button" type="button" aria-controls="documents-panel" aria-expanded="false">Dokumenty</button>
+          <button id="documents-button" class="nav-button" type="button" aria-controls="documents-panel" aria-expanded="false">Dielňa PDF</button>
           <button id="tutorial-button" class="nav-button" type="button" aria-controls="tutorial-panel" aria-expanded="false">Učebnica</button>
           <button id="tasks-button" class="nav-button" type="button" aria-controls="tasks-panel" aria-expanded="false">Úlohy</button>
           <button id="calendar-button" class="nav-button" type="button" aria-controls="calendar-panel" aria-expanded="false">Kalendár</button>
@@ -409,6 +409,18 @@
                 <p id="source-files-status" class="source-files-status" aria-live="polite"></p>
                 <div id="source-files-list" class="source-files-list"></div>
               </section>
+              <section id="source-content-section" class="source-detail-section source-content-section" hidden>
+                <header>
+                  <h3>Obsah príloh</h3>
+                  <span id="source-content-count" class="source-section-count" hidden></span>
+                </header>
+                <div class="source-content-search-controls">
+                  <input id="source-content-query" type="search" maxlength="400" placeholder="Hľadať v obsahu PDF, EPUB, DOCX a textov" aria-label="Hľadať v obsahu príloh" />
+                  <button id="source-content-search-button" class="panel-icon-button" type="button" aria-label="Hľadať v obsahu príloh" title="Hľadať v obsahu príloh"><span data-app-icon="search"></span></button>
+                </div>
+                <p id="source-content-status" class="source-content-status" aria-live="polite"></p>
+                <div id="source-content-results" class="source-content-results"></div>
+              </section>
               <section id="source-library-section" class="source-detail-section" hidden>
                 <header><h3>V knižniciach</h3></header>
                 <div class="source-link-controls">
@@ -480,7 +492,17 @@
           <div class="source-preview-content">
             <iframe id="source-preview-frame" class="source-preview-frame" title="Náhľad PDF" hidden></iframe>
             <img id="source-preview-image" class="source-preview-image" alt="" hidden />
-            <pre id="source-preview-text" class="source-preview-text" hidden></pre>
+            <section id="source-preview-reader" class="source-preview-reader" aria-label="Čítanie textovej prílohy" hidden>
+              <header class="source-preview-reader-tools">
+                <select id="source-preview-reader-locations" aria-label="Prejsť na časť dokumentu" hidden></select>
+                <div class="source-preview-reader-search">
+                  <input id="source-preview-reader-query" type="search" maxlength="400" placeholder="Hľadať v otvorenej prílohe" aria-label="Hľadať v otvorenej prílohe" />
+                  <button id="source-preview-reader-search-button" class="panel-icon-button" type="button" aria-label="Hľadať v otvorenej prílohe" title="Hľadať v otvorenej prílohe"><span data-app-icon="search"></span></button>
+                </div>
+                <output id="source-preview-reader-status" class="source-preview-reader-status" aria-live="polite"></output>
+              </header>
+              <div id="source-preview-text" class="source-preview-text" tabindex="0"></div>
+            </section>
             <section id="source-preview-fallback" class="source-preview-fallback" hidden>
               <p id="source-preview-fallback-message"></p>
             </section>
@@ -532,46 +554,112 @@
         </div>
       </aside>
 
-      <aside id="documents-panel" class="documents-panel" aria-label="Dielňa dokumentov" aria-hidden="true">
+      <aside id="documents-panel" class="documents-panel" aria-label="Dielňa PDF" aria-hidden="true">
         <div class="documents-panel-inner">
-          <aside class="documents-sidebar" aria-label="Projekty dielne dokumentov">
+          <aside class="documents-sidebar" aria-label="Projekty Dielne PDF">
             <header class="documents-sidebar-head">
               <div>
-                <h2>Dielňa dokumentov</h2>
+                <h2>Dielňa PDF</h2>
                 <p>Poskladaj nový PDF zo strán príloh.</p>
               </div>
-              <button id="document-project-create" class="panel-icon-button" type="button" aria-label="Vytvoriť projekt dokumentu" title="Vytvoriť projekt"><span data-app-icon="plus"></span></button>
+              <button id="document-project-create" class="panel-icon-button" type="button" aria-label="Vytvoriť projekt PDF" title="Vytvoriť projekt PDF"><span data-app-icon="plus"></span></button>
             </header>
             <div id="document-projects-list" class="document-projects-list" aria-live="polite"></div>
           </aside>
 
-          <section class="documents-workspace" aria-live="polite">
+          <section id="documents-workspace" class="documents-workspace" aria-live="polite">
             <header class="documents-workspace-head">
               <div class="documents-title-group">
                 <span data-app-icon="article" aria-hidden="true"></span>
-                <input id="document-project-title" type="text" maxlength="240" aria-label="Názov projektu dokumentu" placeholder="Nový dokument" disabled />
+                <input id="document-project-title" type="text" maxlength="240" aria-label="Názov projektu PDF" placeholder="Nový projekt PDF" disabled />
               </div>
               <div class="documents-workspace-actions">
-                <button id="document-project-delete" class="panel-icon-button danger" type="button" aria-label="Zmazať projekt dokumentu" title="Zmazať projekt" disabled><span data-app-icon="trash"></span></button>
-                <button id="document-build-button" class="citation-insert-button" type="button" disabled><span data-app-icon="save" aria-hidden="true"></span><span>Vytvoriť zdroj PDF</span></button>
+                <button id="document-project-undo" class="panel-icon-button" type="button" aria-label="Krok späť" title="Krok späť" disabled><span data-app-icon="undo"></span></button>
+                <button id="document-project-redo" class="panel-icon-button" type="button" aria-label="Krok dopredu" title="Krok dopredu" disabled><span data-app-icon="redo"></span></button>
+                <button id="document-project-import" class="panel-icon-button" type="button" aria-label="Importovať projekt Dielne PDF" title="Importovať projekt Dielne PDF"><span data-app-icon="upload"></span></button>
+                <input id="document-project-import-input" type="file" accept="application/zip,.zip" hidden />
+                <button id="document-project-export" class="panel-icon-button" type="button" aria-label="Exportovať rozpracovaný projekt Dielne PDF" title="Exportovať rozpracovaný projekt Dielne PDF" disabled><span data-app-icon="download"></span></button>
+                <button id="document-preview-button" class="panel-icon-button" type="button" aria-controls="document-preview-dock" aria-expanded="false" aria-label="Otvoriť náhľad výsledného PDF" title="Náhľad výsledného PDF" disabled><span data-app-icon="eye"></span></button>
+                <button id="document-project-delete" class="panel-icon-button danger" type="button" aria-label="Zmazať projekt PDF" title="Zmazať projekt PDF" disabled><span data-app-icon="trash"></span></button>
+                <button id="document-build-button" class="panel-icon-button primary" type="button" aria-label="Vytvoriť zdroj PDF" title="Vytvoriť zdroj PDF" disabled><span data-app-icon="save"></span></button>
               </div>
             </header>
 
-            <section class="documents-input-bar" aria-label="Pridanie vstupných strán">
-              <div class="documents-upload-controls">
-                <button id="document-upload-button" class="panel-icon-button" type="button" aria-label="Pridať PDF alebo obrázky" title="Pridať PDF alebo obrázky" disabled><span data-app-icon="upload"></span></button>
-                <input id="document-upload-input" type="file" accept="application/pdf,image/jpeg,image/png,image/webp,image/tiff,image/gif,.pdf,.jpg,.jpeg,.png,.webp,.tif,.tiff,.gif" multiple hidden />
-                <p>Pridať PDF alebo obrázky z počítača</p>
+            <section class="document-output-controls" aria-label="Nastavenie výstupného PDF">
+              <header>
+                <h3>Výsledné PDF</h3>
+                <button class="panel-icon-button document-output-help" type="button" aria-label="Informácia o výslednom PDF" title="Tieto voľby sa uplatnia iba pri vytvorení nového PDF. Pôvodné súbory zostávajú bez zmeny."><span data-app-icon="info"></span></button>
+              </header>
+              <div class="document-output-options">
+                <label>
+                  <span>Predvoľba</span>
+                  <select id="document-output-preset" disabled>
+                    <option value="custom">Vlastné</option>
+                    <option value="original">Pôvodné strany</option>
+                    <option value="a4-reading">A4 na čítanie</option>
+                    <option value="a4-print">A4 na tlač</option>
+                    <option value="a4-landscape">A4 na šírku</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Formát strán</span>
+                  <select id="document-output-page-size" disabled>
+                    <option value="keep">Zachovať pôvodný</option>
+                    <option value="a4-portrait">A4 na výšku</option>
+                    <option value="a4-landscape">A4 na šírku</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Obrázky</span>
+                  <select id="document-image-dpi" disabled>
+                    <option value="144">144 DPI</option>
+                    <option value="200">200 DPI</option>
+                    <option value="300">300 DPI</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Čísla strán</span>
+                  <select id="document-page-number-position" disabled>
+                    <option value="none">Vypnuté</option>
+                    <option value="bottom-left">Dole vľavo</option>
+                    <option value="bottom-center">Dole na stred</option>
+                    <option value="bottom-right">Dole vpravo</option>
+                  </select>
+                </label>
+                <label class="document-page-number-start">
+                  <span>Začať od</span>
+                  <input id="document-page-number-start" type="number" min="1" max="1000000" step="1" value="1" inputmode="numeric" disabled />
+                </label>
               </div>
-              <div class="documents-source-controls">
-                <select id="document-source-select" aria-label="Zdroj s prílohou" disabled>
-                  <option value="">Vyber zdroj s prílohou</option>
-                </select>
-                <select id="document-source-file-select" aria-label="Príloha zdroja" disabled>
-                  <option value="">Vyber podporovanú prílohu</option>
-                </select>
-                <button id="document-source-add" class="panel-icon-button" type="button" aria-label="Pridať prílohu vybraného zdroja" title="Pridať prílohu zo zdroja" disabled><span data-app-icon="paperclip"></span></button>
+            </section>
+
+            <section id="document-inputs-section" class="document-inputs-section" aria-label="Vstupy projektu">
+              <header class="document-inputs-head">
+                <div class="document-inputs-title">
+                  <h3>Vstupy projektu</h3>
+                  <p id="document-inputs-summary">Vyber alebo vytvor projekt PDF.</p>
+                </div>
+                <div class="document-inputs-actions">
+                  <div class="documents-upload-controls">
+                    <button id="document-upload-button" class="panel-icon-button" type="button" aria-label="Pridať dokument, PDF alebo obrázky z počítača" title="Pridať dokument, PDF alebo obrázky z počítača" disabled><span data-app-icon="upload"></span></button>
+                    <input id="document-upload-input" type="file" accept="application/pdf,image/jpeg,image/png,image/webp,image/tiff,image/gif,.pdf,.jpg,.jpeg,.png,.webp,.tif,.tiff,.gif,.doc,.docx,.odt,.rtf,.txt,.xls,.xlsx,.ods,.csv,.ppt,.pptx,.odp" multiple hidden />
+                  </div>
+                  <button id="document-source-toggle" class="panel-icon-button" type="button" aria-controls="document-inputs-source-picker" aria-expanded="false" aria-label="Pridať prílohu existujúceho zdroja" title="Pridať prílohu existujúceho zdroja" disabled><span data-app-icon="paperclip"></span></button>
+                  <button id="document-inputs-toggle" class="panel-icon-button document-inputs-toggle" type="button" aria-controls="document-inputs-list" aria-expanded="true" aria-label="Zbaliť vstupy projektu" title="Zbaliť vstupy projektu"><span data-app-icon="chevron-down"></span></button>
+                </div>
+              </header>
+              <div id="document-inputs-source-picker" class="document-inputs-source-picker">
+                <div class="documents-source-controls">
+                  <select id="document-source-select" aria-label="Zdroj s prílohou" disabled>
+                    <option value="">Vyber zdroj s prílohou</option>
+                  </select>
+                  <select id="document-source-file-select" aria-label="Príloha zdroja" disabled>
+                    <option value="">Vyber podporovanú prílohu</option>
+                  </select>
+                  <button id="document-source-add" class="panel-icon-button" type="button" aria-label="Pridať prílohu vybraného zdroja" title="Pridať prílohu zo zdroja" disabled><span data-app-icon="paperclip"></span></button>
+                </div>
               </div>
+              <div id="document-inputs-list" class="document-inputs-list" aria-live="polite"></div>
             </section>
 
             <p id="document-workshop-status" class="documents-status" aria-live="polite"></p>
@@ -579,15 +667,143 @@
               <header>
                 <div>
                   <h3>Strany</h3>
-                  <p id="document-pages-summary">Vyber alebo vytvor projekt dokumentu.</p>
+                  <p id="document-pages-summary">Vyber alebo vytvor projekt PDF.</p>
                 </div>
                 <p>Potiahni stranu na nové miesto.</p>
               </header>
+              <div id="document-page-selection-toolbar" class="document-page-selection-toolbar" role="toolbar" aria-label="Úpravy vybraných strán" hidden>
+                <p id="document-page-selection-summary">Nie sú vybrané žiadne strany.</p>
+                <div class="document-page-selection-actions">
+                  <button id="document-page-select-all" class="panel-icon-button" type="button" aria-label="Vybrať všetky strany" title="Vybrať všetky strany"><span data-app-icon="list-check"></span></button>
+                  <button id="document-page-clear-selection" class="panel-icon-button" type="button" aria-label="Zrušiť výber strán" title="Zrušiť výber strán"><span data-app-icon="eraser"></span></button>
+                  <span class="document-page-selection-separator" aria-hidden="true"></span>
+                  <button id="document-page-rotate-left" class="panel-icon-button" type="button" aria-label="Otočiť vybrané strany doľava" title="Otočiť vybrané strany doľava"><span data-app-icon="rotate-ccw"></span></button>
+                  <button id="document-page-rotate-right" class="panel-icon-button is-flipped" type="button" aria-label="Otočiť vybrané strany doprava" title="Otočiť vybrané strany doprava"><span data-app-icon="rotate-ccw"></span></button>
+                  <button id="document-page-crop-selection" class="panel-icon-button" type="button" aria-label="Orezať vybrané strany" title="Orezať vybrané strany"><span data-app-icon="crop"></span></button>
+                  <button id="document-page-duplicate-selection" class="panel-icon-button" type="button" aria-label="Kopírovať vybrané strany" title="Kopírovať vybrané strany"><span data-app-icon="duplicate"></span></button>
+                  <button id="document-page-build-selection" class="panel-icon-button accent" type="button" aria-label="Vytvoriť zdroj z vybraných strán" title="Vytvoriť zdroj z vybraných strán"><span data-app-icon="save"></span></button>
+                  <button id="document-page-delete-selection" class="panel-icon-button danger" type="button" aria-label="Odstrániť vybrané strany" title="Odstrániť vybrané strany"><span data-app-icon="trash"></span></button>
+                </div>
+              </div>
               <div id="document-pages-grid" class="document-pages-grid"></div>
             </section>
           </section>
         </div>
+        <aside id="document-preview-dock" class="document-preview-dock" aria-label="Náhľad výsledného PDF" aria-hidden="true">
+          <div id="document-preview-resize-handle" class="document-preview-resize-handle" role="separator" aria-label="Zmeniť šírku náhľadu výsledného PDF" aria-orientation="vertical" aria-hidden="true" tabindex="-1"></div>
+          <div class="document-preview-inner">
+            <header class="document-preview-head">
+              <div>
+                <p class="document-preview-kicker">Náhľad výsledku</p>
+                <h2 id="document-preview-title">Výsledné PDF</h2>
+                <p id="document-preview-meta" class="document-preview-meta"></p>
+              </div>
+              <div class="document-preview-actions">
+                <a id="document-preview-external" class="panel-icon-button" target="_blank" rel="noopener" aria-label="Otvoriť náhľad v novom okne" title="Otvoriť v novom okne"><span data-app-icon="external-link"></span></a>
+                <button id="document-preview-close" class="panel-icon-button" type="button" aria-label="Zavrieť náhľad" title="Zavrieť náhľad"><span data-app-icon="close"></span></button>
+              </div>
+            </header>
+            <iframe id="document-preview-frame" class="document-preview-frame" title="Náhľad výsledného PDF"></iframe>
+          </div>
+        </aside>
       </aside>
+
+      <dialog id="document-crop-dialog" class="document-crop-dialog" aria-labelledby="document-crop-title">
+        <form id="document-crop-form" class="document-crop-form" method="dialog">
+          <header>
+            <div>
+              <h2 id="document-crop-title">Orezať okraje</h2>
+              <p id="document-crop-subtitle">Orezanie sa uplatní iba vo výslednom PDF.</p>
+            </div>
+            <button id="document-crop-close" class="panel-icon-button" type="button" aria-label="Zavrieť orezanie" title="Zavrieť"><span data-app-icon="close"></span></button>
+          </header>
+          <div class="document-crop-editor">
+            <div id="document-crop-preview-canvas" class="document-crop-preview-canvas" aria-label="Grafický výber viditeľnej časti strany">
+              <img id="document-crop-preview" alt="Náhľad strany na orezanie" />
+              <div id="document-crop-selection" class="document-crop-selection" aria-hidden="true">
+                <span class="document-crop-handle top" data-crop-handle="top"></span>
+                <span class="document-crop-handle right" data-crop-handle="right"></span>
+                <span class="document-crop-handle bottom" data-crop-handle="bottom"></span>
+                <span class="document-crop-handle left" data-crop-handle="left"></span>
+                <span class="document-crop-handle top-left" data-crop-handle="top-left"></span>
+                <span class="document-crop-handle top-right" data-crop-handle="top-right"></span>
+                <span class="document-crop-handle bottom-left" data-crop-handle="bottom-left"></span>
+                <span class="document-crop-handle bottom-right" data-crop-handle="bottom-right"></span>
+              </div>
+            </div>
+            <div class="document-crop-grid">
+              <label><span>Hore</span><input id="document-crop-top" type="number" min="0" max="45" step="1" inputmode="numeric" /><small>%</small></label>
+              <label><span>Vpravo</span><input id="document-crop-right" type="number" min="0" max="45" step="1" inputmode="numeric" /><small>%</small></label>
+              <label><span>Dole</span><input id="document-crop-bottom" type="number" min="0" max="45" step="1" inputmode="numeric" /><small>%</small></label>
+              <label><span>Vľavo</span><input id="document-crop-left" type="number" min="0" max="45" step="1" inputmode="numeric" /><small>%</small></label>
+            </div>
+          </div>
+          <p class="document-crop-note">Percentá odstránia príslušný okraj stránky. Náhľad a vytvorený PDF zdroj použijú rovnaké nastavenie.</p>
+          <footer>
+            <button id="document-crop-reset" class="panel-icon-button" type="button" aria-label="Obnoviť orezanie" title="Obnoviť orezanie"><span data-app-icon="eraser"></span></button>
+            <button class="panel-icon-button accent" type="submit" aria-label="Uložiť orezanie" title="Uložiť orezanie"><span data-app-icon="save"></span></button>
+          </footer>
+        </form>
+      </dialog>
+
+      <dialog id="document-page-picker-dialog" class="document-page-picker-dialog" aria-labelledby="document-page-picker-title">
+        <form id="document-page-picker-form" class="document-page-picker-form" method="dialog">
+          <header>
+            <div>
+              <h2 id="document-page-picker-title">Vybrať strany</h2>
+              <p id="document-page-picker-subtitle">Vyber strany, ktoré sa majú pridať do projektu.</p>
+            </div>
+            <button id="document-page-picker-close" class="panel-icon-button" type="button" aria-label="Zrušiť výber strán" title="Zrušiť"><span data-app-icon="close"></span></button>
+          </header>
+          <label class="document-page-range-field" for="document-page-picker-range">
+            <span>Rozsah strán</span>
+            <input id="document-page-picker-range" type="text" autocomplete="off" spellcheck="false" placeholder="napr. 1-3, 7, 10-12" />
+            <small>Čísla strán oddeľ čiarkou. Rozsah môžeš zapísať napr. ako 4-8.</small>
+          </label>
+          <div class="document-page-picker-quick" role="group" aria-label="Rýchly výber strán">
+            <button type="button" data-document-page-selection="all">Všetky</button>
+            <button type="button" data-document-page-selection="even">Párne</button>
+            <button type="button" data-document-page-selection="odd">Nepárne</button>
+            <button type="button" data-document-page-selection="invert">Obrátiť výber</button>
+          </div>
+          <p id="document-page-picker-status" class="document-page-picker-status" aria-live="polite"></p>
+          <footer>
+            <button id="document-page-picker-cancel" class="panel-icon-button" type="button" aria-label="Zrušiť výber strán" title="Zrušiť"><span data-app-icon="close"></span></button>
+            <button id="document-page-picker-confirm" class="accent-button" type="submit">Pridať vybrané strany</button>
+          </footer>
+        </form>
+      </dialog>
+
+      <dialog id="document-build-dialog" class="document-build-dialog" aria-labelledby="document-build-title">
+        <form id="document-build-form" class="document-build-form" method="dialog">
+          <header>
+            <div>
+              <h2 id="document-build-title">Vytvoriť zdroj PDF</h2>
+              <p id="document-build-subtitle">Výsledok sa uloží medzi zdroje ako príloha.</p>
+            </div>
+            <button id="document-build-close" class="panel-icon-button" type="button" aria-label="Zavrieť vytvorenie zdroja" title="Zavrieť"><span data-app-icon="close"></span></button>
+          </header>
+          <label>
+            <span>Názov</span>
+            <input id="document-build-source-title" type="text" maxlength="240" required />
+          </label>
+          <label>
+            <span>Poznámka</span>
+            <textarea id="document-build-source-description" rows="3" maxlength="10000" placeholder="Stručný kontext výsledného zdroja"></textarea>
+          </label>
+          <label>
+            <span>Štítky</span>
+            <input id="document-build-source-tags" class="tag-input" type="text" list="tag-suggestions" maxlength="480" placeholder="napr. manuál, spracované" />
+          </label>
+          <label class="document-build-open-source">
+            <input id="document-build-open-source" type="checkbox" />
+            <span>Po vytvorení otvoriť zdroj</span>
+          </label>
+          <footer>
+            <button id="document-build-submit" class="panel-icon-button accent" type="submit" aria-label="Vytvoriť zdroj PDF" title="Vytvoriť zdroj PDF"><span data-app-icon="save"></span></button>
+          </footer>
+        </form>
+      </dialog>
 
       <aside id="tasks-panel" class="tasks-panel" aria-label="Úlohy" aria-hidden="true">
         <div class="tasks-panel-inner">
@@ -694,7 +910,11 @@
           <aside class="calendar-sidebar" aria-label="Ovládanie kalendára">
             <header class="calendar-sidebar-head">
               <h2>Kalendár</h2>
-              <button id="calendar-event-create" class="panel-icon-button" type="button" aria-label="Vytvoriť udalosť" title="Vytvoriť udalosť"><span data-app-icon="plus"></span></button>
+              <div class="calendar-sidebar-actions">
+                <button id="calendar-transfer-import-button" class="panel-icon-button" type="button" aria-label="Importovať udalosti" title="Importovať udalosti"><span data-app-icon="upload"></span></button>
+                <button id="calendar-transfer-export-button" class="panel-icon-button" type="button" aria-label="Exportovať udalosti" title="Exportovať udalosti"><span data-app-icon="download"></span></button>
+                <button id="calendar-event-create" class="panel-icon-button" type="button" aria-label="Vytvoriť udalosť" title="Vytvoriť udalosť"><span data-app-icon="plus"></span></button>
+              </div>
             </header>
             <div class="calendar-view-switch" role="group" aria-label="Pohľad kalendára">
               <button class="calendar-view-button is-active" type="button" data-calendar-view="month" aria-pressed="true">Mesiac</button>
@@ -702,6 +922,10 @@
               <button class="calendar-view-button" type="button" data-calendar-view="agenda" aria-pressed="false">Agenda</button>
             </div>
             <button id="calendar-today-button" class="calendar-today-button" type="button">Dnes</button>
+            <section class="calendar-reminders" aria-labelledby="calendar-reminders-title">
+              <header><h3 id="calendar-reminders-title">Najbližšie pripomienky</h3></header>
+              <div id="calendar-reminders-list" class="calendar-reminders-list"></div>
+            </section>
             <p class="calendar-sidebar-note">Úlohy s termínom sú zobrazené automaticky.</p>
           </aside>
           <section class="calendar-workspace" aria-live="polite">
@@ -758,6 +982,64 @@
                 Do
                 <input id="calendar-event-end-time" type="time" />
               </label>
+            </div>
+            <div class="calendar-event-recurrence-fields">
+              <label>
+                Opakovanie
+                <select id="calendar-event-recurrence">
+                  <option value="none">Neopakuje sa</option>
+                  <option value="daily">Každý deň</option>
+                  <option value="weekdays">Pracovné dni</option>
+                  <option value="weekly">Každý týždeň</option>
+                  <option value="monthly">Každý mesiac</option>
+                  <option value="custom">Vlastný interval...</option>
+                </select>
+              </label>
+              <label id="calendar-event-recurrence-custom-field" hidden>
+                Každých
+                <span class="calendar-event-recurrence-custom-controls">
+                  <input id="calendar-event-recurrence-interval" type="number" min="1" max="365" step="1" inputmode="numeric" value="1" />
+                  <select id="calendar-event-recurrence-unit" aria-label="Jednotka intervalu opakovania">
+                    <option value="daily">dní</option>
+                    <option value="weekly">týždňov</option>
+                    <option value="monthly">mesiacov</option>
+                  </select>
+                </span>
+              </label>
+              <label id="calendar-event-recurrence-until-field" hidden>
+                Opakovať do
+                <input id="calendar-event-recurrence-until" type="date" />
+              </label>
+            </div>
+            <label id="calendar-event-scope-field" class="calendar-event-scope-field" hidden>
+              Upraviť
+              <select id="calendar-event-scope">
+                <option value="occurrence">Len tento výskyt</option>
+                <option value="series">Celú sériu</option>
+              </select>
+            </label>
+            <p id="calendar-event-scope-note" class="calendar-event-scope-note" hidden></p>
+            <div class="calendar-event-reminder-fields">
+              <label>
+                Pripomienka
+                <select id="calendar-event-reminder">
+                  <option value="-1">Bez pripomienky</option>
+                  <option value="0">V čase začiatku</option>
+                  <option value="5">5 minút predtým</option>
+                  <option value="15">15 minút predtým</option>
+                  <option value="30">30 minút predtým</option>
+                  <option value="60">1 hodinu predtým</option>
+                  <option value="120">2 hodiny predtým</option>
+                  <option value="1440">1 deň predtým</option>
+                  <option value="10080">1 týždeň predtým</option>
+                  <option value="custom">Vlastný predstih...</option>
+                </select>
+              </label>
+              <label id="calendar-event-reminder-custom-field" hidden>
+                Vlastný predstih v minútach
+                <input id="calendar-event-reminder-custom" type="number" min="0" max="525600" step="1" inputmode="numeric" value="15" />
+              </label>
+              <p id="calendar-event-reminder-note" class="calendar-event-reminder-note"></p>
             </div>
             <label>
               Poznámka
@@ -1127,6 +1409,27 @@
                   </label>
                 </div>
               </section>
+              <section class="settings-file-limit" aria-labelledby="calendar-notifications-title">
+                <div>
+                  <h4 id="calendar-notifications-title">Pripomienky kalendára</h4>
+                  <p class="settings-inline-status">Daemon kontroluje pripomienky aj bez otvoreného Poznámkovníka.</p>
+                </div>
+                <label class="backup-toggle-field">
+                  <span>Desktopové upozornenia</span>
+                  <input id="calendar-notifications-enabled" type="checkbox" role="switch" checked />
+                </label>
+              </section>
+              <section class="settings-integrity" aria-labelledby="data-integrity-title">
+                <div class="settings-integrity-head">
+                  <div>
+                    <h4 id="data-integrity-title">Kontrola integrity dát</h4>
+                    <p id="data-integrity-status" class="settings-inline-status" aria-live="polite">Na požiadanie overí prílohy, Dielňu PDF, hudbu a dokončené nahrávky rádia.</p>
+                  </div>
+                  <button id="data-integrity-run" class="settings-background-button" type="button"><span data-app-icon="shield"></span>Skontrolovať</button>
+                </div>
+                <p id="data-integrity-summary" class="data-integrity-summary" hidden></p>
+                <div id="data-integrity-issues" class="data-integrity-issues" aria-live="polite" hidden></div>
+              </section>
               <section class="settings-backups" aria-labelledby="backup-title">
                 <div>
                   <h4 id="backup-title">Zálohovanie</h4>
@@ -1172,7 +1475,7 @@
               <div class="settings-account-actions">
                 <button id="logout-button" class="settings-logout-button" type="button">Odhlásiť</button>
               </div>
-              <p id="app-version" class="app-version">Verzia 0.35.5</p>
+              <p id="app-version" class="app-version">Verzia 0.55.25</p>
             </section>
 
             <section id="settings-panel-security" class="settings-section settings-security" role="tabpanel" aria-labelledby="settings-tab-security" data-settings-panel="security" hidden>
@@ -1580,6 +1883,56 @@
 
     <input id="source-transfer-input" type="file" accept=".md,.markdown,.mdown,.mkdn,.zip,text/markdown,application/zip" hidden />
     <input id="source-collection-transfer-input" type="file" accept=".zip,application/zip" hidden />
+    <input id="calendar-transfer-input" type="file" accept=".ics,.ical,.zip,text/calendar,application/zip" hidden />
+    <dialog id="calendar-export-dialog" class="library-export-dialog calendar-export-dialog" aria-labelledby="calendar-export-title">
+      <section class="library-export-panel calendar-export-panel">
+        <header>
+          <div>
+            <h2 id="calendar-export-title">Exportovať kalendár</h2>
+            <p id="calendar-export-description">Vyber obdobie a formát exportu.</p>
+          </div>
+          <button id="calendar-export-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+        </header>
+        <label class="calendar-transfer-all-toggle">
+          <input id="calendar-export-all" type="checkbox" />
+          <span>Exportovať všetky udalosti</span>
+        </label>
+        <div id="calendar-export-range" class="calendar-transfer-date-range">
+          <label>Od<input id="calendar-export-start" type="date" /></label>
+          <label>Do<input id="calendar-export-end" type="date" /></label>
+        </div>
+        <div class="library-export-options">
+          <button id="calendar-ics-export" class="library-export-option" type="button">
+            <span data-app-icon="calendar"></span>
+            <span><strong>Kalendár ICS</strong><small>Bežný formát pre kalendáre a ďalšie programy.</small></span>
+          </button>
+          <button id="calendar-package-export" class="library-export-option" type="button">
+            <span data-app-icon="file"></span>
+            <span><strong>Prenosový balík Poznámkovníka</strong><small>Zachová udalosti, štítky a väzby na existujúce prvky.</small></span>
+          </button>
+        </div>
+        <p id="calendar-export-status" class="settings-inline-status" aria-live="polite"></p>
+      </section>
+    </dialog>
+    <dialog id="calendar-transfer-import-dialog" class="markdown-import-dialog calendar-transfer-import-dialog" aria-labelledby="calendar-transfer-import-title">
+      <section class="markdown-import-panel calendar-transfer-import-panel">
+        <header>
+          <div>
+            <h2 id="calendar-transfer-import-title">Importovať kalendár</h2>
+            <p id="calendar-transfer-import-description">Vyber súbor ICS alebo prenosový ZIP balík.</p>
+          </div>
+          <button id="calendar-transfer-import-cancel" class="icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+        </header>
+        <p id="calendar-transfer-import-summary" class="markdown-import-summary" aria-live="polite"></p>
+        <section id="calendar-transfer-import-events" class="calendar-transfer-import-events" data-dialog-resizable-section data-dialog-section-min-height="126" data-dialog-section-max-height="440" aria-live="polite"></section>
+        <button id="calendar-transfer-import-resizer" class="dialog-section-resizer" type="button" data-dialog-resize-target="calendar-transfer-import-events" data-dialog-resize-peer="calendar-transfer-import-relations" aria-label="Zmeniť rozdelenie priestoru medzi udalosťami a väzbami" aria-orientation="horizontal" tabindex="0"><span></span></button>
+        <section id="calendar-transfer-import-relations" class="calendar-transfer-import-relations" data-dialog-resizable-section data-dialog-section-min-height="96" data-dialog-section-max-height="330" hidden aria-live="polite"></section>
+        <p id="calendar-transfer-import-status" class="settings-inline-status" aria-live="polite"></p>
+        <footer>
+          <button id="calendar-transfer-import-confirm" class="settings-background-button primary" type="button" disabled>Vytvoriť udalosti</button>
+        </footer>
+      </section>
+    </dialog>
     <dialog id="source-export-dialog" class="library-export-dialog" aria-labelledby="source-export-title">
       <section class="library-export-panel">
         <header>
@@ -1822,6 +2175,6 @@
         }
       }, true);
     </script>
-    <script type="module" src="assets/app.js?v=0.54.0"></script>
+    <script type="module" src="assets/app.js?v=0.55.25"></script>
   </body>
 </html>

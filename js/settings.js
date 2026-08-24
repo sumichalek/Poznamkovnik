@@ -1,5 +1,6 @@
 import { clearAppliedBackground, initializeBackgroundSettings } from './background.js';
 import { initializeBackups } from './backups.js';
+import { initializeDataIntegrity } from './data-integrity.js';
 import { installDialogBackdropClose } from './dialogs.js';
 import { dom } from './dom.js';
 import { logout } from './login.js';
@@ -86,6 +87,7 @@ export function initializeSettings() {
   dom.settingsDialog.addEventListener('close', updateTopbarVisibility);
   initializeBackgroundSettings();
   initializeWorkspacePreferences();
+  initializeDataIntegrity();
   initializeBackups();
   initializeSecurity();
 }
