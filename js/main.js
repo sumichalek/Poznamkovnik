@@ -122,6 +122,7 @@ import {
   isTutorialPlaygroundOpen,
   openTutorialPanel
 } from './tutorial.js';
+import { closeDevelopmentPanel, initializeDevelopment, isDevelopmentPanelOpen } from './development.js';
 
 document.addEventListener('pointermove', (event) => {
   if (!isAuthenticated()) return;
@@ -133,6 +134,7 @@ document.addEventListener('pointermove', (event) => {
     !isTasksPanelOpen() &&
     !isCalendarPanelOpen() &&
     !isTutorialPanelOpen() &&
+    !isDevelopmentPanelOpen() &&
     !isDocumentsPanelOpen() &&
     !isSourcePreviewOpen()
   ) {
@@ -537,7 +539,7 @@ dom.mathDialog.addEventListener('close', resetMathDialog);
 document.addEventListener('pointerdown', (event) => {
   if (!isAuthenticated()) return;
   if (hasOpenApplicationDialog()) return;
-  if (!state.librariesPanelPinned && !state.libraryDetailPanelPinned && !isSourcesPanelOpen() && !isTasksPanelOpen() && !isCalendarPanelOpen() && !isTutorialPanelOpen()) return;
+  if (!state.librariesPanelPinned && !state.libraryDetailPanelPinned && !isSourcesPanelOpen() && !isTasksPanelOpen() && !isCalendarPanelOpen() && !isTutorialPanelOpen() && !isDevelopmentPanelOpen()) return;
   if (
     dom.topbar.contains(event.target) ||
     dom.librariesPanel.contains(event.target) ||
@@ -553,6 +555,7 @@ document.addEventListener('pointerdown', (event) => {
     || dom.calendarEventDock.contains(event.target)
     || dom.tutorialPanel.contains(event.target)
     || dom.tutorialPlaygroundDock.contains(event.target)
+    || dom.developmentPanel.contains(event.target)
     || dom.musicDock.contains(event.target)
   ) {
     return;
@@ -625,6 +628,12 @@ document.addEventListener('keydown', (event) => {
     if (isTutorialPanelOpen()) {
       event.preventDefault();
       void closeWorkingTopSection('tutorial');
+      return;
+    }
+
+    if (isDevelopmentPanelOpen()) {
+      event.preventDefault();
+      void closeWorkingTopSection('development');
       return;
     }
 
@@ -736,6 +745,7 @@ initializeDocuments();
 initializeTasks();
 initializeCalendar();
 initializeTutorial();
+initializeDevelopment();
 initializeTopSections();
 applyTheme(localStorage.getItem(storageKeys.theme) || 'focus');
 loadLibraries();

@@ -20,7 +20,7 @@ from .auth import AuthError, AuthService, SESSION_DAYS
 from .backups import AutomaticBackupScheduler, BackupArtifact, BackupManager, MAX_BACKUP_ARCHIVE_BYTES
 from .bibliography import BibliographyLookupError, lookup_bibliographic_metadata
 from .calendar_reminders import CalendarReminderScheduler, DesktopNotifier
-from .code_runner import CCodeRunner, CodeRunnerError
+from .code_runner import CCodeRunner, CodeRunnerError, DevelopmentCodeRunner
 from .data_integrity import DataIntegrityService
 from .database import Database, ValidationError
 from .document_workshop import DocumentWorkshop, MAX_DOCUMENT_PROJECT_TRANSFER_BYTES
@@ -29,6 +29,7 @@ from .podcast import PodcastFeedError, fetch_podcast_feed
 from .radio_recording import RadioRecordingManager
 from .radio_schedule import RadioRecordingScheduler
 from .source_text import SourceTextIndex
+from .source_tables import SourceTablePreview
 
 
 MAX_MULTIPART_HEADER_BYTES = 64 * 1024
@@ -62,6 +63,7 @@ class AppContext:
         self.auth = AuthService(self.database)
         self.files = FileStore(data_dir / "files")
         self.source_text = SourceTextIndex(self.database, self.files)
+        self.source_tables = SourceTablePreview(self.database, self.files)
         self.documents = DocumentWorkshop(data_dir / "documents", self.database, self.files)
         self.backgrounds = BackgroundStore(data_dir / "backgrounds")
         self.backups = BackupManager(data_dir / "backups", self.database, self.files, self.backgrounds)
@@ -74,6 +76,7 @@ class AppContext:
         self.automatic_backups = AutomaticBackupScheduler(self.database, self.backups)
         self.automatic_backups.start()
         self.c_runner = CCodeRunner()
+        self.development_runner = DevelopmentCodeRunner()
 
 
 class AppHandler(SimpleHTTPRequestHandler):
@@ -307,6 +310,38 @@ class AppHandler(SimpleHTTPRequestHandler):
             return self.context.database.read_workspace(user["id"])
         if route == ["workspace"] and method == "PUT":
             return self.context.database.replace_workspace(user["id"], self._read_json())
+
+        if route == ["development"] and method == "GET":
+            workspace = self.context.database.development_workspace(user["id"])
+            workspace["runtime"] = self.context.development_runner.status()
+            return workspace
+        if route == ["development", "projects"] and method == "POST":
+            data = self._read_json()
+            data.setdefault("id", str(uuid.uuid4()))
+            return {"project": self.context.database.create_development_project(user["id"], data)}
+        if len(route) >= 3 and route[:2] == ["development", "projects"]:
+            project_id = route[2]
+            if len(route) == 3 and method == "PUT":
+                return {"project": self.context.database.update_development_project(user["id"], project_id, self._read_json())}
+            if len(route) == 3 and method == "DELETE":
+                self.context.database.delete_development_project(user["id"], project_id)
+                return {"deleted": True}
+            if len(route) == 4 and route[3] == "files" and method == "POST":
+                return {"project": self.context.database.create_development_file(user["id"], project_id, self._read_json())}
+            if len(route) == 5 and route[3] == "files" and method == "PUT":
+                return {"project": self.context.database.update_development_file(user["id"], project_id, route[4], self._read_json())}
+            if len(route) == 5 and route[3] == "files" and method == "DELETE":
+                return {"project": self.context.database.delete_development_file(user["id"], project_id, route[4])}
+            if len(route) == 4 and route[3] == "run" and method == "POST":
+                data = self._read_json()
+                entry = self.context.database.development_entry_file(user["id"], project_id, str(data.get("fileId") or ""))
+                source = data.get("source", entry["source"])
+                stdin = data.get("stdin", "")
+                result = self.context.development_runner.run(
+                    entry["language"], source, stdin, files=entry["files"], entry_filename=entry["filename"]
+                )
+                result["entryFileId"] = entry["fileId"]
+                return result
 
         if route == ["tutorial", "runtime"] and method == "GET":
             return self.context.c_runner.status()
@@ -873,6 +908,23 @@ class AppHandler(SimpleHTTPRequestHandler):
         if len(route) == 5 and route[2] == "files" and route[4] == "content" and method == "GET":
             return {"content": self.context.source_text.read_file(user_id, source_id, route[3])}
 
+        if len(route) == 5 and route[2] == "files" and route[4] == "table" and method == "GET":
+            parameters = parse_qs(urlsplit(self.path).query)
+            return {
+                "table": self.context.source_tables.read_file(
+                    user_id,
+                    source_id,
+                    route[3],
+                    sheet=parameters.get("sheet", [""])[0],
+                    offset=self._query_integer(parameters, "offset", 0),
+                    limit=self._query_integer(parameters, "limit", 160),
+                    query=parameters.get("q", [""])[0],
+                    query_column=self._query_integer(parameters, "queryColumn", -1),
+                    sort_column=self._query_integer(parameters, "sortColumn", -1),
+                    sort_direction=parameters.get("sortDirection", ["asc"])[0],
+                )
+            }
+
         if len(route) == 3 and route[2] == "files" and method == "POST":
             maximum = self.context.database.source_file_max_bytes(user_id)
             uploaded = self._read_upload(maximum + 512 * 1024)
@@ -957,6 +1009,13 @@ class AppHandler(SimpleHTTPRequestHandler):
         if not isinstance(value, dict):
             raise ApiError(HTTPStatus.BAD_REQUEST, "JSON musí byť objekt.")
         return value
+
+    @staticmethod
+    def _query_integer(parameters: dict[str, list[str]], name: str, default: int) -> int:
+        try:
+            return int(parameters.get(name, [str(default)])[0])
+        except (TypeError, ValueError):
+            return default
 
     def _read_upload(self, maximum: int = 101 * 1024 * 1024) -> UploadedFile:
         remaining = self._content_length(maximum)

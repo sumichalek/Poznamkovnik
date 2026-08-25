@@ -100,6 +100,7 @@ function applyPanelTransparency() {
   document.documentElement.style.setProperty('--main-panel-opacity', `${100 - preferences.mainPanelTransparency}%`);
   document.documentElement.style.setProperty('--workspace-panel-opacity', `${100 - preferences.workspacePanelTransparency}%`);
   document.documentElement.style.setProperty('--editor-surface-opacity', `${100 - preferences.editorSurfaceTransparency}%`);
+  document.documentElement.style.setProperty('--configured-editor-surface-opacity', `${100 - preferences.editorSurfaceTransparency}%`);
   document.documentElement.style.setProperty('--music-panel-opacity', `${100 - preferences.musicPanelTransparency}%`);
   document.documentElement.style.setProperty(
     '--workspace-surface-opacity',

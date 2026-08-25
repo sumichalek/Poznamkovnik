@@ -62,6 +62,16 @@ import {
   waitForTutorialOperations
 } from './tutorial.js';
 import {
+  closeDevelopmentPanel,
+  discardDevelopmentDraft,
+  hasUnsavedDevelopmentChanges,
+  isDevelopmentPanelOpen,
+  isDevelopmentPanelPinned,
+  openDevelopmentPanel,
+  saveDevelopmentChanges,
+  waitForDevelopmentOperations
+} from './development.js';
+import {
   closeDocumentsPanel,
   discardDocumentDraft,
   hasUnsavedDocumentChanges,
@@ -71,7 +81,7 @@ import {
   saveDocumentDraft
 } from './documents.js';
 
-const sectionNames = ['libraries', 'sources', 'documents', 'tutorial', 'tasks', 'calendar'];
+const sectionNames = ['libraries', 'sources', 'documents', 'tutorial', 'development', 'tasks', 'calendar'];
 const HOVER_CLOSE_DELAY = 220;
 
 let switchInProgress = false;
@@ -134,11 +144,20 @@ function tutorialSectionActive() {
   return isTutorialPanelPinned() || isTutorialPlaygroundOpen();
 }
 
+function developmentSectionOpen() {
+  return isDevelopmentPanelOpen();
+}
+
+function developmentSectionActive() {
+  return isDevelopmentPanelPinned();
+}
+
 function sectionIsOpen(section) {
   if (section === 'libraries') return librariesSectionOpen();
   if (section === 'sources') return sourcesSectionOpen();
   if (section === 'documents') return documentsSectionOpen();
   if (section === 'tutorial') return tutorialSectionOpen();
+  if (section === 'development') return developmentSectionOpen();
   if (section === 'tasks') return tasksSectionOpen();
   return calendarSectionOpen();
 }
@@ -148,6 +167,7 @@ function sectionIsActive(section) {
   if (section === 'sources') return sourcesSectionActive();
   if (section === 'documents') return documentsSectionActive();
   if (section === 'tutorial') return tutorialSectionActive();
+  if (section === 'development') return developmentSectionActive();
   if (section === 'tasks') return tasksSectionActive();
   return calendarSectionActive();
 }
@@ -157,6 +177,7 @@ function sectionRoots(section) {
   if (section === 'sources') return [dom.sourcesPanel, dom.sourceBrowserPanel, dom.sourceDetailDock, dom.sourcePreviewDock];
   if (section === 'documents') return [dom.documentsPanel];
   if (section === 'tutorial') return [dom.tutorialPanel, dom.tutorialPlaygroundDock];
+  if (section === 'development') return [dom.developmentPanel];
   if (section === 'tasks') return [dom.tasksPanel, dom.taskDetailDock];
   return [dom.calendarPanel, dom.calendarEventDock];
 }
@@ -166,6 +187,7 @@ function sectionButton(section) {
   if (section === 'sources') return dom.sourcesButton;
   if (section === 'documents') return dom.documentsButton;
   if (section === 'tutorial') return dom.tutorialButton;
+  if (section === 'development') return dom.developmentButton;
   if (section === 'tasks') return dom.tasksButton;
   return dom.calendarButton;
 }
@@ -229,6 +251,10 @@ function closeTutorialSection({ force = true } = {}) {
   closeTutorialPanel({ force });
 }
 
+function closeDevelopmentSection({ force = true } = {}) {
+  closeDevelopmentPanel({ force });
+}
+
 function closeDocumentsSection() {
   closeDocumentsPanel();
 }
@@ -248,6 +274,10 @@ async function openSection(section, { pinned = false } = {}) {
   }
   if (section === 'tutorial') {
     await openTutorialPanel({ pinned });
+    return;
+  }
+  if (section === 'development') {
+    await openDevelopmentPanel({ pinned });
     return;
   }
   if (section === 'tasks') {
@@ -272,6 +302,10 @@ function closeSection(section, { force = true } = {}) {
   }
   if (section === 'tutorial') {
     closeTutorialSection({ force });
+    return;
+  }
+  if (section === 'development') {
+    closeDevelopmentSection({ force });
     return;
   }
   if (section === 'tasks') {
@@ -388,6 +422,21 @@ async function leaveTutorialSafely() {
   return saveTutorialNoteDraft();
 }
 
+async function leaveDevelopmentSafely() {
+  await waitForDevelopmentOperations();
+  if (!hasUnsavedDevelopmentChanges()) return true;
+  const decision = await requestSaveDecision({
+    title: 'Neuložené zmeny projektu',
+    description: 'V otvorenom projekte sú zmenené údaje alebo kód. Chceš ich pred prepnutím uložiť?'
+  });
+  if (decision === 'stay') return false;
+  if (decision === 'discard') {
+    discardDevelopmentDraft();
+    return true;
+  }
+  return saveDevelopmentChanges();
+}
+
 async function leaveDocumentsSafely() {
   if (!hasUnsavedDocumentChanges()) return true;
   const decision = await requestSaveDecision({
@@ -407,6 +456,7 @@ async function leaveSectionSafely(section) {
   if (section === 'sources') return leaveSourcesSafely();
   if (section === 'documents') return leaveDocumentsSafely();
   if (section === 'tutorial') return leaveTutorialSafely();
+  if (section === 'development') return leaveDevelopmentSafely();
   if (section === 'tasks') return leaveTasksSafely();
   return leaveCalendarSafely();
 }
@@ -622,6 +672,7 @@ export function initializeTopSections() {
   dom.sourcesButton.addEventListener('click', () => void switchTopSection('sources'));
   dom.documentsButton.addEventListener('click', () => void switchTopSection('documents'));
   dom.tutorialButton.addEventListener('click', () => void switchTopSection('tutorial'));
+  dom.developmentButton.addEventListener('click', () => void switchTopSection('development'));
   dom.tasksButton.addEventListener('click', () => void switchTopSection('tasks'));
   dom.calendarButton.addEventListener('click', () => void switchTopSection('calendar'));
 

@@ -35,6 +35,14 @@ DEFAULT_MUSIC_PANEL_TRANSPARENCY = 12
 DEFAULT_SOURCE_FILE_MAX_BYTES = 100 * 1024 * 1024
 MIN_SOURCE_FILE_MAX_BYTES = 1 * 1024 * 1024
 MAX_SOURCE_FILE_MAX_BYTES = 1024 * 1024 * 1024
+DEVELOPMENT_LANGUAGES = {
+    "c": {"label": "C", "filename": "main.c", "source": '#include <stdio.h>\n\nint main(void) {\n  puts("Ahoj, svet!");\n  return 0;\n}\n'},
+    "cpp": {"label": "C++", "filename": "main.cpp", "source": '#include <iostream>\n\nint main() {\n  std::cout << "Ahoj, svet!\\n";\n  return 0;\n}\n'},
+    "python": {"label": "Python", "filename": "main.py", "source": 'print("Ahoj, svet!")\n'},
+    "javascript": {"label": "JavaScript", "filename": "main.js", "source": 'console.log("Ahoj, svet!");\n'},
+    "php": {"label": "PHP", "filename": "main.php", "source": '<?php\necho "Ahoj, svet!\\n";\n'},
+    "csharp": {"label": "C#", "filename": "Program.cs", "source": 'Console.WriteLine("Ahoj, svet!");\n'},
+}
 DEFAULT_MUSIC_TRACK_MAX_BYTES = 250 * 1024 * 1024
 MIN_MUSIC_TRACK_MAX_BYTES = 1 * 1024 * 1024
 MAX_MUSIC_TRACK_MAX_BYTES = 1024 * 1024 * 1024
@@ -665,6 +673,32 @@ class Database:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY(user_id, example_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS development_projects (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    language TEXT NOT NULL DEFAULT 'c',
+                    entry_file_id TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS development_projects_user_idx
+                    ON development_projects(user_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS development_files (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES development_projects(id) ON DELETE CASCADE,
+                    parent_id TEXT NOT NULL DEFAULT '',
+                    kind TEXT NOT NULL DEFAULT 'file' CHECK(kind IN ('file', 'folder')),
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL DEFAULT '',
+                    position INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS development_files_project_idx
+                    ON development_files(project_id, parent_id, position, title COLLATE NOCASE);
                 """
             )
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(user_preferences)")}
@@ -1739,6 +1773,339 @@ class Database:
                 element["tags"] = self._tags_from_json(element.pop("tags_json", "[]"))
                 elements.setdefault(library_id, []).append(element)
         return {"libraries": libraries, "libraryElements": elements}
+
+    @staticmethod
+    def development_languages() -> list[dict[str, str]]:
+        return [
+            {"id": language_id, "label": str(definition["label"]), "filename": str(definition["filename"])}
+            for language_id, definition in DEVELOPMENT_LANGUAGES.items()
+        ]
+
+    def development_workspace(self, user_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            project_rows = connection.execute(
+                """
+                SELECT id, title, language, entry_file_id, created_at, updated_at
+                FROM development_projects
+                WHERE user_id = ?
+                ORDER BY updated_at DESC, title COLLATE NOCASE
+                """,
+                (user_id,),
+            ).fetchall()
+            projects = [self._development_project_detail(connection, user_id, row) for row in project_rows]
+        return {"languages": self.development_languages(), "projects": projects}
+
+    def create_development_project(self, user_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Projekt vývoja má neplatný tvar.")
+        title = self._clean_text(data.get("title"), 160) or "Nový projekt"
+        language = self._clean_text(data.get("language"), 40) or "c"
+        definition = DEVELOPMENT_LANGUAGES.get(language)
+        if not definition:
+            raise ValidationError("Neznámy programovací jazyk.")
+        project_id = self._clean_id(data.get("id")) or str(uuid.uuid4())
+        file_id = str(uuid.uuid4())
+        timestamp = now_iso()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO development_projects(id, user_id, title, language, entry_file_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (project_id, user_id, title, language, file_id, timestamp, timestamp),
+            )
+            connection.execute(
+                """
+                INSERT INTO development_files(id, project_id, parent_id, kind, title, content, position, created_at, updated_at)
+                VALUES (?, ?, '', 'file', ?, ?, 10, ?, ?)
+                """,
+                (file_id, project_id, str(definition["filename"]), str(definition["source"]), timestamp, timestamp),
+            )
+            row = connection.execute(
+                "SELECT id, title, language, entry_file_id, created_at, updated_at FROM development_projects WHERE id = ?",
+                (project_id,),
+            ).fetchone()
+            assert row is not None
+            return self._development_project_detail(connection, user_id, row)
+
+    def update_development_project(self, user_id: str, project_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Projekt vývoja má neplatný tvar.")
+        with self.connect() as connection:
+            row = self._development_project_row(connection, user_id, project_id)
+            title = self._clean_text(data.get("title", row["title"]), 160) or str(row["title"])
+            timestamp = now_iso()
+            connection.execute(
+                "UPDATE development_projects SET title = ?, updated_at = ? WHERE id = ?",
+                (title, timestamp, project_id),
+            )
+            updated = connection.execute(
+                "SELECT id, title, language, entry_file_id, created_at, updated_at FROM development_projects WHERE id = ?",
+                (project_id,),
+            ).fetchone()
+            assert updated is not None
+            return self._development_project_detail(connection, user_id, updated)
+
+    def delete_development_project(self, user_id: str, project_id: str) -> None:
+        with self.connect() as connection:
+            self._development_project_row(connection, user_id, project_id)
+            connection.execute("DELETE FROM development_projects WHERE id = ?", (project_id,))
+
+    def create_development_file(self, user_id: str, project_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Súbor projektu má neplatný tvar.")
+        with self.connect() as connection:
+            project = self._development_project_row(connection, user_id, project_id)
+            kind = self._clean_text(data.get("kind"), 20) or "file"
+            if kind not in {"file", "folder"}:
+                raise ValidationError("Neznámy typ položky projektu.")
+            parent_id = self._clean_id(data.get("parentId"))
+            if parent_id:
+                parent = connection.execute(
+                    "SELECT kind FROM development_files WHERE id = ? AND project_id = ?",
+                    (parent_id, project_id),
+                ).fetchone()
+                if not parent or parent["kind"] != "folder":
+                    raise ValidationError("Nadradený priečinok projektu neexistuje.")
+            title = self._clean_text(data.get("title"), 200)
+            if not title:
+                title = "Nový priečinok" if kind == "folder" else "novy-subor.txt"
+            title = title.replace("/", "_").replace("\\", "_")
+            existing = {
+                str(row["title"]).casefold()
+                for row in connection.execute(
+                    "SELECT title FROM development_files WHERE project_id = ? AND parent_id = ?",
+                    (project_id, parent_id),
+                ).fetchall()
+            }
+            if title.casefold() in existing:
+                stem, separator, suffix = title.rpartition(".")
+                base = stem if separator else title
+                extension = f".{suffix}" if separator else ""
+                index = 2
+                while f"{base}-{index}{extension}".casefold() in existing:
+                    index += 1
+                title = f"{base}-{index}{extension}"
+            file_id = self._clean_id(data.get("id")) or str(uuid.uuid4())
+            position_row = connection.execute(
+                "SELECT COALESCE(MAX(position), 0) AS maximum FROM development_files WHERE project_id = ? AND parent_id = ?",
+                (project_id, parent_id),
+            ).fetchone()
+            timestamp = now_iso()
+            connection.execute(
+                """
+                INSERT INTO development_files(id, project_id, parent_id, kind, title, content, position, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    file_id,
+                    project_id,
+                    parent_id,
+                    kind,
+                    title,
+                    self._clean_text(data.get("content"), 2_000_000) if kind == "file" else "",
+                    int(position_row["maximum"]) + 10,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            if not str(project["entry_file_id"]) and kind == "file":
+                connection.execute(
+                    "UPDATE development_projects SET entry_file_id = ?, updated_at = ? WHERE id = ?",
+                    (file_id, timestamp, project_id),
+                )
+            return self._development_detail_by_id(connection, user_id, project_id)
+
+    def update_development_file(self, user_id: str, project_id: str, file_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Súbor projektu má neplatný tvar.")
+        with self.connect() as connection:
+            self._development_project_row(connection, user_id, project_id)
+            row = connection.execute(
+                "SELECT id, kind, title, content FROM development_files WHERE id = ? AND project_id = ?",
+                (file_id, project_id),
+            ).fetchone()
+            if not row:
+                raise KeyError("Súbor projektu neexistuje.")
+            title = self._clean_text(data.get("title", row["title"]), 200) or str(row["title"])
+            title = title.replace("/", "_").replace("\\", "_")
+            content = str(row["content"])
+            if row["kind"] == "file" and "content" in data:
+                content = str(data.get("content") or "")[:2_000_000]
+            timestamp = now_iso()
+            connection.execute(
+                "UPDATE development_files SET title = ?, content = ?, updated_at = ? WHERE id = ?",
+                (title, content, timestamp, file_id),
+            )
+            connection.execute("UPDATE development_projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
+            return self._development_detail_by_id(connection, user_id, project_id)
+
+    def delete_development_file(self, user_id: str, project_id: str, file_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            project = self._development_project_row(connection, user_id, project_id)
+            row = connection.execute(
+                "SELECT id, kind FROM development_files WHERE id = ? AND project_id = ?",
+                (file_id, project_id),
+            ).fetchone()
+            if not row:
+                raise KeyError("Súbor projektu neexistuje.")
+            removed_rows = connection.execute(
+                """
+                WITH RECURSIVE descendants(id, kind) AS (
+                    SELECT id, kind FROM development_files WHERE id = ? AND project_id = ?
+                    UNION ALL
+                    SELECT child.id, child.kind
+                    FROM development_files child
+                    JOIN descendants parent ON child.parent_id = parent.id
+                    WHERE child.project_id = ?
+                )
+                SELECT id, kind FROM descendants
+                """,
+                (file_id, project_id, project_id),
+            ).fetchall()
+            removed_ids = {str(item["id"]) for item in removed_rows}
+            removed_file_count = sum(1 for item in removed_rows if item["kind"] == "file")
+            count = connection.execute(
+                "SELECT COUNT(*) AS count FROM development_files WHERE project_id = ? AND kind = 'file'",
+                (project_id,),
+            ).fetchone()
+            if removed_file_count >= int(count["count"]):
+                raise ValidationError("Projekt musí mať aspoň jeden zdrojový súbor.")
+            connection.execute(
+                """
+                WITH RECURSIVE descendants(id) AS (
+                    SELECT id FROM development_files WHERE id = ? AND project_id = ?
+                    UNION ALL
+                    SELECT child.id
+                    FROM development_files child
+                    JOIN descendants parent ON child.parent_id = parent.id
+                    WHERE child.project_id = ?
+                )
+                DELETE FROM development_files WHERE id IN (SELECT id FROM descendants)
+                """,
+                (file_id, project_id, project_id),
+            )
+            next_file = connection.execute(
+                "SELECT id FROM development_files WHERE project_id = ? AND kind = 'file' ORDER BY position, title COLLATE NOCASE LIMIT 1",
+                (project_id,),
+            ).fetchone()
+            timestamp = now_iso()
+            entry_file_id = str(project["entry_file_id"])
+            if entry_file_id in removed_ids or not entry_file_id:
+                entry_file_id = str(next_file["id"]) if next_file else ""
+            connection.execute(
+                "UPDATE development_projects SET entry_file_id = ?, updated_at = ? WHERE id = ?",
+                (entry_file_id, timestamp, project_id),
+            )
+            return self._development_detail_by_id(connection, user_id, project_id)
+
+    def development_entry_file(self, user_id: str, project_id: str, file_id: str = "") -> dict[str, Any]:
+        with self.connect() as connection:
+            project = self._development_project_row(connection, user_id, project_id)
+            file_rows = connection.execute(
+                """
+                SELECT id, parent_id, kind, title, content, position
+                FROM development_files
+                WHERE project_id = ?
+                ORDER BY parent_id, position, title COLLATE NOCASE
+                """,
+                (project_id,),
+            ).fetchall()
+            files_by_id = {str(item["id"]): item for item in file_rows}
+            requested_file_id = self._clean_id(file_id)
+            row: sqlite3.Row | None = None
+            if requested_file_id:
+                candidate = files_by_id.get(requested_file_id)
+                if not candidate or candidate["kind"] != "file":
+                    raise ValidationError("Vybraný súbor projektu neexistuje.")
+                row = candidate
+            if row is None:
+                candidate = files_by_id.get(str(project["entry_file_id"]))
+                row = candidate if candidate and candidate["kind"] == "file" else None
+            if not row:
+                row = next((item for item in file_rows if item["kind"] == "file"), None)
+            if not row:
+                raise ValidationError("Projekt nemá zdrojový súbor na spustenie.")
+            paths = self._development_file_paths(file_rows)
+            return {
+                "projectId": str(project["id"]),
+                "projectTitle": str(project["title"]),
+                "language": str(project["language"]),
+                "fileId": str(row["id"]),
+                "filename": paths[str(row["id"])],
+                "source": str(row["content"]),
+                "files": [
+                    {"title": paths[str(file_row["id"])], "content": str(file_row["content"])}
+                    for file_row in file_rows
+                    if file_row["kind"] == "file"
+                ],
+            }
+
+    @staticmethod
+    def _development_file_paths(file_rows: list[sqlite3.Row]) -> dict[str, str]:
+        rows_by_id = {str(row["id"]): row for row in file_rows}
+        resolved: dict[str, str] = {}
+
+        def resolve(file_id: str, lineage: set[str]) -> str:
+            if file_id in resolved:
+                return resolved[file_id]
+            row = rows_by_id[file_id]
+            title = str(row["title"]).replace("/", "_").replace("\\", "_")
+            parent_id = str(row["parent_id"] or "")
+            parent = rows_by_id.get(parent_id)
+            if parent and parent["kind"] == "folder" and parent_id not in lineage:
+                title = f"{resolve(parent_id, {*lineage, file_id})}/{title}"
+            resolved[file_id] = title
+            return title
+
+        return {file_id: resolve(file_id, set()) for file_id in rows_by_id}
+
+    @staticmethod
+    def _development_project_row(connection: sqlite3.Connection, user_id: str, project_id: str) -> sqlite3.Row:
+        row = connection.execute(
+            "SELECT id, title, language, entry_file_id, created_at, updated_at FROM development_projects WHERE id = ? AND user_id = ?",
+            (project_id, user_id),
+        ).fetchone()
+        if not row:
+            raise KeyError("Projekt vývoja neexistuje.")
+        return row
+
+    def _development_detail_by_id(self, connection: sqlite3.Connection, user_id: str, project_id: str) -> dict[str, Any]:
+        row = self._development_project_row(connection, user_id, project_id)
+        return self._development_project_detail(connection, user_id, row)
+
+    @staticmethod
+    def _development_project_detail(connection: sqlite3.Connection, user_id: str, project: sqlite3.Row) -> dict[str, Any]:
+        file_rows = connection.execute(
+            """
+            SELECT id, parent_id, kind, title, content, position, created_at, updated_at
+            FROM development_files
+            WHERE project_id = ?
+            ORDER BY parent_id, position, title COLLATE NOCASE
+            """,
+            (project["id"],),
+        ).fetchall()
+        return {
+            "id": project["id"],
+            "title": project["title"],
+            "language": project["language"],
+            "entryFileId": project["entry_file_id"],
+            "createdAt": project["created_at"],
+            "updatedAt": project["updated_at"],
+            "files": [
+                {
+                    "id": row["id"],
+                    "parentId": row["parent_id"],
+                    "kind": row["kind"],
+                    "title": row["title"],
+                    "content": row["content"],
+                    "position": row["position"],
+                    "createdAt": row["created_at"],
+                    "updatedAt": row["updated_at"],
+                }
+                for row in file_rows
+            ],
+        }
 
     def list_tutorial_languages(self, user_id: str) -> list[dict[str, Any]]:
         self._ensure_builtin_c_tutorial(user_id)

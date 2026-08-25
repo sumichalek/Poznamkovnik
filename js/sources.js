@@ -36,6 +36,7 @@ const relationLabels = {
 const EXTRACTED_TEXT_EXTENSIONS = new Set([
   'c', 'css', 'csv', 'docx', 'epub', 'h', 'htm', 'html', 'js', 'json', 'log', 'markdown', 'md', 'py', 'sh', 'ts', 'txt', 'xml'
 ]);
+const TABLE_PREVIEW_EXTENSIONS = new Set(['csv', 'tsv', 'xlsx']);
 
 let sources = [];
 let selectedSource = null;
@@ -50,6 +51,15 @@ let previewSelectedText = '';
 let previewSelectedLocator = '';
 let previewReaderData = null;
 let previewReaderSearchTimer = 0;
+let previewTableData = null;
+let previewTableRequestId = 0;
+let previewTableSearchTimer = 0;
+let previewSelectedTableRows = new Set();
+let previewTableSelectionAnchor = '';
+let previewTableSummaryOpen = false;
+let previewTableQueryColumn = -1;
+let previewTableSortColumn = -1;
+let previewTableSortDirection = 'asc';
 let previewFullscreen = false;
 let loadedSourcesQuery = null;
 let loadingSourcesQuery = null;
@@ -385,7 +395,17 @@ function supportsInlinePreview(file) {
     (file.mimeType.startsWith('image/') && file.mimeType !== 'image/svg+xml') ||
     file.mimeType.startsWith('text/') ||
     file.mimeType === 'application/json' ||
+    supportsTablePreview(file) ||
     supportsExtractedTextReader(file)
+  );
+}
+
+function supportsExternalFileOpen(file) {
+  return (
+    file.mimeType === 'application/pdf' ||
+    file.mimeType === 'text/plain' ||
+    file.mimeType === 'text/markdown' ||
+    (file.mimeType.startsWith('image/') && file.mimeType !== 'image/svg+xml')
   );
 }
 
@@ -397,6 +417,7 @@ function sourceFileExtension(file) {
 
 function supportsExtractedTextReader(file) {
   if (!file || file.mimeType === 'application/pdf' || file.mimeType.startsWith('image/')) return false;
+  if (supportsTablePreview(file)) return false;
   return (
     EXTRACTED_TEXT_EXTENSIONS.has(sourceFileExtension(file)) ||
     file.mimeType.startsWith('text/') ||
@@ -404,6 +425,16 @@ function supportsExtractedTextReader(file) {
     file.mimeType === 'application/xhtml+xml' ||
     file.mimeType === 'application/epub+zip' ||
     file.mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  );
+}
+
+function supportsTablePreview(file) {
+  if (!file) return false;
+  return (
+    TABLE_PREVIEW_EXTENSIONS.has(sourceFileExtension(file)) ||
+    file.mimeType === 'text/csv' ||
+    file.mimeType === 'text/tab-separated-values' ||
+    file.mimeType.includes('spreadsheetml.sheet')
   );
 }
 
@@ -457,6 +488,12 @@ function setSourcePreviewOpen(open) {
   updateTopbarVisibility();
 }
 
+function setSourcePreviewMode(mode = '') {
+  dom.sourcePreviewContent.dataset.previewMode = mode;
+  if (mode) dom.sourcePreviewDock.dataset.previewMode = mode;
+  else delete dom.sourcePreviewDock.dataset.previewMode;
+}
+
 export function isSourcePreviewOpen() {
   return dom.sourcePreviewDock.classList.contains('is-open');
 }
@@ -495,6 +532,7 @@ export function exitSourcePreviewFullscreen() {
 }
 
 function hideSourcePreviewViews() {
+  setSourcePreviewMode();
   dom.sourcePreviewFrame.hidden = true;
   dom.sourcePreviewFrame.removeAttribute('src');
   dom.sourcePreviewImage.hidden = true;
@@ -506,12 +544,40 @@ function hideSourcePreviewViews() {
   dom.sourcePreviewReaderLocations.hidden = true;
   dom.sourcePreviewReaderQuery.value = '';
   dom.sourcePreviewReaderStatus.textContent = '';
+  dom.sourcePreviewTable.hidden = true;
+  dom.sourcePreviewTableSheets.replaceChildren();
+  dom.sourcePreviewTableSheets.hidden = true;
+  dom.sourcePreviewTableQueryColumn.value = '-1';
+  dom.sourcePreviewTableQuery.value = '';
+  syncSourcePreviewTableClearFilter();
+  dom.sourcePreviewTableStatus.textContent = '';
+  setSourcePreviewTableSelectionStatus();
+  dom.sourcePreviewTableSummary.hidden = true;
+  dom.sourcePreviewTableSummary.replaceChildren();
+  dom.sourcePreviewTableSummaryButton.setAttribute('aria-expanded', 'false');
+  dom.sourcePreviewTableHead.replaceChildren();
+  dom.sourcePreviewTableBody.replaceChildren();
+  dom.sourcePreviewTableEmpty.textContent = '';
+  dom.sourcePreviewTableEmpty.hidden = true;
+  dom.sourcePreviewTablePage.textContent = '';
+  dom.sourcePreviewTablePrevious.disabled = true;
+  dom.sourcePreviewTableNext.disabled = true;
   dom.sourcePreviewFallback.hidden = true;
   dom.sourcePreviewFallbackMessage.textContent = '';
   previewReaderData = null;
+  previewTableData = null;
+  previewSelectedTableRows = new Set();
+  previewTableSelectionAnchor = '';
+  previewTableSummaryOpen = false;
+  previewTableQueryColumn = -1;
+  previewTableSortColumn = -1;
+  previewTableSortDirection = 'asc';
   previewSelectedLocator = '';
   window.clearTimeout(previewReaderSearchTimer);
   previewReaderSearchTimer = 0;
+  window.clearTimeout(previewTableSearchTimer);
+  previewTableSearchTimer = 0;
+  previewTableRequestId += 1;
 }
 
 function clearSourcePreviewRelations() {
@@ -700,6 +766,7 @@ async function saveSourceAnnotation() {
     previewSelectedText = '';
     clearSourcePreviewAnnotationForm();
     renderSourcePreviewAnnotations();
+    dom.sourcePreviewAnnotations.open = true;
     await refreshElementSourceLinks();
   } catch (error) {
     setSourcePreviewAnnotationStatus(error?.message || 'Anotáciu sa nepodarilo uložiť.', { error: true });
@@ -762,6 +829,7 @@ function renderSourcePreviewRelations(file) {
 
 function showSourcePreviewFallback(message) {
   hideSourcePreviewViews();
+  setSourcePreviewMode('fallback');
   dom.sourcePreviewFallbackMessage.textContent = message;
   dom.sourcePreviewFallback.hidden = false;
 }
@@ -914,6 +982,375 @@ function scheduleSourcePreviewReaderSearch() {
   previewReaderSearchTimer = window.setTimeout(refreshSourcePreviewReaderSearch, 180);
 }
 
+function tablePageLabel(table) {
+  const start = table.rows.length ? table.offset + 1 : 0;
+  const end = table.offset + table.rows.length;
+  const total = table.totalRows || 0;
+  const suffix = table.truncated ? ' · obmedzený náhľad' : '';
+  return total ? `${start}-${end} z ${total} riadkov${suffix}` : `0 riadkov${suffix}`;
+}
+
+function setSourcePreviewTableStatus(message = '') {
+  dom.sourcePreviewTableStatus.textContent = message;
+}
+
+function syncSourcePreviewTableClearFilter() {
+  const active = Boolean(dom.sourcePreviewTableQuery.value.trim()) || previewTableQueryColumn >= 0;
+  dom.sourcePreviewTableClearFilterButton.hidden = !active;
+}
+
+function clearSourcePreviewTableFilter() {
+  previewTableQueryColumn = -1;
+  dom.sourcePreviewTableQueryColumn.value = '-1';
+  dom.sourcePreviewTableQuery.value = '';
+  syncSourcePreviewTableClearFilter();
+  const file = selectedSource?.files?.find((entry) => entry.id === previewFileId);
+  if (file) void loadSourcePreviewTable(file, { sheet: previewTableData?.sheet || '', offset: 0 });
+}
+
+function setSourcePreviewTableSelectionStatus(count = 0) {
+  dom.sourcePreviewTableSelection.hidden = count === 0;
+  dom.sourcePreviewTableCopyButton.disabled = count === 0;
+  if (!count) {
+    dom.sourcePreviewTableSelection.textContent = '';
+    dom.sourcePreviewAnnotateButton.title = 'Pridať anotáciu';
+    dom.sourcePreviewAnnotateButton.setAttribute('aria-label', 'Pridať anotáciu');
+    return;
+  }
+  const lastTwo = count % 100;
+  const usesFew = count % 10 >= 2 && count % 10 <= 4 && (lastTwo < 12 || lastTwo > 14);
+  const label = count === 1
+    ? '1 riadok označený'
+    : usesFew
+      ? `${count} riadky označené`
+      : `${count} riadkov označených`;
+  dom.sourcePreviewTableSelection.textContent = label;
+  dom.sourcePreviewAnnotateButton.title = 'Anotovať označené riadky';
+  dom.sourcePreviewAnnotateButton.setAttribute('aria-label', 'Anotovať označené riadky');
+}
+
+function sourcePreviewTableClipboardCell(value) {
+  return String(value || '').replace(/[\t\r\n]+/g, ' ');
+}
+
+async function copySourcePreviewTableSelection() {
+  if (!previewTableData) return;
+  const selected = Array.from(dom.sourcePreviewTableBody.querySelectorAll('tr.is-selected'));
+  if (!selected.length) return;
+  const rows = [previewTableData.headers, ...selected.map((row) =>
+    Array.from(row.querySelectorAll('td')).map((cell) => cell.textContent || '')
+  )];
+  const text = rows
+    .map((row) => row.map(sourcePreviewTableClipboardCell).join('\t'))
+    .join('\n');
+  try {
+    let copied = false;
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      } catch {
+        copied = false;
+      }
+    }
+    if (!copied) {
+      const fallback = document.createElement('textarea');
+      fallback.value = text;
+      fallback.setAttribute('readonly', '');
+      fallback.style.position = 'fixed';
+      fallback.style.opacity = '0';
+      document.body.append(fallback);
+      fallback.select();
+      const fallbackCopied = document.execCommand('copy');
+      fallback.remove();
+      if (!fallbackCopied) throw new Error('Prehliadač nepovolil zápis do schránky.');
+    }
+    setSourcePreviewTableStatus(`${selected.length} riadkov skopírovaných do schránky.`);
+  } catch (error) {
+    setSourcePreviewTableStatus(error?.message || 'Riadky sa nepodarilo skopírovať.');
+  }
+}
+
+function showSourcePreviewTableLoading() {
+  dom.sourcePreviewTable.hidden = false;
+  dom.sourcePreviewTableSheets.replaceChildren();
+  dom.sourcePreviewTableSheets.hidden = true;
+  dom.sourcePreviewTableHead.replaceChildren();
+  dom.sourcePreviewTableBody.replaceChildren();
+  dom.sourcePreviewTableEmpty.textContent = 'Načítavam tabuľku...';
+  dom.sourcePreviewTableEmpty.hidden = false;
+  dom.sourcePreviewTablePage.textContent = '';
+  dom.sourcePreviewTablePrevious.disabled = true;
+  dom.sourcePreviewTableNext.disabled = true;
+  dom.sourcePreviewTableSummary.hidden = true;
+  dom.sourcePreviewTableSummary.replaceChildren();
+  dom.sourcePreviewTableSummaryButton.disabled = true;
+  dom.sourcePreviewTableSummaryButton.setAttribute('aria-expanded', 'false');
+  setSourcePreviewTableSelectionStatus();
+  setSourcePreviewTableStatus('Načítavam tabuľku...');
+}
+
+function formatSourcePreviewTableNumber(value) {
+  return new Intl.NumberFormat('sk-SK', { maximumFractionDigits: 4 }).format(Number(value || 0));
+}
+
+function renderSourcePreviewTableSummary(table) {
+  const summary = table.summary || {};
+  const numericColumns = summary.numericColumns || [];
+  dom.sourcePreviewTableSummary.replaceChildren();
+  dom.sourcePreviewTableSummary.hidden = !previewTableSummaryOpen;
+  dom.sourcePreviewTableSummaryButton.setAttribute('aria-expanded', String(previewTableSummaryOpen));
+  dom.sourcePreviewTableSummaryButton.disabled = !summary.rows;
+  if (!previewTableSummaryOpen || !summary.rows) return;
+
+  const overview = document.createElement('p');
+  overview.className = 'source-preview-table-summary-overview';
+  overview.textContent = `${formatSourcePreviewTableNumber(summary.rows)} riadkov · ${formatSourcePreviewTableNumber(summary.filledCells)} vyplnených buniek · ${formatSourcePreviewTableNumber(summary.emptyCells)} prázdnych buniek${summary.limited ? ' · obmedzený náhľad' : ''}`;
+  dom.sourcePreviewTableSummary.append(overview);
+
+  if (!numericColumns.length) return;
+  const list = document.createElement('dl');
+  list.className = 'source-preview-table-summary-columns';
+  numericColumns.forEach((column) => {
+    const row = document.createElement('div');
+    const name = document.createElement('dt');
+    name.textContent = column.name;
+    name.title = column.name;
+    const values = document.createElement('dd');
+    values.textContent = `min. ${formatSourcePreviewTableNumber(column.min)} · max. ${formatSourcePreviewTableNumber(column.max)} · priemer ${formatSourcePreviewTableNumber(column.average)} (${formatSourcePreviewTableNumber(column.count)})`;
+    row.append(name, values);
+    list.append(row);
+  });
+  dom.sourcePreviewTableSummary.append(list);
+}
+
+function syncSourcePreviewTableSelection(table) {
+  const selectedRows = Array.from(dom.sourcePreviewTableBody.querySelectorAll('tr.is-selected'));
+  const rowNumbers = selectedRows.map((row) => Number(row.dataset.rowNumber)).filter(Number.isFinite);
+  previewSelectedTableRows = new Set(rowNumbers.map(String));
+  previewSelectedText = selectedRows.map((row) => {
+    const values = Array.from(row.querySelectorAll('td'))
+      .map((cell, index) => `${table.headers[index] || `Stĺpec ${index + 1}`}: ${cell.textContent || ''}`);
+    return values.join('\n').trim();
+  }).filter(Boolean).join('\n\n').slice(0, 10_000);
+  if (!rowNumbers.length) {
+    previewSelectedLocator = '';
+  } else if (rowNumbers.length === 1) {
+    previewSelectedLocator = `${table.sheet} · riadok ${rowNumbers[0]}`;
+  } else {
+    previewSelectedLocator = `${table.sheet} · riadky ${rowNumbers.join(', ')}`;
+  }
+  setSourcePreviewTableSelectionStatus(rowNumbers.length);
+}
+
+function selectSourcePreviewTableRow(row, table, event = {}) {
+  const rows = Array.from(dom.sourcePreviewTableBody.querySelectorAll('tr'));
+  const rowNumber = row.dataset.rowNumber || '';
+  if (event.shiftKey && previewTableSelectionAnchor) {
+    const anchorIndex = rows.findIndex((entry) => entry.dataset.rowNumber === previewTableSelectionAnchor);
+    const targetIndex = rows.indexOf(row);
+    if (anchorIndex >= 0 && targetIndex >= 0) {
+      const [start, end] = [anchorIndex, targetIndex].sort((left, right) => left - right);
+      rows.forEach((entry, index) => entry.classList.toggle('is-selected', index >= start && index <= end));
+    } else {
+      row.classList.add('is-selected');
+    }
+  } else if (event.ctrlKey || event.metaKey) {
+    row.classList.toggle('is-selected');
+    previewTableSelectionAnchor = rowNumber;
+  } else {
+    rows.forEach((entry) => entry.classList.remove('is-selected'));
+    row.classList.add('is-selected');
+    previewTableSelectionAnchor = rowNumber;
+  }
+  syncSourcePreviewTableSelection(table);
+}
+
+function changeSourcePreviewTableSort(column) {
+  if (!previewTableData) return;
+  if (previewTableSortColumn !== column) {
+    previewTableSortColumn = column;
+    previewTableSortDirection = 'asc';
+  } else if (previewTableSortDirection === 'asc') {
+    previewTableSortDirection = 'desc';
+  } else {
+    previewTableSortColumn = -1;
+    previewTableSortDirection = 'asc';
+  }
+  const file = selectedSource?.files?.find((entry) => entry.id === previewFileId);
+  if (file) void loadSourcePreviewTable(file, { sheet: previewTableData.sheet, offset: 0 });
+}
+
+function renderSourcePreviewTable() {
+  const table = previewTableData;
+  if (!table) return;
+  dom.sourcePreviewTableSheets.replaceChildren();
+  (table.sheets || []).forEach((sheet) => {
+    const option = document.createElement('option');
+    option.value = sheet;
+    option.textContent = sheet;
+    dom.sourcePreviewTableSheets.append(option);
+  });
+  dom.sourcePreviewTableSheets.hidden = (table.sheets || []).length < 2;
+  dom.sourcePreviewTableSheets.value = table.sheet || '';
+  dom.sourcePreviewTableQueryColumn.replaceChildren();
+  const allColumns = document.createElement('option');
+  allColumns.value = '-1';
+  allColumns.textContent = 'Všetky stĺpce';
+  dom.sourcePreviewTableQueryColumn.append(allColumns);
+  (table.headers || []).forEach((header, index) => {
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = header;
+    dom.sourcePreviewTableQueryColumn.append(option);
+  });
+  dom.sourcePreviewTableQueryColumn.value = String(previewTableQueryColumn);
+  if (dom.sourcePreviewTableQueryColumn.value !== String(previewTableQueryColumn)) {
+    previewTableQueryColumn = -1;
+    dom.sourcePreviewTableQueryColumn.value = '-1';
+  }
+  syncSourcePreviewTableClearFilter();
+  dom.sourcePreviewTableHead.replaceChildren();
+  dom.sourcePreviewTableBody.replaceChildren();
+  previewSelectedTableRows = new Set();
+  previewTableSelectionAnchor = '';
+  setSourcePreviewTableSelectionStatus();
+  dom.sourcePreviewTableEmpty.hidden = true;
+  dom.sourcePreviewTableEmpty.textContent = '';
+
+  if (table.headers?.length) {
+    const headerRow = document.createElement('tr');
+    const number = document.createElement('th');
+    number.scope = 'col';
+    number.textContent = '#';
+    headerRow.append(number);
+    table.headers.forEach((header, index) => {
+      const cell = document.createElement('th');
+      cell.scope = 'col';
+      const active = index === previewTableSortColumn;
+      if (active) cell.setAttribute('aria-sort', previewTableSortDirection === 'desc' ? 'descending' : 'ascending');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'source-preview-table-sort';
+      button.title = active
+        ? previewTableSortDirection === 'asc'
+          ? `Zoradené vzostupne podľa ${header}. Klikni pre zostupné poradie.`
+          : `Zoradené zostupne podľa ${header}. Klikni pre pôvodné poradie.`
+        : `Zoradiť podľa stĺpca ${header}`;
+      button.setAttribute('aria-label', button.title);
+      const label = document.createElement('span');
+      label.textContent = header;
+      button.append(label);
+      if (active) button.append(createAppIcon(previewTableSortDirection === 'desc' ? 'arrow-down' : 'arrow-up'));
+      button.addEventListener('click', () => changeSourcePreviewTableSort(index));
+      cell.append(button);
+      headerRow.append(cell);
+    });
+    dom.sourcePreviewTableHead.append(headerRow);
+  }
+
+  if (!table.rows?.length) {
+    dom.sourcePreviewTableEmpty.hidden = false;
+    dom.sourcePreviewTableEmpty.textContent = dom.sourcePreviewTableQuery.value.trim()
+      ? 'Tomuto filtru nevyhovuje žiadny riadok.'
+      : 'Hárok zatiaľ neobsahuje dátové riadky.';
+  } else {
+    table.rows.forEach((sourceRow) => {
+      const row = document.createElement('tr');
+      row.dataset.rowNumber = String(sourceRow.rowNumber);
+      row.tabIndex = 0;
+      const number = document.createElement('th');
+      number.scope = 'row';
+      number.textContent = String(sourceRow.rowNumber);
+      row.append(number);
+      table.headers.forEach((header, index) => {
+        const cell = document.createElement('td');
+        const value = String(sourceRow.values?.[index] || '');
+        cell.textContent = value;
+        if (value) cell.title = `${header}: ${value}`;
+        row.append(cell);
+      });
+      row.addEventListener('click', (event) => selectSourcePreviewTableRow(row, table, event));
+      row.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          selectSourcePreviewTableRow(row, table, event);
+        }
+      });
+      dom.sourcePreviewTableBody.append(row);
+    });
+  }
+
+  dom.sourcePreviewTablePage.textContent = tablePageLabel(table);
+  dom.sourcePreviewTablePrevious.disabled = !table.offset;
+  dom.sourcePreviewTableNext.disabled = !table.hasMore;
+  setSourcePreviewTableStatus(table.sheets?.length > 1 ? `${table.sheets.length} hárkov` : '');
+  dom.sourcePreviewTable.hidden = false;
+  try {
+    renderSourcePreviewTableSummary(table);
+  } catch (error) {
+    console.error('Súhrn tabuľky sa nepodarilo vykresliť.', error);
+    previewTableSummaryOpen = false;
+    dom.sourcePreviewTableSummary.hidden = true;
+    dom.sourcePreviewTableSummaryButton.disabled = true;
+    dom.sourcePreviewTableSummaryButton.setAttribute('aria-expanded', 'false');
+  }
+}
+
+async function loadSourcePreviewTable(file, { sheet = '', offset = 0 } = {}) {
+  if (!selectedSource) return;
+  const requestId = ++previewTableRequestId;
+  const params = new URLSearchParams({ offset: String(Math.max(0, offset)), limit: '160' });
+  const query = dom.sourcePreviewTableQuery.value.trim();
+  if (sheet) params.set('sheet', sheet);
+  if (query) params.set('q', query);
+  if (previewTableQueryColumn >= 0) params.set('queryColumn', String(previewTableQueryColumn));
+  if (previewTableSortColumn >= 0) {
+    params.set('sortColumn', String(previewTableSortColumn));
+    params.set('sortDirection', previewTableSortDirection);
+  }
+  if (!previewTableData) showSourcePreviewTableLoading();
+  else setSourcePreviewTableStatus('Načítavam tabuľku...');
+  dom.sourcePreviewTableSearchButton.disabled = true;
+  try {
+    const response = await apiRequest(
+      `/sources/${encodeURIComponent(selectedSource.id)}/files/${encodeURIComponent(file.id)}/table?${params}`
+    );
+    if (requestId !== previewTableRequestId || previewFileId !== file.id || !isSourcePreviewOpen()) return;
+    const table = response.table || {};
+    if (table.status !== 'ready') {
+      showSourcePreviewFallback(table.error || 'Tabuľkový náhľad sa nepodarilo pripraviť. Súbor môžeš stiahnuť.');
+      return;
+    }
+    previewTableData = table;
+    previewTableQueryColumn = Number.isInteger(table.queryColumn) ? table.queryColumn : -1;
+    previewTableSortColumn = Number.isInteger(table.sortColumn) ? table.sortColumn : -1;
+    previewTableSortDirection = table.sortDirection === 'desc' ? 'desc' : 'asc';
+    renderSourcePreviewTable();
+  } catch (error) {
+    if (requestId === previewTableRequestId && previewFileId === file.id) {
+      showSourcePreviewFallback(error?.message || 'Tabuľkový náhľad sa nepodarilo načítať. Súbor môžeš stiahnuť.');
+    }
+  } finally {
+    if (requestId === previewTableRequestId) dom.sourcePreviewTableSearchButton.disabled = false;
+  }
+}
+
+function scheduleSourcePreviewTableSearch() {
+  window.clearTimeout(previewTableSearchTimer);
+  previewTableSearchTimer = window.setTimeout(() => {
+    const file = selectedSource?.files?.find((entry) => entry.id === previewFileId);
+    if (file) void loadSourcePreviewTable(file, { sheet: previewTableData?.sheet || '', offset: 0 });
+  }, 260);
+}
+
+function changeSourcePreviewTablePage(direction) {
+  const file = selectedSource?.files?.find((entry) => entry.id === previewFileId);
+  if (!file || !previewTableData) return;
+  const offset = Math.max(0, previewTableData.offset + direction * previewTableData.limit);
+  void loadSourcePreviewTable(file, { sheet: previewTableData.sheet, offset });
+}
+
 function setEditorSourceMenuOpen(open) {
   const visible = open && !dom.editorSourceLinks.hidden;
   editorSourceMenuOpen = visible;
@@ -942,7 +1379,7 @@ async function openSourceFile(file, locator = '', query = '') {
   dom.sourcePreviewTitle.textContent = file.originalName;
   dom.sourcePreviewMeta.textContent = `${fileFormatLabel(file)} · ${formatFileSize(file.sizeBytes)}`;
   dom.sourcePreviewExternal.href = fileUrl;
-  dom.sourcePreviewExternal.hidden = !supportsInlinePreview(file);
+  dom.sourcePreviewExternal.hidden = !supportsExternalFileOpen(file);
   dom.sourcePreviewDownload.href = sourceFileUrl(file, { download: true });
   dom.sourcePreviewDownload.download = file.originalName;
   setSourcePreviewOpen(true);
@@ -954,19 +1391,35 @@ async function openSourceFile(file, locator = '', query = '') {
   void loadSourcePreviewAnnotations(file, requestId);
 
   if (file.mimeType === 'application/pdf') {
+    setSourcePreviewMode('document');
     dom.sourcePreviewFrame.src = previewUrl;
     dom.sourcePreviewFrame.hidden = false;
     return;
   }
 
   if (file.mimeType.startsWith('image/') && file.mimeType !== 'image/svg+xml') {
+    setSourcePreviewMode('image');
     dom.sourcePreviewImage.src = fileUrl;
     dom.sourcePreviewImage.alt = file.originalName;
     dom.sourcePreviewImage.hidden = false;
     return;
   }
 
+  if (supportsTablePreview(file)) {
+    setSourcePreviewMode('table');
+    previewTableData = null;
+    previewSelectedLocator = '';
+    previewTableQueryColumn = -1;
+    previewTableSortColumn = -1;
+    previewTableSortDirection = 'asc';
+    dom.sourcePreviewTableQuery.value = query;
+    syncSourcePreviewTableClearFilter();
+    await loadSourcePreviewTable(file);
+    return;
+  }
+
   if (supportsExtractedTextReader(file)) {
+    setSourcePreviewMode('text');
     dom.sourcePreviewReader.hidden = false;
     dom.sourcePreviewText.textContent = 'Načítavam text...';
     try {
@@ -990,6 +1443,7 @@ async function openSourceFile(file, locator = '', query = '') {
     return;
   }
 
+  setSourcePreviewMode('fallback');
   showSourcePreviewFallback(previewFallbackMessage(file));
 }
 
@@ -2274,6 +2728,37 @@ export function initializeSources() {
   dom.sourcePreviewReaderQuery.addEventListener('input', scheduleSourcePreviewReaderSearch);
   dom.sourcePreviewReaderQuery.addEventListener('search', refreshSourcePreviewReaderSearch);
   dom.sourcePreviewReaderSearchButton.addEventListener('click', refreshSourcePreviewReaderSearch);
+  dom.sourcePreviewTableSheets.addEventListener('change', () => {
+    const file = selectedSource?.files?.find((entry) => entry.id === previewFileId);
+    if (file) void loadSourcePreviewTable(file, { sheet: dom.sourcePreviewTableSheets.value, offset: 0 });
+  });
+  dom.sourcePreviewTableQueryColumn.addEventListener('change', () => {
+    previewTableQueryColumn = Number(dom.sourcePreviewTableQueryColumn.value);
+    syncSourcePreviewTableClearFilter();
+    const file = selectedSource?.files?.find((entry) => entry.id === previewFileId);
+    if (file) void loadSourcePreviewTable(file, { sheet: previewTableData?.sheet || '', offset: 0 });
+  });
+  dom.sourcePreviewTableQuery.addEventListener('input', () => {
+    syncSourcePreviewTableClearFilter();
+    scheduleSourcePreviewTableSearch();
+  });
+  dom.sourcePreviewTableQuery.addEventListener('search', () => {
+    syncSourcePreviewTableClearFilter();
+    scheduleSourcePreviewTableSearch();
+  });
+  dom.sourcePreviewTableSearchButton.addEventListener('click', () => {
+    const file = selectedSource?.files?.find((entry) => entry.id === previewFileId);
+    if (file) void loadSourcePreviewTable(file, { sheet: previewTableData?.sheet || '', offset: 0 });
+  });
+  dom.sourcePreviewTablePrevious.addEventListener('click', () => changeSourcePreviewTablePage(-1));
+  dom.sourcePreviewTableNext.addEventListener('click', () => changeSourcePreviewTablePage(1));
+  dom.sourcePreviewTableClearFilterButton.addEventListener('click', clearSourcePreviewTableFilter);
+  dom.sourcePreviewTableCopyButton.addEventListener('click', () => void copySourcePreviewTableSelection());
+  dom.sourcePreviewTableSummaryButton.addEventListener('click', () => {
+    if (!previewTableData?.summary?.rows) return;
+    previewTableSummaryOpen = !previewTableSummaryOpen;
+    renderSourcePreviewTableSummary(previewTableData);
+  });
   dom.sourcePreviewText.addEventListener('mouseup', captureSourcePreviewSelection);
   dom.sourcePreviewText.addEventListener('keyup', captureSourcePreviewSelection);
   dom.editorSourceToggle.addEventListener('click', () => setEditorSourceMenuOpen(!editorSourceMenuOpen));
