@@ -42,6 +42,148 @@ DEVELOPMENT_LANGUAGES = {
     "javascript": {"label": "JavaScript", "filename": "main.js", "source": 'console.log("Ahoj, svet!");\n'},
     "php": {"label": "PHP", "filename": "main.php", "source": '<?php\necho "Ahoj, svet!\\n";\n'},
     "csharp": {"label": "C#", "filename": "Program.cs", "source": 'Console.WriteLine("Ahoj, svet!");\n'},
+    "asm": {
+        "label": "Assembler x86-64",
+        "filename": "main.s",
+        "source": ".global _start\n\n.section .text\n_start:\n  mov $1, %rax\n  mov $1, %rdi\n  lea message(%rip), %rsi\n  mov $12, %rdx\n  syscall\n  mov $60, %rax\n  xor %rdi, %rdi\n  syscall\n\n.section .rodata\nmessage:\n  .ascii \"Ahoj, svet!\\n\"\n",
+    },
+    "bash": {"label": "Bash", "filename": "main.sh", "source": '#!/usr/bin/env bash\nprintf \'Ahoj, svet!\\n\'\n'},
+    "rust": {"label": "Rust", "filename": "main.rs", "source": 'fn main() {\n    println!("Ahoj, svet!");\n}\n'},
+    "go": {"label": "Go", "filename": "main.go", "source": 'package main\n\nimport "fmt"\n\nfunc main() {\n\tfmt.Println("Ahoj, svet!")\n}\n'},
+    "java": {"label": "Java", "filename": "Main.java", "source": 'class Main {\n  public static void main(String[] args) {\n    System.out.println("Ahoj, svet!");\n  }\n}\n'},
+}
+DEVELOPMENT_PROJECT_TEMPLATES = {
+    "c": {
+        "input-output": {
+            "label": "Vstup a výstup",
+            "source": '#include <stdio.h>\n\nint main(void) {\n  int value = 0;\n  if (scanf("%d", &value) == 1) {\n    printf("%d\\n", value);\n  }\n  return 0;\n}\n',
+        },
+    },
+    "cpp": {
+        "input-output": {
+            "label": "Vstup a výstup",
+            "source": '#include <iostream>\n\nint main() {\n  int value = 0;\n  if (std::cin >> value) {\n    std::cout << value << "\\n";\n  }\n  return 0;\n}\n',
+        },
+    },
+    "python": {
+        "input-output": {
+            "label": "Vstup a výstup",
+            "source": 'value = input().strip()\nprint(value)\n',
+        },
+    },
+    "javascript": {
+        "input-output": {
+            "label": "Vstup a výstup",
+            "source": "const value = require('node:fs').readFileSync(0, 'utf8').trim();\nconsole.log(value);\n",
+        },
+    },
+    "php": {
+        "input-output": {
+            "label": "Vstup a výstup",
+            "source": "<?php\n$value = trim(stream_get_contents(STDIN));\necho $value, PHP_EOL;\n",
+        },
+    },
+    "csharp": {
+        "input-output": {
+            "label": "Vstup a výstup",
+            "source": 'var value = Console.ReadLine();\nConsole.WriteLine(value);\n',
+        },
+    },
+    "bash": {
+        "input-output": {
+            "label": "Vstup a výstup",
+            "source": '#!/usr/bin/env bash\nread -r value\nprintf \'%s\\n\' "$value"\n',
+        },
+    },
+    "rust": {
+        "input-output": {
+            "label": "Vstup a výstup",
+            "source": 'use std::io::{self, Read};\n\nfn main() {\n    let mut value = String::new();\n    io::stdin().read_to_string(&mut value).unwrap();\n    println!("{}", value.trim());\n}\n',
+        },
+    },
+    "go": {
+        "input-output": {
+            "label": "Vstup a výstup",
+            "source": 'package main\n\nimport (\n\t"bufio"\n\t"fmt"\n\t"os"\n)\n\nfunc main() {\n\treader := bufio.NewReader(os.Stdin)\n\tvar value string\n\tfmt.Fscan(reader, &value)\n\tfmt.Println(value)\n}\n',
+        },
+    },
+    "java": {
+        "input-output": {
+            "label": "Vstup a výstup",
+            "source": 'import java.util.Scanner;\n\nclass Main {\n  public static void main(String[] args) {\n    Scanner input = new Scanner(System.in);\n    if (input.hasNextLine()) {\n      System.out.println(input.nextLine());\n    }\n  }\n}\n',
+        },
+    },
+}
+DEVELOPMENT_PROJECT_KINDS = {"program", "firmware"}
+FIRMWARE_BUILD_PROFILES = {
+    "debug": "Ladenie",
+    "release": "Vydanie",
+}
+FIRMWARE_TARGETS = {
+    "avr-atmega328p": {
+        "label": "ATmega328P",
+        "family": "AVR / Atmel",
+        "board": "Arduino Uno alebo vlastná doska",
+        "architecture": "AVR 8-bit",
+        "toolchain": "AVR GCC + avrdude",
+        "languages": ("c", "cpp", "asm"),
+    },
+    "pic16f18855": {
+        "label": "PIC16F18855",
+        "family": "Microchip PIC",
+        "board": "Curiosity alebo vlastná doska",
+        "architecture": "PIC 8-bit",
+        "toolchain": "MPLAB XC8 + MPLAB IPE",
+        "languages": ("c", "asm"),
+    },
+    "dspic33ck": {
+        "label": "dsPIC33CK",
+        "family": "Microchip dsPIC",
+        "board": "dsPIC33CK Curiosity",
+        "architecture": "dsPIC 16-bit",
+        "toolchain": "MPLAB XC16 + MPLAB IPE",
+        "languages": ("c", "asm"),
+    },
+    "pic32mx": {
+        "label": "PIC32MX",
+        "family": "Microchip PIC32",
+        "board": "PIC32 Starter Kit alebo vlastná doska",
+        "architecture": "MIPS32",
+        "toolchain": "MPLAB XC32 + MPLAB IPE",
+        "languages": ("c", "cpp", "asm"),
+    },
+    "samd21": {
+        "label": "ATSAMD21G18A",
+        "family": "Microchip SAM",
+        "board": "Arduino Zero alebo vlastná doska",
+        "architecture": "ARM Cortex-M0+",
+        "toolchain": "ARM GNU + MPLAB X",
+        "languages": ("c", "cpp", "asm"),
+    },
+    "stm32f103": {
+        "label": "STM32F103C8",
+        "family": "STM32",
+        "board": "Blue Pill alebo vlastná doska",
+        "architecture": "ARM Cortex-M3",
+        "toolchain": "STM32CubeIDE / ARM GNU",
+        "languages": ("c", "cpp", "asm"),
+    },
+    "esp32": {
+        "label": "ESP32-WROOM-32",
+        "family": "Espressif ESP32",
+        "board": "ESP32 DevKit",
+        "architecture": "Xtensa / RISC-V podľa čipu",
+        "toolchain": "ESP-IDF + esptool",
+        "languages": ("c", "cpp", "asm"),
+    },
+    "rp2040": {
+        "label": "RP2040",
+        "family": "Raspberry Pi Pico",
+        "board": "Raspberry Pi Pico",
+        "architecture": "ARM Cortex-M0+",
+        "toolchain": "Pico SDK + picotool",
+        "languages": ("c", "cpp", "asm"),
+    },
 }
 DEFAULT_MUSIC_TRACK_MAX_BYTES = 250 * 1024 * 1024
 MIN_MUSIC_TRACK_MAX_BYTES = 1 * 1024 * 1024
@@ -679,6 +821,9 @@ class Database:
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     title TEXT NOT NULL,
                     language TEXT NOT NULL DEFAULT 'c',
+                    project_kind TEXT NOT NULL DEFAULT 'program' CHECK(project_kind IN ('program', 'firmware')),
+                    firmware_target_id TEXT NOT NULL DEFAULT '',
+                    build_profile TEXT NOT NULL DEFAULT 'debug',
                     entry_file_id TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -699,6 +844,20 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS development_files_project_idx
                     ON development_files(project_id, parent_id, position, title COLLATE NOCASE);
+
+                CREATE TABLE IF NOT EXISTS development_test_cases (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES development_projects(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    stdin TEXT NOT NULL DEFAULT '',
+                    arguments TEXT NOT NULL DEFAULT '',
+                    expected_output TEXT NOT NULL DEFAULT '',
+                    position INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS development_test_cases_project_idx
+                    ON development_test_cases(project_id, position, updated_at);
                 """
             )
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(user_preferences)")}
@@ -774,6 +933,21 @@ class Database:
             if "calendar_notifications_enabled" not in columns:
                 connection.execute(
                     "ALTER TABLE user_preferences ADD COLUMN calendar_notifications_enabled INTEGER NOT NULL DEFAULT 1"
+                )
+            development_project_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(development_projects)")
+            }
+            if "project_kind" not in development_project_columns:
+                connection.execute(
+                    "ALTER TABLE development_projects ADD COLUMN project_kind TEXT NOT NULL DEFAULT 'program'"
+                )
+            if "firmware_target_id" not in development_project_columns:
+                connection.execute(
+                    "ALTER TABLE development_projects ADD COLUMN firmware_target_id TEXT NOT NULL DEFAULT ''"
+                )
+            if "build_profile" not in development_project_columns:
+                connection.execute(
+                    "ALTER TABLE development_projects ADD COLUMN build_profile TEXT NOT NULL DEFAULT 'debug'"
                 )
             session_columns = {row["name"] for row in connection.execute("PRAGMA table_info(sessions)")}
             if "last_active_at" not in session_columns:
@@ -1775,17 +1949,97 @@ class Database:
         return {"libraries": libraries, "libraryElements": elements}
 
     @staticmethod
-    def development_languages() -> list[dict[str, str]]:
+    def development_languages() -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for language_id, definition in DEVELOPMENT_LANGUAGES.items():
+            templates = [
+                {"id": "hello", "label": "Ahoj, svet!"},
+                {"id": "empty", "label": "Prázdny hlavný súbor"},
+            ]
+            templates.extend(
+                {"id": template_id, "label": str(template["label"])}
+                for template_id, template in DEVELOPMENT_PROJECT_TEMPLATES.get(language_id, {}).items()
+            )
+            result.append(
+                {
+                    "id": language_id,
+                    "label": str(definition["label"]),
+                    "filename": str(definition["filename"]),
+                    "templates": templates,
+                }
+            )
+        return result
+
+    @staticmethod
+    def _development_project_template_source(language: str, template_id: str) -> str:
+        definition = DEVELOPMENT_LANGUAGES[language]
+        if template_id == "hello":
+            return str(definition["source"])
+        if template_id == "empty":
+            extension = Path(str(definition["filename"])).suffix.lower()
+            comment = "# Začni tu.\n" if extension in {".py", ".sh", ".s", ".asm"} else "// Začni tu.\n"
+            if extension == ".php":
+                return "<?php\n// Začni tu.\n"
+            return comment
+        template = DEVELOPMENT_PROJECT_TEMPLATES.get(language, {}).get(template_id)
+        if not template:
+            raise ValidationError("Neznáma šablóna nového projektu.")
+        return str(template["source"])
+
+    @staticmethod
+    def development_firmware_targets() -> list[dict[str, Any]]:
         return [
-            {"id": language_id, "label": str(definition["label"]), "filename": str(definition["filename"])}
-            for language_id, definition in DEVELOPMENT_LANGUAGES.items()
+            {
+                "id": target_id,
+                "label": str(target["label"]),
+                "family": str(target["family"]),
+                "board": str(target["board"]),
+                "architecture": str(target["architecture"]),
+                "toolchain": str(target["toolchain"]),
+                "languages": list(target["languages"]),
+            }
+            for target_id, target in FIRMWARE_TARGETS.items()
         ]
+
+    @staticmethod
+    def _firmware_project_source(language: str, target: dict[str, Any]) -> str:
+        label = str(target["label"])
+        family = str(target["family"])
+        if language == "cpp":
+            return (
+                f"// Cieľ: {family} / {label}\n"
+                "// Hardvérový toolchain sa pripojí v ďalšom kroku.\n\n"
+                "int main() {\n"
+                "  while (true) {\n"
+                "  }\n"
+                "}\n"
+            )
+        if language == "asm":
+            return (
+                f"# Cieľ: {family} / {label}\n"
+                "# Konkrétny assembler a štartovacie súbory sa vyberú pri nastavení toolchainu.\n"
+            )
+        return (
+            f"/* Cieľ: {family} / {label}. */\n"
+            "/* Hardvérový toolchain sa pripojí v ďalšom kroku. */\n\n"
+            "int main(void) {\n"
+            "  for (;;) {\n"
+            "  }\n"
+            "}\n"
+        )
+
+    @staticmethod
+    def _development_project_select() -> str:
+        return (
+            "id, title, language, project_kind, firmware_target_id, build_profile, "
+            "entry_file_id, created_at, updated_at"
+        )
 
     def development_workspace(self, user_id: str) -> dict[str, Any]:
         with self.connect() as connection:
             project_rows = connection.execute(
-                """
-                SELECT id, title, language, entry_file_id, created_at, updated_at
+                f"""
+                SELECT {self._development_project_select()}
                 FROM development_projects
                 WHERE user_id = ?
                 ORDER BY updated_at DESC, title COLLATE NOCASE
@@ -1793,7 +2047,15 @@ class Database:
                 (user_id,),
             ).fetchall()
             projects = [self._development_project_detail(connection, user_id, row) for row in project_rows]
-        return {"languages": self.development_languages(), "projects": projects}
+        return {
+            "languages": self.development_languages(),
+            "firmwareTargets": self.development_firmware_targets(),
+            "firmwareBuildProfiles": [
+                {"id": profile_id, "label": label}
+                for profile_id, label in FIRMWARE_BUILD_PROFILES.items()
+            ],
+            "projects": projects,
+        }
 
     def create_development_project(self, user_id: str, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
@@ -1803,26 +2065,260 @@ class Database:
         definition = DEVELOPMENT_LANGUAGES.get(language)
         if not definition:
             raise ValidationError("Neznámy programovací jazyk.")
+        project_kind = self._clean_text(data.get("kind"), 20) or "program"
+        if project_kind not in DEVELOPMENT_PROJECT_KINDS:
+            raise ValidationError("Neznámy typ projektu vývoja.")
+        firmware_target_id = self._clean_text(data.get("firmwareTargetId"), 80)
+        build_profile = self._clean_text(data.get("buildProfile"), 20) or "debug"
+        template_id = self._clean_text(data.get("templateId"), 40) or "hello"
+        if build_profile not in FIRMWARE_BUILD_PROFILES:
+            raise ValidationError("Neznámy režim buildu firmvéru.")
+        target: dict[str, Any] | None = None
+        if project_kind == "firmware":
+            target = FIRMWARE_TARGETS.get(firmware_target_id)
+            if not target:
+                raise ValidationError("Vyber cieľový čip alebo dosku firmvéru.")
+            if language not in target["languages"]:
+                raise ValidationError("Vybraný jazyk tento cieľ firmvéru zatiaľ nepodporuje.")
+        else:
+            firmware_target_id = ""
         project_id = self._clean_id(data.get("id")) or str(uuid.uuid4())
         file_id = str(uuid.uuid4())
         timestamp = now_iso()
+        source = (
+            self._firmware_project_source(language, target)
+            if target is not None
+            else self._development_project_template_source(language, template_id)
+        )
         with self.connect() as connection:
             connection.execute(
                 """
-                INSERT INTO development_projects(id, user_id, title, language, entry_file_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO development_projects(
+                    id, user_id, title, language, project_kind, firmware_target_id, build_profile,
+                    entry_file_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (project_id, user_id, title, language, file_id, timestamp, timestamp),
+                (
+                    project_id,
+                    user_id,
+                    title,
+                    language,
+                    project_kind,
+                    firmware_target_id,
+                    build_profile,
+                    file_id,
+                    timestamp,
+                    timestamp,
+                ),
             )
             connection.execute(
                 """
                 INSERT INTO development_files(id, project_id, parent_id, kind, title, content, position, created_at, updated_at)
                 VALUES (?, ?, '', 'file', ?, ?, 10, ?, ?)
                 """,
-                (file_id, project_id, str(definition["filename"]), str(definition["source"]), timestamp, timestamp),
+                (file_id, project_id, str(definition["filename"]), source, timestamp, timestamp),
             )
             row = connection.execute(
-                "SELECT id, title, language, entry_file_id, created_at, updated_at FROM development_projects WHERE id = ?",
+                f"SELECT {self._development_project_select()} FROM development_projects WHERE id = ?",
+                (project_id,),
+            ).fetchone()
+            assert row is not None
+            return self._development_project_detail(connection, user_id, row)
+
+    def import_development_project(self, user_id: str, data: Any) -> dict[str, Any]:
+        """Create one validated project from the portable development manifest."""
+        if not isinstance(data, dict) or not isinstance(data.get("project"), dict):
+            raise ValidationError("Import projektu nemá platný tvar.")
+        project_data = data["project"]
+        title = self._clean_text(project_data.get("title"), 160) or "Importovaný projekt"
+        language = self._clean_text(project_data.get("language"), 40) or "c"
+        if language not in DEVELOPMENT_LANGUAGES:
+            raise ValidationError("Import používa neznámy programovací jazyk.")
+        project_kind = self._clean_text(project_data.get("kind"), 20) or "program"
+        if project_kind not in DEVELOPMENT_PROJECT_KINDS:
+            raise ValidationError("Import používa neznámy typ projektu.")
+        firmware_target_id = self._clean_text(project_data.get("firmwareTargetId"), 80)
+        build_profile = self._clean_text(project_data.get("buildProfile"), 20) or "debug"
+        if build_profile not in FIRMWARE_BUILD_PROFILES:
+            raise ValidationError("Import používa neznámy režim buildu.")
+        if project_kind == "firmware":
+            target = FIRMWARE_TARGETS.get(firmware_target_id)
+            if not target or language not in target["languages"]:
+                raise ValidationError("Import používa nepodporovaný cieľ firmvéru alebo jazyk.")
+        else:
+            firmware_target_id = ""
+
+        raw_tests = project_data.get("tests", [])
+        if raw_tests is None:
+            raw_tests = []
+        if not isinstance(raw_tests, list):
+            raise ValidationError("Import projektu má neplatné testy.")
+        if len(raw_tests) > 200:
+            raise ValidationError("Importovaný projekt obsahuje príliš veľa testov.")
+        imported_tests: list[dict[str, Any]] = []
+        total_test_bytes = 0
+        for index, raw_test in enumerate(raw_tests):
+            if not isinstance(raw_test, dict):
+                raise ValidationError("Import obsahuje neplatný test projektu.")
+            title = self._clean_text(raw_test.get("title"), 160) or "Nový test"
+            stdin = self._development_test_text(raw_test.get("stdin"), 64 * 1024, "Vstup")
+            arguments = self._development_test_text(raw_test.get("arguments"), 8 * 1024, "Parametre")
+            expected_output = self._development_test_text(
+                raw_test.get("expectedOutput"), 128 * 1024, "Očakávaný výstup"
+            )
+            total_test_bytes += sum(
+                len(value.encode("utf-8")) for value in (title, stdin, arguments, expected_output)
+            )
+            if total_test_bytes > 8 * 1024 * 1024:
+                raise ValidationError("Testy v importe majú spolu viac než 8 MB.")
+            try:
+                position = int(raw_test.get("position") or index * 10 + 10)
+            except (TypeError, ValueError):
+                position = index * 10 + 10
+            imported_tests.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "title": title,
+                    "stdin": stdin,
+                    "arguments": arguments,
+                    "expectedOutput": expected_output,
+                    "position": max(-1_000_000, min(position, 1_000_000)),
+                }
+            )
+
+        raw_files = project_data.get("files")
+        if not isinstance(raw_files, list) or not raw_files:
+            raise ValidationError("Importovaný projekt neobsahuje súbory.")
+        if len(raw_files) > 600:
+            raise ValidationError("Importovaný projekt obsahuje príliš veľa položiek.")
+
+        def clean_path(value: Any) -> tuple[str, ...]:
+            raw_path = str(value or "").replace("\\", "/")
+            parts = raw_path.split("/")
+            if not parts or any(not part or part in {".", ".."} or "\x00" in part for part in parts):
+                raise ValidationError("Import obsahuje neplatnú cestu súboru.")
+            clean_parts = tuple(self._clean_text(part, 200).replace("/", "_").replace("\\", "_") for part in parts)
+            if any(not part for part in clean_parts):
+                raise ValidationError("Import obsahuje neplatný názov súboru.")
+            return clean_parts
+
+        imported: list[dict[str, Any]] = []
+        known_paths: set[str] = set()
+        total_bytes = 0
+        for raw_file in raw_files:
+            if not isinstance(raw_file, dict):
+                raise ValidationError("Import obsahuje neplatnú položku projektu.")
+            kind = self._clean_text(raw_file.get("kind"), 20) or "file"
+            if kind not in {"file", "folder"}:
+                raise ValidationError("Import obsahuje neznámy typ položky.")
+            path_parts = clean_path(raw_file.get("path"))
+            path = "/".join(path_parts)
+            path_key = path.casefold()
+            if path_key in known_paths:
+                raise ValidationError("Import obsahuje dve položky s rovnakou cestou.")
+            known_paths.add(path_key)
+            content = "" if kind == "folder" else str(raw_file.get("content") or "")
+            content_bytes = len(content.encode("utf-8"))
+            if content_bytes > 2_000_000:
+                raise ValidationError(f"Súbor „{path}“ je príliš veľký.")
+            total_bytes += content_bytes
+            try:
+                position = int(raw_file.get("position") or 0)
+            except (TypeError, ValueError):
+                position = 0
+            imported.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "path": path,
+                    "pathParts": path_parts,
+                    "kind": kind,
+                    "content": content,
+                    "position": max(-1_000_000, min(position, 1_000_000)),
+                }
+            )
+        if total_bytes > 20 * 1024 * 1024:
+            raise ValidationError("Zdrojové súbory projektu majú spolu viac než 20 MB.")
+        if not any(item["kind"] == "file" for item in imported):
+            raise ValidationError("Importovaný projekt potrebuje aspoň jeden zdrojový súbor.")
+
+        by_path = {item["path"]: item for item in imported}
+        for item in imported:
+            parent_path = "/".join(item["pathParts"][:-1])
+            if not parent_path:
+                item["parentId"] = ""
+                continue
+            parent = by_path.get(parent_path)
+            if not parent or parent["kind"] != "folder":
+                raise ValidationError(f"Priečinok pre položku „{item['path']}“ v importe chýba.")
+            item["parentId"] = parent["id"]
+
+        entry_path = "/".join(clean_path(project_data.get("entryPath"))) if project_data.get("entryPath") else ""
+        entry = by_path.get(entry_path)
+        if not entry or entry["kind"] != "file":
+            entry = next(item for item in imported if item["kind"] == "file")
+
+        project_id = str(uuid.uuid4())
+        timestamp = now_iso()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO development_projects(
+                    id, user_id, title, language, project_kind, firmware_target_id, build_profile,
+                    entry_file_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    project_id,
+                    user_id,
+                    title,
+                    language,
+                    project_kind,
+                    firmware_target_id,
+                    build_profile,
+                    entry["id"],
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            for item in sorted(imported, key=lambda candidate: (len(candidate["pathParts"]), candidate["position"], candidate["path"].casefold())):
+                connection.execute(
+                    """
+                    INSERT INTO development_files(id, project_id, parent_id, kind, title, content, position, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item["id"],
+                        project_id,
+                        item["parentId"],
+                        item["kind"],
+                        item["pathParts"][-1],
+                        item["content"],
+                        item["position"],
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            for test in sorted(imported_tests, key=lambda candidate: (candidate["position"], candidate["title"].casefold())):
+                connection.execute(
+                    """
+                    INSERT INTO development_test_cases(
+                        id, project_id, title, stdin, arguments, expected_output, position, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        test["id"],
+                        project_id,
+                        test["title"],
+                        test["stdin"],
+                        test["arguments"],
+                        test["expectedOutput"],
+                        test["position"],
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            row = connection.execute(
+                f"SELECT {self._development_project_select()} FROM development_projects WHERE id = ?",
                 (project_id,),
             ).fetchone()
             assert row is not None
@@ -1834,13 +2330,47 @@ class Database:
         with self.connect() as connection:
             row = self._development_project_row(connection, user_id, project_id)
             title = self._clean_text(data.get("title", row["title"]), 160) or str(row["title"])
+            language = self._clean_text(data.get("language", row["language"]), 40) or str(row["language"])
+            if language not in DEVELOPMENT_LANGUAGES:
+                raise ValidationError("Neznámy programovací jazyk.")
+            project_kind = self._clean_text(data.get("kind", row["project_kind"]), 20) or str(row["project_kind"])
+            if project_kind not in DEVELOPMENT_PROJECT_KINDS:
+                raise ValidationError("Neznámy typ projektu vývoja.")
+            firmware_target_id = self._clean_text(
+                data.get("firmwareTargetId", row["firmware_target_id"]), 80
+            )
+            build_profile = self._clean_text(data.get("buildProfile", row["build_profile"]), 20) or "debug"
+            if build_profile not in FIRMWARE_BUILD_PROFILES:
+                raise ValidationError("Neznámy režim buildu firmvéru.")
+            if project_kind == "firmware":
+                target = FIRMWARE_TARGETS.get(firmware_target_id)
+                if not target:
+                    raise ValidationError("Vyber cieľový čip alebo dosku firmvéru.")
+                if language not in target["languages"]:
+                    raise ValidationError("Vybraný jazyk tento cieľ firmvéru zatiaľ nepodporuje.")
+            else:
+                firmware_target_id = ""
+            entry_file_id = str(row["entry_file_id"] or "")
+            if "entryFileId" in data:
+                requested_entry_file_id = self._clean_id(data.get("entryFileId"))
+                entry_file = connection.execute(
+                    "SELECT id FROM development_files WHERE id = ? AND project_id = ? AND kind = 'file'",
+                    (requested_entry_file_id, project_id),
+                ).fetchone()
+                if not entry_file:
+                    raise ValidationError("Hlavný súbor projektu neexistuje.")
+                entry_file_id = str(entry_file["id"])
             timestamp = now_iso()
             connection.execute(
-                "UPDATE development_projects SET title = ?, updated_at = ? WHERE id = ?",
-                (title, timestamp, project_id),
+                """
+                UPDATE development_projects
+                SET title = ?, language = ?, project_kind = ?, firmware_target_id = ?, build_profile = ?, entry_file_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (title, language, project_kind, firmware_target_id, build_profile, entry_file_id, timestamp, project_id),
             )
             updated = connection.execute(
-                "SELECT id, title, language, entry_file_id, created_at, updated_at FROM development_projects WHERE id = ?",
+                f"SELECT {self._development_project_select()} FROM development_projects WHERE id = ?",
                 (project_id,),
             ).fetchone()
             assert updated is not None
@@ -1940,6 +2470,69 @@ class Database:
             connection.execute("UPDATE development_projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
             return self._development_detail_by_id(connection, user_id, project_id)
 
+    def move_development_file(self, user_id: str, project_id: str, file_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Presun položky projektu má neplatný tvar.")
+        with self.connect() as connection:
+            self._development_project_row(connection, user_id, project_id)
+            item = connection.execute(
+                "SELECT id, parent_id, kind, title FROM development_files WHERE id = ? AND project_id = ?",
+                (file_id, project_id),
+            ).fetchone()
+            if not item:
+                raise KeyError("Súbor projektu neexistuje.")
+            target_parent_id = self._clean_id(data.get("parentId"))
+            if target_parent_id == str(item["id"]):
+                raise ValidationError("Položku projektu nemožno vložiť do seba samej.")
+            if target_parent_id:
+                target = connection.execute(
+                    "SELECT id, kind, parent_id FROM development_files WHERE id = ? AND project_id = ?",
+                    (target_parent_id, project_id),
+                ).fetchone()
+                if not target or target["kind"] != "folder":
+                    raise ValidationError("Cieľový priečinok projektu neexistuje.")
+                if item["kind"] == "folder":
+                    current = target
+                    visited: set[str] = set()
+                    while current:
+                        current_id = str(current["id"])
+                        if current_id in visited:
+                            break
+                        if current_id == str(item["id"]):
+                            raise ValidationError("Priečinok nemožno presunúť do vlastného podpriečinka.")
+                        visited.add(current_id)
+                        parent_id = str(current["parent_id"] or "")
+                        current = (
+                            connection.execute(
+                                "SELECT id, kind, parent_id FROM development_files WHERE id = ? AND project_id = ?",
+                                (parent_id, project_id),
+                            ).fetchone()
+                            if parent_id
+                            else None
+                        )
+            if target_parent_id == str(item["parent_id"] or ""):
+                return self._development_detail_by_id(connection, user_id, project_id)
+            collision = connection.execute(
+                """
+                SELECT id FROM development_files
+                WHERE project_id = ? AND parent_id = ? AND lower(title) = lower(?) AND id != ?
+                """,
+                (project_id, target_parent_id, str(item["title"]), file_id),
+            ).fetchone()
+            if collision:
+                raise ValidationError("V cieľovom priečinku už existuje položka s rovnakým názvom.")
+            position_row = connection.execute(
+                "SELECT COALESCE(MAX(position), 0) AS maximum FROM development_files WHERE project_id = ? AND parent_id = ?",
+                (project_id, target_parent_id),
+            ).fetchone()
+            timestamp = now_iso()
+            connection.execute(
+                "UPDATE development_files SET parent_id = ?, position = ?, updated_at = ? WHERE id = ?",
+                (target_parent_id, int(position_row["maximum"]) + 10, timestamp, file_id),
+            )
+            connection.execute("UPDATE development_projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
+            return self._development_detail_by_id(connection, user_id, project_id)
+
     def delete_development_file(self, user_id: str, project_id: str, file_id: str) -> dict[str, Any]:
         with self.connect() as connection:
             project = self._development_project_row(connection, user_id, project_id)
@@ -2031,6 +2624,8 @@ class Database:
                 "projectId": str(project["id"]),
                 "projectTitle": str(project["title"]),
                 "language": str(project["language"]),
+                "projectKind": str(project["project_kind"]),
+                "firmwareTargetId": str(project["firmware_target_id"]),
                 "fileId": str(row["id"]),
                 "filename": paths[str(row["id"])],
                 "source": str(row["content"]),
@@ -2040,6 +2635,146 @@ class Database:
                     if file_row["kind"] == "file"
                 ],
             }
+
+    @staticmethod
+    def _development_test_case_data(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "title": str(row["title"]),
+            "stdin": str(row["stdin"]),
+            "arguments": str(row["arguments"]),
+            "expectedOutput": str(row["expected_output"]),
+            "position": int(row["position"]),
+            "createdAt": str(row["created_at"]),
+            "updatedAt": str(row["updated_at"]),
+        }
+
+    @staticmethod
+    def _development_test_text(value: Any, maximum: int, label: str) -> str:
+        text = str(value or "").replace("\x00", "")
+        if len(text.encode("utf-8")) > maximum:
+            raise ValidationError(f"{label} testu je príliš dlhý.")
+        return text
+
+    def list_development_test_cases(self, user_id: str, project_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            self._development_project_row(connection, user_id, project_id)
+            rows = connection.execute(
+                """
+                SELECT id, title, stdin, arguments, expected_output, position, created_at, updated_at
+                FROM development_test_cases
+                WHERE project_id = ?
+                ORDER BY position, created_at, title COLLATE NOCASE
+                """,
+                (project_id,),
+            ).fetchall()
+        return [self._development_test_case_data(row) for row in rows]
+
+    def development_test_case(self, user_id: str, project_id: str, test_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = self._development_test_case_row(connection, user_id, project_id, test_id)
+            return self._development_test_case_data(row)
+
+    def create_development_test_case(self, user_id: str, project_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Test projektu má neplatný tvar.")
+        title = self._clean_text(data.get("title"), 160) or "Nový test"
+        stdin = self._development_test_text(data.get("stdin"), 64 * 1024, "Vstup")
+        arguments = self._development_test_text(data.get("arguments"), 8 * 1024, "Parametre")
+        expected_output = self._development_test_text(data.get("expectedOutput"), 128 * 1024, "Očakávaný výstup")
+        test_id = self._clean_id(data.get("id")) or str(uuid.uuid4())
+        timestamp = now_iso()
+        with self.connect() as connection:
+            self._development_project_row(connection, user_id, project_id)
+            position_row = connection.execute(
+                "SELECT COALESCE(MAX(position), 0) AS maximum FROM development_test_cases WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO development_test_cases(
+                    id, project_id, title, stdin, arguments, expected_output, position, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    test_id,
+                    project_id,
+                    title,
+                    stdin,
+                    arguments,
+                    expected_output,
+                    int(position_row["maximum"]) + 10,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            connection.execute("UPDATE development_projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
+            row = connection.execute(
+                """
+                SELECT id, title, stdin, arguments, expected_output, position, created_at, updated_at
+                FROM development_test_cases WHERE id = ?
+                """,
+                (test_id,),
+            ).fetchone()
+            assert row is not None
+            return self._development_test_case_data(row)
+
+    def update_development_test_case(
+        self, user_id: str, project_id: str, test_id: str, data: Any
+    ) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Test projektu má neplatný tvar.")
+        with self.connect() as connection:
+            row = self._development_test_case_row(connection, user_id, project_id, test_id)
+            title = self._clean_text(data.get("title", row["title"]), 160) or str(row["title"])
+            stdin = self._development_test_text(data.get("stdin", row["stdin"]), 64 * 1024, "Vstup")
+            arguments = self._development_test_text(data.get("arguments", row["arguments"]), 8 * 1024, "Parametre")
+            expected_output = self._development_test_text(
+                data.get("expectedOutput", row["expected_output"]), 128 * 1024, "Očakávaný výstup"
+            )
+            timestamp = now_iso()
+            connection.execute(
+                """
+                UPDATE development_test_cases
+                SET title = ?, stdin = ?, arguments = ?, expected_output = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (title, stdin, arguments, expected_output, timestamp, test_id),
+            )
+            connection.execute("UPDATE development_projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
+            updated = connection.execute(
+                """
+                SELECT id, title, stdin, arguments, expected_output, position, created_at, updated_at
+                FROM development_test_cases WHERE id = ?
+                """,
+                (test_id,),
+            ).fetchone()
+            assert updated is not None
+            return self._development_test_case_data(updated)
+
+    def delete_development_test_case(self, user_id: str, project_id: str, test_id: str) -> None:
+        with self.connect() as connection:
+            self._development_test_case_row(connection, user_id, project_id, test_id)
+            connection.execute("DELETE FROM development_test_cases WHERE id = ?", (test_id,))
+            connection.execute(
+                "UPDATE development_projects SET updated_at = ? WHERE id = ?", (now_iso(), project_id)
+            )
+
+    def _development_test_case_row(
+        self, connection: sqlite3.Connection, user_id: str, project_id: str, test_id: str
+    ) -> sqlite3.Row:
+        self._development_project_row(connection, user_id, project_id)
+        row = connection.execute(
+            """
+            SELECT id, title, stdin, arguments, expected_output, position, created_at, updated_at
+            FROM development_test_cases
+            WHERE id = ? AND project_id = ?
+            """,
+            (test_id, project_id),
+        ).fetchone()
+        if not row:
+            raise KeyError("Test projektu neexistuje.")
+        return row
 
     @staticmethod
     def _development_file_paths(file_rows: list[sqlite3.Row]) -> dict[str, str]:
@@ -2063,7 +2798,7 @@ class Database:
     @staticmethod
     def _development_project_row(connection: sqlite3.Connection, user_id: str, project_id: str) -> sqlite3.Row:
         row = connection.execute(
-            "SELECT id, title, language, entry_file_id, created_at, updated_at FROM development_projects WHERE id = ? AND user_id = ?",
+            f"SELECT {Database._development_project_select()} FROM development_projects WHERE id = ? AND user_id = ?",
             (project_id, user_id),
         ).fetchone()
         if not row:
@@ -2085,10 +2820,29 @@ class Database:
             """,
             (project["id"],),
         ).fetchall()
+        firmware_target_id = str(project["firmware_target_id"] or "")
+        firmware_target = FIRMWARE_TARGETS.get(firmware_target_id)
         return {
             "id": project["id"],
             "title": project["title"],
             "language": project["language"],
+            "kind": project["project_kind"],
+            "firmwareTargetId": firmware_target_id,
+            "firmwareTarget": (
+                {
+                    "id": firmware_target_id,
+                    "label": str(firmware_target["label"]),
+                    "family": str(firmware_target["family"]),
+                    "board": str(firmware_target["board"]),
+                    "architecture": str(firmware_target["architecture"]),
+                    "toolchain": str(firmware_target["toolchain"]),
+                    "languages": list(firmware_target["languages"]),
+                }
+                if firmware_target is not None
+                else None
+            ),
+            "buildProfile": project["build_profile"],
+            "buildProfileLabel": FIRMWARE_BUILD_PROFILES.get(str(project["build_profile"]), "Ladenie"),
             "entryFileId": project["entry_file_id"],
             "createdAt": project["created_at"],
             "updatedAt": project["updated_at"],

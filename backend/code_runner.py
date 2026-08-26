@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import resource
+import re
 import selectors
+import shlex
 import shutil
 import signal
 import subprocess
@@ -16,10 +18,18 @@ from typing import Any
 
 MAX_SOURCE_BYTES = 200 * 1024
 MAX_INPUT_BYTES = 64 * 1024
+MAX_ARGUMENT_BYTES = 8 * 1024
+MAX_ARGUMENT_COUNT = 32
 MAX_OUTPUT_BYTES = 64 * 1024
 COMPILE_TIMEOUT_SECONDS = 4.0
 RUN_TIMEOUT_SECONDS = 2.0
 MEMORY_LIMIT_BYTES = 128 * 1024 * 1024
+# V8 si pri štarte rezervuje väčší adresný priestor než potrebuje krátky skript.
+NODE_MEMORY_LIMIT_BYTES = 1024 * 1024 * 1024
+NODE_MAX_OLD_SPACE_MB = 96
+COMPILED_LANGUAGE_MEMORY_LIMIT_BYTES = 1024 * 1024 * 1024
+JAVA_MAX_HEAP_MB = 96
+JAVA_MAX_METASPACE_MB = 96
 MAX_PROCESS_COUNT = 16
 
 
@@ -105,8 +115,17 @@ class CCodeRunner:
             "message": "Bezpečný sandbox Bubblewrap sa na tomto serveri nepodarilo spustiť.",
         }
 
-    def _execute(self, command: list[str], workspace: Path, *, timeout: float, stdin_path: Path | None = None) -> dict[str, Any]:
-        sandbox_command = self._sandbox_command(workspace, command)
+    def _execute(
+        self,
+        command: list[str],
+        workspace: Path,
+        *,
+        timeout: float,
+        stdin_path: Path | None = None,
+        memory_limit: int = MEMORY_LIMIT_BYTES,
+        environment: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        sandbox_command = self._sandbox_command(workspace, command, environment=environment)
         started = time.monotonic()
         stdin_handle = stdin_path.open("rb") if stdin_path else subprocess.DEVNULL
         try:
@@ -118,7 +137,7 @@ class CCodeRunner:
                     stderr=subprocess.PIPE,
                     cwd=workspace,
                     start_new_session=True,
-                    preexec_fn=self._limit_process,
+                    preexec_fn=lambda: self._limit_process(memory_limit),
                 )
             except OSError as error:
                 raise CodeRunnerError("Bezpečný sandbox sa nepodarilo spustiť.") from error
@@ -136,7 +155,13 @@ class CCodeRunner:
             "durationMs": round((time.monotonic() - started) * 1000),
         }
 
-    def _sandbox_command(self, workspace: Path, command: list[str]) -> list[str]:
+    def _sandbox_command(
+        self,
+        workspace: Path,
+        command: list[str],
+        *,
+        environment: dict[str, str] | None = None,
+    ) -> list[str]:
         if not self.bwrap_path:
             raise CodeRunnerError("Bezpečný sandbox nie je dostupný.")
         if not self.unshare_path:
@@ -162,7 +187,9 @@ class CCodeRunner:
             "PATH",
             "/usr/bin:/bin",
         ]
-        for system_path in ("/usr", "/bin", "/lib", "/lib64"):
+        for key, value in (environment or {}).items():
+            arguments.extend(["--setenv", key, value])
+        for system_path in ("/usr", "/bin", "/lib", "/lib64", "/etc"):
             if Path(system_path).exists():
                 arguments.extend(["--ro-bind", system_path, system_path])
         arguments.extend(
@@ -195,9 +222,9 @@ class CCodeRunner:
         return text
 
     @staticmethod
-    def _limit_process() -> None:
+    def _limit_process(memory_limit: int = MEMORY_LIMIT_BYTES) -> None:
         resource.setrlimit(resource.RLIMIT_CPU, (3, 3))
-        resource.setrlimit(resource.RLIMIT_AS, (MEMORY_LIMIT_BYTES, MEMORY_LIMIT_BYTES))
+        resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
         resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES))
         resource.setrlimit(resource.RLIMIT_NOFILE, (32, 32))
 
@@ -264,7 +291,24 @@ class DevelopmentCodeRunner(CCodeRunner):
         "python": {"label": "Python", "tool": "python3", "filename": "main.py", "compile": False},
         "javascript": {"label": "JavaScript", "tool": "node", "filename": "main.js", "compile": False},
         "php": {"label": "PHP", "tool": "php", "filename": "main.php", "compile": False},
-        "csharp": {"label": "C#", "tool": "dotnet", "filename": "Program.cs", "compile": False, "planned": True},
+        "csharp": {"label": "C#", "tool": "dotnet", "filename": "Program.cs", "compile": True},
+        "asm": {
+            "label": "Assembler x86-64",
+            "tool": "as",
+            "additional_tools": ("ld",),
+            "filename": "main.s",
+            "compile": True,
+        },
+        "bash": {"label": "Bash", "tool": "bash", "filename": "main.sh", "compile": False},
+        "rust": {"label": "Rust", "tool": "rustc", "filename": "main.rs", "compile": True},
+        "go": {"label": "Go", "tool": "go", "filename": "main.go", "compile": True},
+        "java": {
+            "label": "Java",
+            "tool": "javac",
+            "additional_tools": ("java",),
+            "filename": "Main.java",
+            "compile": True,
+        },
     }
 
     def __init__(self) -> None:
@@ -273,18 +317,29 @@ class DevelopmentCodeRunner(CCodeRunner):
             language: self.gcc_path if language == "c" else shutil.which(str(definition["tool"]))
             for language, definition in self.LANGUAGE_DEFINITIONS.items()
         }
+        self.additional_tool_paths = {
+            language: {
+                tool: shutil.which(tool)
+                for tool in definition.get("additional_tools", ())
+            }
+            for language, definition in self.LANGUAGE_DEFINITIONS.items()
+        }
+        self.dotnet_target_framework = self._dotnet_target_framework()
 
     def status(self) -> dict[str, Any]:
         sandbox = super().status()
         languages: dict[str, dict[str, Any]] = {}
         for language, definition in self.LANGUAGE_DEFINITIONS.items():
-            planned = bool(definition.get("planned"))
             tool_path = self.tool_paths.get(language)
-            available = bool(sandbox["available"] and tool_path and not planned)
-            if planned:
-                message = "Profil C# pripravíme po bezpečnom nastavení .NET SDK."
-            elif not tool_path:
-                message = f"Nástroj {definition['tool']} nie je nainštalovaný."
+            missing_tools = ([] if tool_path else [str(definition["tool"])]) + [
+                tool
+                for tool, path in self.additional_tool_paths.get(language, {}).items()
+                if not path
+            ]
+            available = bool(sandbox["available"] and not missing_tools)
+            if missing_tools:
+                joined_tools = ", ".join(missing_tools)
+                message = f"Chýba nástroj: {joined_tools}."
             elif not sandbox["available"]:
                 message = str(sandbox["message"])
             else:
@@ -300,6 +355,8 @@ class DevelopmentCodeRunner(CCodeRunner):
         *,
         files: Any = None,
         entry_filename: Any = None,
+        execute: bool = True,
+        arguments: Any = None,
     ) -> dict[str, Any]:
         language_id = str(language or "").strip()
         definition = self.LANGUAGE_DEFINITIONS.get(language_id)
@@ -310,6 +367,7 @@ class DevelopmentCodeRunner(CCodeRunner):
             raise CodeRunnerError(str(language_status["message"]))
         source_text = self._limited_text(source, MAX_SOURCE_BYTES, "Zdrojový kód je príliš veľký.")
         input_text = self._limited_text(stdin, MAX_INPUT_BYTES, "Vstup programu je príliš veľký.")
+        command_arguments = self._command_arguments(arguments)
         if not source_text.strip():
             raise CodeRunnerError("Zdrojový kód nemôže byť prázdny.")
 
@@ -322,6 +380,7 @@ class DevelopmentCodeRunner(CCodeRunner):
             input_path.write_text(input_text, encoding="utf-8")
             tool = str(self.tool_paths[language_id])
             entry_path = f"/work/{filename}"
+            run_memory_limit = MEMORY_LIMIT_BYTES
 
             if language_id == "c":
                 source_paths = [f"/work/{name}" for name, _ in project_files if name.lower().endswith(".c")]
@@ -381,19 +440,232 @@ class DevelopmentCodeRunner(CCodeRunner):
                 run_command = ["/work/program"]
                 compile_result = {**compile_result, "stdout": compile_result["stdout"] or "Preklad prebehol úspešne."}
             elif language_id == "python":
-                compile_result = self._skipped_compile_result("Spúšťam Python.")
+                compile_result = self._execute(
+                    [tool, "-m", "py_compile", entry_path],
+                    workspace,
+                    timeout=COMPILE_TIMEOUT_SECONDS,
+                )
+                if compile_result["timedOut"] or compile_result["outputLimited"] or compile_result["exitCode"] != 0:
+                    return {"compiled": False, "compile": compile_result, "run": None}
                 run_command = [tool, entry_path]
+                compile_result = {**compile_result, "stdout": compile_result["stdout"] or "Kontrola syntaxe Pythonu prebehla úspešne."}
             elif language_id == "javascript":
-                compile_result = self._skipped_compile_result("Spúšťam JavaScript.")
-                run_command = [tool, entry_path]
+                compile_result = self._execute(
+                    [tool, "--check", entry_path],
+                    workspace,
+                    timeout=COMPILE_TIMEOUT_SECONDS,
+                    memory_limit=NODE_MEMORY_LIMIT_BYTES,
+                )
+                if compile_result["timedOut"] or compile_result["outputLimited"] or compile_result["exitCode"] != 0:
+                    return {"compiled": False, "compile": compile_result, "run": None}
+                run_command = [tool, f"--max-old-space-size={NODE_MAX_OLD_SPACE_MB}", entry_path]
+                run_memory_limit = NODE_MEMORY_LIMIT_BYTES
+                compile_result = {**compile_result, "stdout": compile_result["stdout"] or "Kontrola syntaxe JavaScriptu prebehla úspešne."}
             elif language_id == "php":
-                compile_result = self._skipped_compile_result("Spúšťam PHP.")
+                compile_result = self._execute(
+                    [tool, "-l", entry_path],
+                    workspace,
+                    timeout=COMPILE_TIMEOUT_SECONDS,
+                )
+                if compile_result["timedOut"] or compile_result["outputLimited"] or compile_result["exitCode"] != 0:
+                    return {"compiled": False, "compile": compile_result, "run": None}
                 run_command = [tool, entry_path]
+            elif language_id == "bash":
+                compile_result = self._execute(
+                    [tool, "-n", entry_path],
+                    workspace,
+                    timeout=COMPILE_TIMEOUT_SECONDS,
+                )
+                if compile_result["timedOut"] or compile_result["outputLimited"] or compile_result["exitCode"] != 0:
+                    return {"compiled": False, "compile": compile_result, "run": None}
+                run_command = [tool, entry_path]
+                compile_result = {**compile_result, "stdout": compile_result["stdout"] or "Kontrola syntaxe Bash skriptu prebehla úspešne."}
+            elif language_id == "csharp":
+                source_paths = [f"/work/{name}" for name, _ in project_files if name.lower().endswith(".cs")]
+                if not source_paths:
+                    raise CodeRunnerError("Projekt C# nemá zdrojový súbor s príponou .cs.")
+                project_name = "PoznamkovnikProgram"
+                project_file = workspace / f"{project_name}.csproj"
+                project_file.write_text(
+                    "\n".join(
+                        (
+                            '<Project Sdk="Microsoft.NET.Sdk">',
+                            "  <PropertyGroup>",
+                            "    <OutputType>Exe</OutputType>",
+                            f"    <TargetFramework>{self.dotnet_target_framework}</TargetFramework>",
+                            f"    <AssemblyName>{project_name}</AssemblyName>",
+                            "    <ImplicitUsings>enable</ImplicitUsings>",
+                            "    <Nullable>enable</Nullable>",
+                            "  </PropertyGroup>",
+                            "</Project>",
+                            "",
+                        )
+                    ),
+                    encoding="utf-8",
+                )
+                dotnet_environment = {
+                    "DOTNET_CLI_HOME": "/tmp/dotnet",
+                    "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+                    "DOTNET_NOLOGO": "1",
+                    "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1",
+                    "NUGET_PACKAGES": "/tmp/nuget-packages",
+                }
+                compile_result = self._execute(
+                    [
+                        tool,
+                        "build",
+                        f"/work/{project_name}.csproj",
+                        "--configuration",
+                        "Release",
+                        "--output",
+                        "/work/build",
+                        "--nologo",
+                    ],
+                    workspace,
+                    timeout=COMPILE_TIMEOUT_SECONDS,
+                    memory_limit=COMPILED_LANGUAGE_MEMORY_LIMIT_BYTES,
+                    environment=dotnet_environment,
+                )
+                if compile_result["timedOut"] or compile_result["outputLimited"] or compile_result["exitCode"] != 0:
+                    return {"compiled": False, "compile": compile_result, "run": None}
+                run_command = [tool, f"/work/build/{project_name}.dll"]
+                run_memory_limit = COMPILED_LANGUAGE_MEMORY_LIMIT_BYTES
+                compile_result = {**compile_result, "stdout": compile_result["stdout"] or "Preklad C# prebehol úspešne."}
+            elif language_id == "asm":
+                source_paths = [
+                    f"/work/{name}"
+                    for name, _ in project_files
+                    if name.lower().endswith((".s", ".asm"))
+                ]
+                if not source_paths:
+                    raise CodeRunnerError("Projekt assemblera nemá zdrojový súbor s príponou .s alebo .asm.")
+                objects: list[str] = []
+                compile_steps: list[dict[str, Any]] = []
+                for index, source_path in enumerate(source_paths):
+                    object_path = f"/work/object-{index}.o"
+                    assemble_result = self._execute(
+                        [tool, "--64", source_path, "-o", object_path],
+                        workspace,
+                        timeout=COMPILE_TIMEOUT_SECONDS,
+                    )
+                    compile_steps.append(assemble_result)
+                    if assemble_result["timedOut"] or assemble_result["outputLimited"] or assemble_result["exitCode"] != 0:
+                        return {"compiled": False, "compile": self._merge_compile_results(compile_steps), "run": None}
+                    objects.append(object_path)
+                link_result = self._execute(
+                    [str(self.additional_tool_paths[language_id]["ld"]), "-o", "/work/program", *objects],
+                    workspace,
+                    timeout=COMPILE_TIMEOUT_SECONDS,
+                )
+                compile_steps.append(link_result)
+                compile_result = self._merge_compile_results(compile_steps)
+                if link_result["timedOut"] or link_result["outputLimited"] or link_result["exitCode"] != 0:
+                    return {"compiled": False, "compile": compile_result, "run": None}
+                run_command = ["/work/program"]
+            elif language_id == "rust":
+                source_paths = [f"/work/{name}" for name, _ in project_files if name.lower().endswith(".rs")]
+                if not source_paths:
+                    raise CodeRunnerError("Projekt Rust nemá zdrojový súbor s príponou .rs.")
+                compile_result = self._execute(
+                    [
+                        tool,
+                        "--edition=2021",
+                        "-C",
+                        "debuginfo=1",
+                        entry_path,
+                        "-o",
+                        "/work/program",
+                    ],
+                    workspace,
+                    timeout=COMPILE_TIMEOUT_SECONDS,
+                    memory_limit=COMPILED_LANGUAGE_MEMORY_LIMIT_BYTES,
+                )
+                if compile_result["timedOut"] or compile_result["outputLimited"] or compile_result["exitCode"] != 0:
+                    return {"compiled": False, "compile": compile_result, "run": None}
+                run_command = ["/work/program"]
+                compile_result = {**compile_result, "stdout": compile_result["stdout"] or "Preklad Rust prebehol úspešne."}
+            elif language_id == "go":
+                source_paths = [f"/work/{name}" for name, _ in project_files if name.lower().endswith(".go")]
+                if not source_paths:
+                    raise CodeRunnerError("Projekt Go nemá zdrojový súbor s príponou .go.")
+                entry_directory = PurePosixPath(filename).parent
+                package_path = "." if str(entry_directory) in {"", "."} else f"./{entry_directory}"
+                if not any(name == "go.mod" for name, _ in project_files):
+                    (workspace / "go.mod").write_text("module poznamkovnik.local/project\ngo 1.20\n", encoding="utf-8")
+                compile_result = self._execute(
+                    [tool, "build", "-o", "/work/program", package_path],
+                    workspace,
+                    timeout=COMPILE_TIMEOUT_SECONDS,
+                    memory_limit=COMPILED_LANGUAGE_MEMORY_LIMIT_BYTES,
+                    environment={
+                        "GOCACHE": "/tmp/go-build",
+                        "GOMODCACHE": "/tmp/go-mod",
+                        "GOPATH": "/tmp/go",
+                    },
+                )
+                if compile_result["timedOut"] or compile_result["outputLimited"] or compile_result["exitCode"] != 0:
+                    return {"compiled": False, "compile": compile_result, "run": None}
+                run_command = ["/work/program"]
+                compile_result = {**compile_result, "stdout": compile_result["stdout"] or "Preklad Go prebehol úspešne."}
+            elif language_id == "java":
+                source_paths = [f"/work/{name}" for name, _ in project_files if name.lower().endswith(".java")]
+                if not source_paths:
+                    raise CodeRunnerError("Projekt Java nemá zdrojový súbor s príponou .java.")
+                entry_source = next(content for name, content in project_files if name == filename)
+                package_match = re.search(r"^\s*package\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*;", entry_source, re.MULTILINE)
+                class_name = PurePosixPath(filename).stem
+                main_class = f"{package_match.group(1)}.{class_name}" if package_match else class_name
+                (workspace / "classes").mkdir()
+                compile_result = self._execute(
+                    [
+                        tool,
+                        f"-J-Xmx{JAVA_MAX_HEAP_MB}m",
+                        f"-J-XX:MaxMetaspaceSize={JAVA_MAX_METASPACE_MB}m",
+                        "-d",
+                        "/work/classes",
+                        *source_paths,
+                    ],
+                    workspace,
+                    timeout=COMPILE_TIMEOUT_SECONDS,
+                    memory_limit=COMPILED_LANGUAGE_MEMORY_LIMIT_BYTES,
+                )
+                if compile_result["timedOut"] or compile_result["outputLimited"] or compile_result["exitCode"] != 0:
+                    return {"compiled": False, "compile": compile_result, "run": None}
+                run_command = [
+                    str(self.additional_tool_paths[language_id]["java"]),
+                    f"-Xmx{JAVA_MAX_HEAP_MB}m",
+                    f"-XX:MaxMetaspaceSize={JAVA_MAX_METASPACE_MB}m",
+                    "-cp",
+                    "/work/classes",
+                    main_class,
+                ]
+                run_memory_limit = COMPILED_LANGUAGE_MEMORY_LIMIT_BYTES
+                compile_result = {**compile_result, "stdout": compile_result["stdout"] or "Preklad Java prebehol úspešne."}
             else:
                 raise CodeRunnerError("Tento jazyk ešte nemá bezpečný profil spúšťania.")
 
-            run_result = self._execute(run_command, workspace, timeout=RUN_TIMEOUT_SECONDS, stdin_path=input_path)
+            if not execute:
+                return {"compiled": True, "compile": compile_result, "run": None}
+            run_result = self._execute(
+                [*run_command, *command_arguments],
+                workspace,
+                timeout=RUN_TIMEOUT_SECONDS,
+                stdin_path=input_path,
+                memory_limit=run_memory_limit,
+            )
             return {"compiled": True, "compile": compile_result, "run": run_result}
+
+    def _command_arguments(self, arguments: Any) -> list[str]:
+        raw_arguments = self._limited_text(arguments, MAX_ARGUMENT_BYTES, "Parametre spúšťania sú príliš dlhé.")
+        if not raw_arguments.strip():
+            return []
+        try:
+            parsed = shlex.split(raw_arguments, posix=True)
+        except ValueError as error:
+            raise CodeRunnerError(f"Parametre spúšťania majú neuzatvorené úvodzovky: {error}") from error
+        if len(parsed) > MAX_ARGUMENT_COUNT:
+            raise CodeRunnerError(f"Program môže dostať najviac {MAX_ARGUMENT_COUNT} parametrov.")
+        return parsed
 
     def _project_files(self, files: Any, entry_filename: str, entry_source: str) -> list[tuple[str, str]]:
         candidates = files if isinstance(files, list) else []
@@ -446,6 +718,17 @@ class DevelopmentCodeRunner(CCodeRunner):
         directories = sorted({str(PurePosixPath(filename).parent) for filename, _ in files if "/" in filename})
         return [f"-I/work/{directory}" for directory in directories if directory not in {"", "."}]
 
+    def _dotnet_target_framework(self) -> str:
+        dotnet = self.tool_paths.get("csharp")
+        if not dotnet:
+            return "net8.0"
+        try:
+            result = subprocess.run([dotnet, "--version"], capture_output=True, check=False, text=True, timeout=1.5)
+        except OSError:
+            return "net8.0"
+        match = re.match(r"(\d+)\.", result.stdout.strip())
+        return f"net{match.group(1)}.0" if match else "net8.0"
+
     @staticmethod
     def _skipped_compile_result(message: str) -> dict[str, Any]:
         return {
@@ -455,4 +738,20 @@ class DevelopmentCodeRunner(CCodeRunner):
             "timedOut": False,
             "outputLimited": False,
             "durationMs": 0,
+        }
+
+    @staticmethod
+    def _merge_compile_results(results: list[dict[str, Any]]) -> dict[str, Any]:
+        if not results:
+            return DevelopmentCodeRunner._skipped_compile_result("Preklad neprebehol.")
+        stdout = "\n".join(str(result.get("stdout") or "").strip() for result in results if result.get("stdout")).strip()
+        stderr = "\n".join(str(result.get("stderr") or "").strip() for result in results if result.get("stderr")).strip()
+        last = results[-1]
+        return {
+            "stdout": stdout or "Preklad prebehol úspešne.",
+            "stderr": stderr,
+            "exitCode": int(last.get("exitCode", 0)),
+            "timedOut": any(bool(result.get("timedOut")) for result in results),
+            "outputLimited": any(bool(result.get("outputLimited")) for result in results),
+            "durationMs": sum(int(result.get("durationMs", 0)) for result in results),
         }

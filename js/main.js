@@ -122,7 +122,12 @@ import {
   isTutorialPlaygroundOpen,
   openTutorialPanel
 } from './tutorial.js';
-import { closeDevelopmentPanel, initializeDevelopment, isDevelopmentPanelOpen } from './development.js';
+import {
+  closeDevelopmentPanel,
+  exitDevelopmentFocusMode,
+  initializeDevelopment,
+  isDevelopmentPanelOpen
+} from './development.js';
 
 document.addEventListener('pointermove', (event) => {
   if (!isAuthenticated()) return;
@@ -633,6 +638,7 @@ document.addEventListener('keydown', (event) => {
 
     if (isDevelopmentPanelOpen()) {
       event.preventDefault();
+      if (exitDevelopmentFocusMode()) return;
       void closeWorkingTopSection('development');
       return;
     }

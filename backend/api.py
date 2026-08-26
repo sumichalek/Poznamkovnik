@@ -319,6 +319,8 @@ class AppHandler(SimpleHTTPRequestHandler):
             data = self._read_json()
             data.setdefault("id", str(uuid.uuid4()))
             return {"project": self.context.database.create_development_project(user["id"], data)}
+        if route == ["development", "projects", "import"] and method == "POST":
+            return {"project": self.context.database.import_development_project(user["id"], self._read_json(25 * 1024 * 1024))}
         if len(route) >= 3 and route[:2] == ["development", "projects"]:
             project_id = route[2]
             if len(route) == 3 and method == "PUT":
@@ -332,13 +334,62 @@ class AppHandler(SimpleHTTPRequestHandler):
                 return {"project": self.context.database.update_development_file(user["id"], project_id, route[4], self._read_json())}
             if len(route) == 5 and route[3] == "files" and method == "DELETE":
                 return {"project": self.context.database.delete_development_file(user["id"], project_id, route[4])}
+            if len(route) == 6 and route[3] == "files" and route[5] == "move" and method == "POST":
+                return {
+                    "project": self.context.database.move_development_file(
+                        user["id"], project_id, route[4], self._read_json()
+                    )
+                }
+            if len(route) == 4 and route[3] == "tests" and method == "GET":
+                return {"tests": self.context.database.list_development_test_cases(user["id"], project_id)}
+            if len(route) == 4 and route[3] == "tests" and method == "POST":
+                data = self._read_json()
+                data.setdefault("id", str(uuid.uuid4()))
+                return {"test": self.context.database.create_development_test_case(user["id"], project_id, data)}
+            if len(route) == 5 and route[3] == "tests" and method == "PUT":
+                return {
+                    "test": self.context.database.update_development_test_case(
+                        user["id"], project_id, route[4], self._read_json()
+                    )
+                }
+            if len(route) == 5 and route[3] == "tests" and method == "DELETE":
+                self.context.database.delete_development_test_case(user["id"], project_id, route[4])
+                return {"deleted": True}
+            if len(route) == 6 and route[3] == "tests" and route[5] == "run" and method == "POST":
+                test_case = self.context.database.development_test_case(user["id"], project_id, route[4])
+                entry = self.context.database.development_entry_file(user["id"], project_id)
+                if entry["projectKind"] == "firmware":
+                    raise ValidationError(
+                        "Firmvér zatiaľ nemožno spúšťať v skúšobni. Najprv k nemu pripojíme konkrétny toolchain."
+                    )
+                result = self.context.development_runner.run(
+                    entry["language"],
+                    entry["source"],
+                    test_case["stdin"],
+                    files=entry["files"],
+                    entry_filename=entry["filename"],
+                    arguments=test_case["arguments"],
+                )
+                result["entryFileId"] = entry["fileId"]
+                return {"result": result, "test": test_case}
             if len(route) == 4 and route[3] == "run" and method == "POST":
                 data = self._read_json()
                 entry = self.context.database.development_entry_file(user["id"], project_id, str(data.get("fileId") or ""))
+                if entry["projectKind"] == "firmware":
+                    raise ValidationError(
+                        "Firmvér zatiaľ nemožno spúšťať v skúšobni. Najprv k nemu pripojíme konkrétny toolchain."
+                    )
                 source = data.get("source", entry["source"])
                 stdin = data.get("stdin", "")
+                arguments = data.get("arguments", "")
                 result = self.context.development_runner.run(
-                    entry["language"], source, stdin, files=entry["files"], entry_filename=entry["filename"]
+                    entry["language"],
+                    source,
+                    stdin,
+                    files=entry["files"],
+                    entry_filename=entry["filename"],
+                    execute=data.get("execute") is not False,
+                    arguments=arguments,
                 )
                 result["entryFileId"] = entry["fileId"]
                 return result
@@ -1000,8 +1051,8 @@ class AppHandler(SimpleHTTPRequestHandler):
                 return self.context.database.source_collection_detail(user_id, collection_id)
         raise ApiError(HTTPStatus.NOT_FOUND, "Neznámy endpoint zbierky zdrojov.")
 
-    def _read_json(self) -> dict[str, Any]:
-        content_length = self._content_length(2 * 1024 * 1024)
+    def _read_json(self, maximum: int = 2 * 1024 * 1024) -> dict[str, Any]:
+        content_length = self._content_length(maximum)
         content_type = self.headers.get_content_type()
         if content_type != "application/json":
             raise ApiError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "API očakáva JSON dáta.")

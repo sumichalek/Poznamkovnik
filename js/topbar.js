@@ -2,6 +2,10 @@ import { dom } from './dom.js';
 import { state } from './state.js';
 
 function topbarShouldStayVisible() {
+  const developmentFocusMode =
+    dom.developmentPanel.classList.contains('is-open') &&
+    dom.developmentPanel.classList.contains('is-focus-mode');
+
   return (
     state.pointerNearTop ||
     dom.settingsDialog.open ||
@@ -15,7 +19,7 @@ function topbarShouldStayVisible() {
     dom.calendarEventDock.classList.contains('is-open') ||
     dom.tutorialPanel.classList.contains('is-open') ||
     dom.tutorialPlaygroundDock.classList.contains('is-open') ||
-    dom.developmentPanel.classList.contains('is-open') ||
+    (dom.developmentPanel.classList.contains('is-open') && !developmentFocusMode) ||
     dom.musicDock.classList.contains('is-open') ||
     !dom.musicMiniPlayer.hidden ||
     dom.topbar.matches(':hover') ||
