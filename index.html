@@ -1215,6 +1215,13 @@
               </header>
               <div id="development-file-tree" class="development-file-tree" role="tree" aria-label="Súbory projektu"></div>
             </section>
+            <section id="development-symbol-browser" class="development-symbol-browser" aria-labelledby="development-symbol-browser-title" hidden>
+              <header>
+                <h3 id="development-symbol-browser-title">Symboly</h3>
+                <button id="development-symbol-browser-toggle" class="panel-icon-button" type="button" aria-expanded="true" aria-label="Zbaliť osnovu symbolov" title="Zbaliť osnovu symbolov"><span data-app-icon="chevron-down"></span></button>
+              </header>
+              <div id="development-symbol-list" class="development-symbol-list" role="navigation" aria-label="Osnova otvoreného súboru"></div>
+            </section>
           </aside>
           <div id="development-sidebar-resize" class="development-resize-handle development-resize-handle-vertical" role="separator" aria-label="Zmeniť šírku zoznamu projektov" aria-orientation="vertical" tabindex="0"></div>
           <section id="development-workspace" class="development-workspace" aria-live="polite">
@@ -1234,6 +1241,9 @@
                 <div class="development-editor-actions">
                   <div class="development-toolbar-group" role="group" aria-label="Pracovná plocha">
                     <button id="development-target-configure" class="panel-icon-button" type="button" aria-label="Nastaviť cieľ firmvéru" title="Nastaviť cieľ firmvéru" hidden><span data-app-icon="settings"></span></button>
+                    <button id="development-definition-back" class="panel-icon-button" type="button" aria-label="Späť na miesto použitia" title="Späť na miesto použitia (Ctrl+Alt+šípka doľava)" hidden disabled><span data-app-icon="arrow-left"></span></button>
+                    <button id="development-quick-open" class="panel-icon-button" type="button" aria-label="Rýchlo otvoriť súbor" title="Rýchlo otvoriť súbor alebo symbol (Ctrl+P)"><span data-app-icon="search"></span></button>
+                    <button id="development-shortcuts" class="panel-icon-button" type="button" aria-label="Skratky Vývoja" title="Skratky Vývoja"><span data-app-icon="keyboard"></span></button>
                     <button id="development-focus-mode" class="panel-icon-button" type="button" aria-pressed="false" aria-label="Otvoriť editor na celej ploche" title="Celá plocha"><span data-app-icon="maximize"></span></button>
                   </div>
                   <div class="development-toolbar-group" role="group" aria-label="Súbory projektu">
@@ -1258,6 +1268,7 @@
                 <section class="development-code-section">
                   <div id="development-find-bar" class="development-find-bar" hidden>
                     <label class="development-find-field"><span class="visually-hidden">Hľadať</span><input id="development-find-input" type="search" autocomplete="off" spellcheck="false" placeholder="Hľadať v súbore"></label>
+                    <button id="development-find-scope" class="panel-icon-button" type="button" aria-pressed="false" aria-label="Hľadať v projekte" title="Hľadať v projekte (Ctrl+Shift+F)"><span data-app-icon="folder"></span></button>
                     <output id="development-find-count" class="development-find-count" aria-live="polite"></output>
                     <button id="development-find-previous" class="panel-icon-button" type="button" aria-label="Predchádzajúci výsledok" title="Predchádzajúci výsledok"><span data-app-icon="arrow-up"></span></button>
                     <button id="development-find-next" class="panel-icon-button" type="button" aria-label="Nasledujúci výsledok" title="Nasledujúci výsledok"><span data-app-icon="arrow-down"></span></button>
@@ -1266,6 +1277,7 @@
                     <button id="development-replace-all" class="panel-icon-button" type="button" aria-label="Nahradiť všetko" title="Nahradiť všetko"><span data-app-icon="duplicate"></span></button>
                     <button id="development-find-close" class="panel-icon-button" type="button" aria-label="Zavrieť vyhľadávanie" title="Zavrieť vyhľadávanie"><span data-app-icon="close"></span></button>
                   </div>
+                  <div id="development-project-find-results" class="development-project-find-results" role="listbox" aria-label="Výsledky vyhľadávania v projekte" hidden></div>
                   <div class="development-code-editor">
                     <div id="development-code-mount"></div>
                   </div>
@@ -1276,17 +1288,17 @@
                     <button id="development-console-toggle" class="panel-icon-button" type="button" aria-expanded="false" aria-label="Zobraziť konzolu" title="Zobraziť konzolu"><span data-app-icon="terminal"></span></button>
                   </header>
                   <div id="development-console-input-panel" class="development-console-input">
-                    <header><span>Vstup</span><input id="development-run-arguments" type="text" maxlength="8192" autocomplete="off" spellcheck="false" placeholder="Parametre" aria-label="Parametre spúšťania" title="Parametre spúšťania, napríklad: --podrobne &quot;súbor s medzerou.txt&quot;"></header>
+                    <header><span>Vstup</span><div><input id="development-run-arguments" type="text" maxlength="8192" autocomplete="off" spellcheck="false" placeholder="Parametre" aria-label="Parametre spúšťania" title="Parametre spúšťania, napríklad: --podrobne &quot;súbor s medzerou.txt&quot;"><button id="development-input-clear" class="panel-icon-button" type="button" aria-label="Vyčistiť vstup" title="Vyčistiť vstup"><span data-app-icon="eraser"></span></button></div></header>
                     <textarea id="development-input" spellcheck="false" autocomplete="off" wrap="off" placeholder="Voliteľný štandardný vstup"></textarea>
                   </div>
                   <div id="development-input-resize" class="development-resize-handle development-resize-handle-vertical" role="separator" aria-label="Zmeniť šírku vstupu programu" aria-orientation="vertical" tabindex="0"></div>
                   <section id="development-compile-panel" class="development-console-output" aria-labelledby="development-compile-title">
-                    <header><h4 id="development-compile-title">Preklad</h4><div><button id="development-diagnostic-next" class="development-diagnostic-next" type="button" hidden><span data-app-icon="code"></span><span id="development-diagnostic-count"></span></button><span id="development-compile-meta"></span></div></header>
+                    <header><h4 id="development-compile-title">Preklad</h4><div><button id="development-compile-copy" class="panel-icon-button" type="button" aria-label="Kopírovať preklad" title="Kopírovať preklad"><span data-app-icon="duplicate"></span></button><button id="development-compile-clear" class="panel-icon-button" type="button" aria-label="Vyčistiť preklad" title="Vyčistiť preklad"><span data-app-icon="eraser"></span></button><button id="development-problems" class="development-problems-button" type="button" hidden><span data-app-icon="list-check"></span><span id="development-problems-count"></span></button><button id="development-diagnostic-next" class="development-diagnostic-next" type="button" hidden><span data-app-icon="code"></span><span id="development-diagnostic-count"></span></button><span id="development-compile-meta"></span></div></header>
                     <pre id="development-compile-output">Projekt ešte nebol spustený.</pre>
                   </section>
                   <div id="development-compile-resize" class="development-resize-handle development-resize-handle-vertical" role="separator" aria-label="Zmeniť šírku výpisu prekladu" aria-orientation="vertical" tabindex="0"></div>
                   <section id="development-run-panel" class="development-console-output" aria-labelledby="development-run-title">
-                    <header><h4 id="development-run-title">Výstup</h4><span id="development-run-meta"></span></header>
+                    <header><h4 id="development-run-title">Výstup</h4><div><button id="development-run-copy" class="panel-icon-button" type="button" aria-label="Kopírovať výstup" title="Kopírovať výstup"><span data-app-icon="duplicate"></span></button><button id="development-run-clear" class="panel-icon-button" type="button" aria-label="Vyčistiť výstup" title="Vyčistiť výstup"><span data-app-icon="eraser"></span></button><span id="development-run-meta"></span></div></header>
                     <pre id="development-run-output">Výstup programu sa zobrazí tu.</pre>
                   </section>
                 </section>
@@ -1312,14 +1324,97 @@
             <label><input type="radio" name="project-kind" value="firmware"><span>Firmvér</span></label>
           </fieldset>
           <label>Jazyk<select id="development-project-language-input" name="language"></select></label>
+          <label>Profil zostavenia<select id="development-project-build-profile-input" name="build-profile"></select></label>
           <label id="development-project-template-field">Štart<select id="development-project-template-input" name="template"></select></label>
           <div id="development-firmware-fields" class="development-firmware-fields" hidden>
             <label>Cieľ<select id="development-firmware-target-input" name="firmware-target"></select></label>
-            <label>Režim buildu<select id="development-firmware-build-profile-input" name="build-profile"></select></label>
           </div>
           <p id="development-project-form-status" class="form-status" aria-live="polite"></p>
           <footer><button id="development-project-submit" class="primary-action-button" type="submit"><span data-app-icon="plus"></span><span>Vytvoriť projekt</span></button></footer>
         </form>
+      </dialog>
+
+      <dialog id="development-quick-open-dialog" class="app-dialog development-quick-open-dialog" aria-labelledby="development-quick-open-title">
+        <section class="development-quick-open-form">
+          <header>
+            <h2 id="development-quick-open-title">Prejsť</h2>
+            <button id="development-quick-open-cancel" class="panel-icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+          </header>
+          <div class="development-quick-open-modes" role="group" aria-label="Typ prechodu">
+            <button id="development-quick-open-files" type="button" aria-pressed="true"><span data-app-icon="file"></span><span>Súbory</span></button>
+            <button id="development-quick-open-symbols" type="button" aria-pressed="false"><span data-app-icon="list-bullets"></span><span>Symboly</span></button>
+            <button id="development-quick-open-snippets" type="button" aria-pressed="false"><span data-app-icon="code"></span><span>Šablóny</span></button>
+          </div>
+          <label class="visually-hidden" for="development-quick-open-input">Hľadať</label>
+          <input id="development-quick-open-input" type="search" autocomplete="off" spellcheck="false" placeholder="Hľadať súbor">
+          <div id="development-quick-open-results" class="development-quick-open-results" role="listbox" aria-label="Výsledky rýchleho prechodu"></div>
+        </section>
+      </dialog>
+
+      <dialog id="development-go-to-line-dialog" class="app-dialog development-go-to-line-dialog" aria-labelledby="development-go-to-line-title">
+        <form id="development-go-to-line-form" class="development-go-to-line-form" novalidate>
+          <header>
+            <div>
+              <h2 id="development-go-to-line-title">Prejsť na riadok</h2>
+              <p>Aktuálny súbor</p>
+            </div>
+            <button id="development-go-to-line-cancel" class="panel-icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+          </header>
+          <label>Číslo riadku<input id="development-go-to-line-input" type="number" inputmode="numeric" min="1" step="1" required></label>
+          <footer><button class="primary-action-button" type="submit"><span data-app-icon="arrow-down"></span><span>Prejsť</span></button></footer>
+        </form>
+      </dialog>
+
+      <dialog id="development-shortcuts-dialog" class="app-dialog development-shortcuts-dialog" aria-labelledby="development-shortcuts-title">
+        <section class="development-shortcuts-form">
+          <header>
+            <h2 id="development-shortcuts-title">Skratky Vývoja</h2>
+            <button id="development-shortcuts-cancel" class="panel-icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+          </header>
+          <dl class="development-shortcuts-list">
+            <div><dt><kbd>Ctrl</kbd><kbd>P</kbd></dt><dd>Rýchlo otvoriť súbor</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>O</kbd></dt><dd>Prejsť na symbol</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>F</kbd></dt><dd>Hľadať v súbore</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>F</kbd></dt><dd>Hľadať v projekte</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>G</kbd></dt><dd>Prejsť na riadok</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>H</kbd></dt><dd>Nahradiť v súbore</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>S</kbd></dt><dd>Uložiť zmeny</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>Enter</kbd></dt><dd>Preložiť a spustiť</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Enter</kbd></dt><dd>Len preložiť</dd></div>
+            <div><dt><kbd>Tab</kbd> / <kbd>Shift</kbd><kbd>Tab</kbd></dt><dd>Odsadiť alebo zrušiť odsadenie riadkov</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>/</kbd></dt><dd>Komentár alebo odkomentovanie riadkov</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>[</kbd> / <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>]</kbd></dt><dd>Zbaliť alebo rozbaliť blok kódu</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>&larr;</kbd></dt><dd>Späť z definície</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>F12</kbd></dt><dd>Zobraziť definíciu a použitia symbolu</dd></div>
+            <div><dt><kbd>Esc</kbd></dt><dd>Zavrieť dopĺňanie alebo vyhľadávanie</dd></div>
+          </dl>
+        </section>
+      </dialog>
+
+      <dialog id="development-problems-dialog" class="app-dialog development-problems-dialog" aria-labelledby="development-problems-title">
+        <section class="development-problems-form">
+          <header>
+            <div>
+              <h2 id="development-problems-title">Problémy</h2>
+              <p id="development-problems-summary" aria-live="polite"></p>
+            </div>
+            <button id="development-problems-cancel" class="panel-icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+          </header>
+          <div id="development-problems-list" class="development-problems-list" role="listbox" aria-label="Problémy prekladu"></div>
+        </section>
+      </dialog>
+
+      <dialog id="development-references-dialog" class="app-dialog development-references-dialog" aria-labelledby="development-references-title">
+        <section class="development-references-form">
+          <header>
+            <div>
+              <h2 id="development-references-title">Použitia</h2>
+              <p id="development-references-summary" aria-live="polite"></p>
+            </div>
+            <button id="development-references-cancel" class="panel-icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+          </header>
+          <div id="development-references-list" class="development-references-list" role="listbox" aria-label="Definícia a použitia symbolu"></div>
+        </section>
       </dialog>
 
       <dialog id="development-file-dialog" class="app-dialog development-file-dialog" aria-labelledby="development-file-dialog-title">
@@ -1358,7 +1453,10 @@
               <label>Názov<input id="development-test-title" type="text" maxlength="160" autocomplete="off" required></label>
               <label>Parametre<input id="development-test-arguments" type="text" maxlength="8192" autocomplete="off" spellcheck="false" placeholder="napr. --podrobne &quot;súbor s medzerou.txt&quot;"></label>
               <label>Vstup<textarea id="development-test-input" maxlength="65536" spellcheck="false" wrap="off" placeholder="Štandardný vstup programu"></textarea></label>
-              <label>Očakávaný výstup<textarea id="development-test-expected-output" maxlength="131072" spellcheck="false" wrap="off" placeholder="Presný očakávaný výstup"></textarea></label>
+              <div class="development-test-field development-test-expected-field">
+                <header><label for="development-test-expected-output">Očakávaný výstup</label><button id="development-test-use-output" class="panel-icon-button" type="button" aria-label="Použiť posledný výstup programu" title="Použiť posledný výstup programu ako očakávaný výstup"><span data-app-icon="duplicate"></span></button></header>
+                <textarea id="development-test-expected-output" maxlength="131072" spellcheck="false" wrap="off" placeholder="Presný očakávaný výstup"></textarea>
+              </div>
               <p id="development-test-status" class="form-status" aria-live="polite"></p>
               <section id="development-test-result" class="development-test-result" hidden aria-live="polite">
                 <strong id="development-test-result-title"></strong>

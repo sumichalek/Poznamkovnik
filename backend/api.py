@@ -369,6 +369,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     files=entry["files"],
                     entry_filename=entry["filename"],
                     arguments=test_case["arguments"],
+                    build_profile=entry["buildProfile"],
                 )
                 result["entryFileId"] = entry["fileId"]
                 return {"result": result, "test": test_case}
@@ -390,6 +391,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     entry_filename=entry["filename"],
                     execute=data.get("execute") is not False,
                     arguments=arguments,
+                    build_profile=entry["buildProfile"],
                 )
                 result["entryFileId"] = entry["fileId"]
                 return result

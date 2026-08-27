@@ -141,30 +141,49 @@ function completionEntries(languageId) {
   return COMPLETIONS[languageId] || COMPLETIONS.c;
 }
 
-function addSymbol(symbols, label, type, detail) {
-  if (!label || label.length < 2 || symbols.has(label)) return;
-  symbols.set(label, { label, type, detail, boost: 90 });
+const PREPROCESSOR_WORDS = new Set(['define', 'elif', 'else', 'endif', 'error', 'if', 'ifdef', 'ifndef', 'include', 'line', 'pragma', 'undef']);
+
+function blankMatch(value) {
+  return value.replace(/[^\n]/g, ' ');
+}
+
+function sourceForSymbolScan(content) {
+  return String(content || '')
+    // Remove string literals first so an URL such as "https://..." is not mistaken for a comment.
+    .replace(/'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`/g, blankMatch)
+    .replace(/\/\*[\s\S]*?\*\//g, blankMatch)
+    .replace(/\/\/[^\n]*/g, '')
+    // An #include adds no callable symbol. Keep #define so its macro name stays available.
+    .replace(/^\s*#\s*(?!define\b).*$/gm, '');
+}
+
+function addSymbol(symbols, label, type, detail, boost) {
+  if (!label || PREPROCESSOR_WORDS.has(label)) return;
+  const existing = symbols.get(label);
+  if (existing && existing.boost >= boost) return;
+  symbols.set(label, { label, type, detail, boost });
 }
 
 function readProjectSymbols(files, languageId) {
   const symbols = new Map();
   const knownWords = new Set(completionEntries(languageId).map((entry) => entry.label.replace(/^\$/, '')));
   files.forEach((file) => {
-    const content = String(file?.content || '');
-    const location = file?.title ? `v ${file.title}` : 'v projekte';
+    const content = sourceForSymbolScan(file?.content);
+    const location = file?.current ? 'v otvorenom súbore' : file?.title ? `v ${file.title}` : 'v projekte';
+    const boost = file?.current ? 120 : 90;
     const names = content.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) || [];
     names.forEach((name) => {
-      if (!knownWords.has(name)) addSymbol(symbols, name, 'variable', location);
+      if (!knownWords.has(name)) addSymbol(symbols, name, 'variable', location, boost);
     });
     for (const match of content.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
-      if (!knownWords.has(match[1])) addSymbol(symbols, match[1], 'function', location);
+      if (!knownWords.has(match[1])) addSymbol(symbols, match[1], 'function', location, boost);
     }
     for (const match of content.matchAll(/\b(?:class|struct|enum|interface|trait|type)\s+([A-Za-z_][A-Za-z0-9_]*)/g)) {
-      addSymbol(symbols, match[1], 'class', location);
+      addSymbol(symbols, match[1], 'class', location, boost);
     }
     if (languageId === 'php') {
       for (const match of content.matchAll(/\$[A-Za-z_][A-Za-z0-9_]*/g)) {
-        addSymbol(symbols, match[0], 'variable', location);
+        addSymbol(symbols, match[0], 'variable', location, boost);
       }
     }
   });
@@ -179,6 +198,16 @@ export function projectCompletionEntries(languageId, files) {
     ...projectSymbols,
     ...staticEntries.filter((entry) => !seen.has(entry.label)),
   ];
+}
+
+export function projectSnippetEntries(languageId) {
+  return completionEntries(languageId)
+    .filter((entry) => entry.template)
+    .map((entry) => ({
+      label: entry.label,
+      detail: entry.detail,
+      template: entry.template,
+    }));
 }
 
 export function projectIncludeCompletionEntries(languageId, files, { local = false } = {}) {

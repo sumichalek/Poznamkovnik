@@ -10,10 +10,12 @@ import {
   keymap,
   lineNumbers,
 } from '@codemirror/view';
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
+import { defaultKeymap, history, historyKeymap, indentLess, indentWithTab, toggleComment } from '@codemirror/commands';
 import {
   bracketMatching,
   defaultHighlightStyle,
+  foldGutter,
+  foldKeymap,
   indentOnInput,
   StreamLanguage,
   syntaxHighlighting,
@@ -27,6 +29,7 @@ import {
   completionStatus,
   ifNotIn,
   pickedCompletion,
+  snippet,
   snippetCompletion,
 } from '@codemirror/autocomplete';
 import { cpp } from '@codemirror/lang-cpp';
@@ -176,6 +179,16 @@ const editorTheme = EditorView.theme({
     fontSize: '0.72rem',
     fontWeight: '700',
   },
+  '.cm-foldGutter': {
+    width: '16px',
+  },
+  '.cm-foldGutter span': {
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+  },
+  '.cm-foldGutter span:hover': {
+    color: 'var(--accent)',
+  },
   '.cm-activeLine': {
     backgroundColor: 'color-mix(in srgb, var(--accent) 8%, transparent)',
   },
@@ -261,7 +274,7 @@ function completionSource(context) {
   if (!word && !context.explicit) return null;
   const options = projectCompletionEntries(currentLanguageId, [
     ...projectFiles,
-    { title: 'aktuálny súbor', content: context.state.doc.toString() },
+    { title: 'aktuálny súbor', content: context.state.doc.toString(), current: true },
   ]).map((entry) => entry.template
     ? snippetCompletion(entry.template, { label: entry.label, type: entry.type, detail: entry.detail })
     : entry);
@@ -308,13 +321,40 @@ function developmentCompletionSource(context) {
   return includeCompletionSource(context) || genericCompletionSource(context);
 }
 
-export function initializeDevelopmentEditor({ mount, onChange, onFind, onReplace, onSave, onRun }) {
+function symbolAtPosition(doc, position) {
+  const source = doc.toString();
+  const isIdentifierCharacter = (character) => /[A-Za-z0-9_$]/.test(character || '');
+  let cursor = Math.min(Math.max(0, position), source.length);
+  if (!isIdentifierCharacter(source[cursor]) && isIdentifierCharacter(source[cursor - 1])) cursor -= 1;
+  if (!isIdentifierCharacter(source[cursor])) return '';
+  let from = cursor;
+  let to = cursor + 1;
+  while (from > 0 && isIdentifierCharacter(source[from - 1])) from -= 1;
+  while (to < source.length && isIdentifierCharacter(source[to])) to += 1;
+  const symbol = source.slice(from, to);
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(symbol) ? symbol : '';
+}
+
+export function initializeDevelopmentEditor({
+  mount,
+  onChange,
+  onFind,
+  onProjectFind,
+  onReplace,
+  onSave,
+  onRun,
+  onGoToLine,
+  onNavigateSymbol,
+  onNavigateBack,
+  onFindReferences,
+}) {
   if (!mount || editorView) return;
   editorView = new EditorView({
     state: EditorState.create({
       doc: '',
       extensions: [
         lineNumbers(),
+        foldGutter(),
         diagnosticsField,
         highlightActiveLineGutter(),
         history(),
@@ -334,11 +374,26 @@ export function initializeDevelopmentEditor({ mount, onChange, onFind, onReplace
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         languageCompartment.of(languageExtension('c')),
         keymap.of([
+          { key: 'Mod-Shift-f', run: () => { onProjectFind?.(); return true; } },
           { key: 'Mod-f', run: () => { onFind?.(); return true; } },
           { key: 'Mod-h', run: () => { onReplace?.(); return true; } },
           { key: 'Mod-s', run: () => { onSave?.(); return true; } },
           { key: 'Mod-Enter', run: () => { onRun?.(); return true; } },
+          { key: 'Mod-g', run: () => { onGoToLine?.(); return true; } },
+          { key: 'Mod-Alt-ArrowLeft', run: () => { onNavigateBack?.(); return true; } },
+          {
+            key: 'Mod-Shift-F12',
+            run: (view) => {
+              const symbol = symbolAtPosition(view.state.doc, view.state.selection.main.head);
+              if (!symbol) return false;
+              onFindReferences?.(symbol);
+              return true;
+            },
+          },
+          { key: 'Mod-/', run: toggleComment },
+          { key: 'Shift-Tab', run: indentLess },
           indentWithTab,
+          ...foldKeymap,
           ...closeBracketsKeymap,
           ...defaultKeymap,
           ...historyKeymap,
@@ -350,6 +405,15 @@ export function initializeDevelopmentEditor({ mount, onChange, onFind, onReplace
             closeCompletion(view);
             event.preventDefault();
             event.stopPropagation();
+            return true;
+          },
+          click(event, view) {
+            if (event.button !== 0 || (!event.ctrlKey && !event.metaKey)) return false;
+            const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
+            const symbol = position === null ? '' : symbolAtPosition(view.state.doc, position);
+            if (!symbol) return false;
+            event.preventDefault();
+            onNavigateSymbol?.(symbol);
             return true;
           },
         }),
@@ -371,6 +435,30 @@ export function developmentEditorValue() {
 export function developmentEditorSelection() {
   const selection = editorView?.state.selection.main;
   return { from: selection?.from || 0, to: selection?.to || 0 };
+}
+
+export function developmentEditorViewState() {
+  if (!editorView) return null;
+  const selection = editorView.state.selection.main;
+  return {
+    anchor: selection.anchor,
+    head: selection.head,
+    scrollTop: editorView.scrollDOM.scrollTop,
+    scrollLeft: editorView.scrollDOM.scrollLeft,
+  };
+}
+
+export function restoreDevelopmentEditorViewState(viewState) {
+  if (!editorView || !viewState) return;
+  const length = editorView.state.doc.length;
+  const anchor = Math.min(Math.max(0, Number(viewState.anchor) || 0), length);
+  const head = Math.min(Math.max(0, Number(viewState.head) || anchor), length);
+  editorView.dispatch({ selection: { anchor, head } });
+  window.requestAnimationFrame(() => {
+    if (!editorView) return;
+    editorView.scrollDOM.scrollTop = Math.max(0, Number(viewState.scrollTop) || 0);
+    editorView.scrollDOM.scrollLeft = Math.max(0, Number(viewState.scrollLeft) || 0);
+  });
 }
 
 export function setDevelopmentEditorDocument(value, languageId = 'c') {
@@ -406,6 +494,7 @@ export function setDevelopmentEditorProjectFiles(files = []) {
       title: String(file?.title || ''),
       path: String(file?.path || file?.title || ''),
       content: String(file?.content || ''),
+      current: Boolean(file?.current),
     }))
     : [];
 }
@@ -441,5 +530,12 @@ export function replaceDevelopmentEditorRange(from, to, replacement) {
     selection: { anchor: start + text.length },
     scrollIntoView: true,
   });
+  editorView.focus();
+}
+
+export function insertDevelopmentEditorSnippet(template) {
+  if (!editorView || !template) return;
+  const selection = editorView.state.selection.main;
+  snippet(String(template))(editorView, { label: 'Šablóna', type: 'snippet' }, selection.from, selection.to);
   editorView.focus();
 }

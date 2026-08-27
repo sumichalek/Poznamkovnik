@@ -115,7 +115,7 @@ DEVELOPMENT_PROJECT_TEMPLATES = {
     },
 }
 DEVELOPMENT_PROJECT_KINDS = {"program", "firmware"}
-FIRMWARE_BUILD_PROFILES = {
+DEVELOPMENT_BUILD_PROFILES = {
     "debug": "Ladenie",
     "release": "Vydanie",
 }
@@ -824,6 +824,7 @@ class Database:
                     project_kind TEXT NOT NULL DEFAULT 'program' CHECK(project_kind IN ('program', 'firmware')),
                     firmware_target_id TEXT NOT NULL DEFAULT '',
                     build_profile TEXT NOT NULL DEFAULT 'debug',
+                    run_arguments TEXT NOT NULL DEFAULT '',
                     entry_file_id TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -948,6 +949,10 @@ class Database:
             if "build_profile" not in development_project_columns:
                 connection.execute(
                     "ALTER TABLE development_projects ADD COLUMN build_profile TEXT NOT NULL DEFAULT 'debug'"
+                )
+            if "run_arguments" not in development_project_columns:
+                connection.execute(
+                    "ALTER TABLE development_projects ADD COLUMN run_arguments TEXT NOT NULL DEFAULT ''"
                 )
             session_columns = {row["name"] for row in connection.execute("PRAGMA table_info(sessions)")}
             if "last_active_at" not in session_columns:
@@ -2031,7 +2036,7 @@ class Database:
     @staticmethod
     def _development_project_select() -> str:
         return (
-            "id, title, language, project_kind, firmware_target_id, build_profile, "
+            "id, title, language, project_kind, firmware_target_id, build_profile, run_arguments, "
             "entry_file_id, created_at, updated_at"
         )
 
@@ -2050,9 +2055,9 @@ class Database:
         return {
             "languages": self.development_languages(),
             "firmwareTargets": self.development_firmware_targets(),
-            "firmwareBuildProfiles": [
+            "buildProfiles": [
                 {"id": profile_id, "label": label}
-                for profile_id, label in FIRMWARE_BUILD_PROFILES.items()
+                for profile_id, label in DEVELOPMENT_BUILD_PROFILES.items()
             ],
             "projects": projects,
         }
@@ -2071,8 +2076,9 @@ class Database:
         firmware_target_id = self._clean_text(data.get("firmwareTargetId"), 80)
         build_profile = self._clean_text(data.get("buildProfile"), 20) or "debug"
         template_id = self._clean_text(data.get("templateId"), 40) or "hello"
-        if build_profile not in FIRMWARE_BUILD_PROFILES:
-            raise ValidationError("Neznámy režim buildu firmvéru.")
+        run_arguments = self._clean_text(data.get("runArguments"), 8_192).replace("\x00", "")
+        if build_profile not in DEVELOPMENT_BUILD_PROFILES:
+            raise ValidationError("Neznámy profil zostavenia.")
         target: dict[str, Any] | None = None
         if project_kind == "firmware":
             target = FIRMWARE_TARGETS.get(firmware_target_id)
@@ -2094,9 +2100,9 @@ class Database:
             connection.execute(
                 """
                 INSERT INTO development_projects(
-                    id, user_id, title, language, project_kind, firmware_target_id, build_profile,
+                    id, user_id, title, language, project_kind, firmware_target_id, build_profile, run_arguments,
                     entry_file_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -2106,6 +2112,7 @@ class Database:
                     project_kind,
                     firmware_target_id,
                     build_profile,
+                    run_arguments,
                     file_id,
                     timestamp,
                     timestamp,
@@ -2139,7 +2146,8 @@ class Database:
             raise ValidationError("Import používa neznámy typ projektu.")
         firmware_target_id = self._clean_text(project_data.get("firmwareTargetId"), 80)
         build_profile = self._clean_text(project_data.get("buildProfile"), 20) or "debug"
-        if build_profile not in FIRMWARE_BUILD_PROFILES:
+        run_arguments = self._clean_text(project_data.get("runArguments"), 8_192).replace("\x00", "")
+        if build_profile not in DEVELOPMENT_BUILD_PROFILES:
             raise ValidationError("Import používa neznámy režim buildu.")
         if project_kind == "firmware":
             target = FIRMWARE_TARGETS.get(firmware_target_id)
@@ -2263,9 +2271,9 @@ class Database:
             connection.execute(
                 """
                 INSERT INTO development_projects(
-                    id, user_id, title, language, project_kind, firmware_target_id, build_profile,
+                    id, user_id, title, language, project_kind, firmware_target_id, build_profile, run_arguments,
                     entry_file_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -2275,6 +2283,7 @@ class Database:
                     project_kind,
                     firmware_target_id,
                     build_profile,
+                    run_arguments,
                     entry["id"],
                     timestamp,
                     timestamp,
@@ -2340,8 +2349,9 @@ class Database:
                 data.get("firmwareTargetId", row["firmware_target_id"]), 80
             )
             build_profile = self._clean_text(data.get("buildProfile", row["build_profile"]), 20) or "debug"
-            if build_profile not in FIRMWARE_BUILD_PROFILES:
-                raise ValidationError("Neznámy režim buildu firmvéru.")
+            run_arguments = self._clean_text(data.get("runArguments", row["run_arguments"]), 8_192).replace("\x00", "")
+            if build_profile not in DEVELOPMENT_BUILD_PROFILES:
+                raise ValidationError("Neznámy profil zostavenia.")
             if project_kind == "firmware":
                 target = FIRMWARE_TARGETS.get(firmware_target_id)
                 if not target:
@@ -2364,10 +2374,10 @@ class Database:
             connection.execute(
                 """
                 UPDATE development_projects
-                SET title = ?, language = ?, project_kind = ?, firmware_target_id = ?, build_profile = ?, entry_file_id = ?, updated_at = ?
+                SET title = ?, language = ?, project_kind = ?, firmware_target_id = ?, build_profile = ?, run_arguments = ?, entry_file_id = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (title, language, project_kind, firmware_target_id, build_profile, entry_file_id, timestamp, project_id),
+                (title, language, project_kind, firmware_target_id, build_profile, run_arguments, entry_file_id, timestamp, project_id),
             )
             updated = connection.execute(
                 f"SELECT {self._development_project_select()} FROM development_projects WHERE id = ?",
@@ -2626,6 +2636,7 @@ class Database:
                 "language": str(project["language"]),
                 "projectKind": str(project["project_kind"]),
                 "firmwareTargetId": str(project["firmware_target_id"]),
+                "buildProfile": str(project["build_profile"]),
                 "fileId": str(row["id"]),
                 "filename": paths[str(row["id"])],
                 "source": str(row["content"]),
@@ -2842,7 +2853,8 @@ class Database:
                 else None
             ),
             "buildProfile": project["build_profile"],
-            "buildProfileLabel": FIRMWARE_BUILD_PROFILES.get(str(project["build_profile"]), "Ladenie"),
+            "buildProfileLabel": DEVELOPMENT_BUILD_PROFILES.get(str(project["build_profile"]), "Ladenie"),
+            "runArguments": project["run_arguments"],
             "entryFileId": project["entry_file_id"],
             "createdAt": project["created_at"],
             "updatedAt": project["updated_at"],

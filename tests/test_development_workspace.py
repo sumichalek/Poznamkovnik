@@ -63,6 +63,33 @@ class DevelopmentWorkspaceTestCase(unittest.TestCase):
                 {"title": "Neplatná šablóna", "language": "c", "templateId": "neexistuje"},
             )
 
+    def test_project_keeps_build_profile_and_default_run_arguments(self) -> None:
+        project = self.database.create_development_project(
+            self.user["id"],
+            {
+                "id": "project-profile",
+                "title": "Profil",
+                "language": "c",
+                "buildProfile": "release",
+                "runArguments": '--meno "Ján Novák"',
+            },
+        )
+        self.assertEqual(project["buildProfile"], "release")
+        self.assertEqual(project["buildProfileLabel"], "Vydanie")
+        self.assertEqual(project["runArguments"], '--meno "Ján Novák"')
+
+        updated = self.database.update_development_project(
+            self.user["id"], project["id"], {"buildProfile": "debug", "runArguments": "--podrobne"}
+        )
+        self.assertEqual(updated["buildProfile"], "debug")
+        self.assertEqual(updated["runArguments"], "--podrobne")
+        entry = self.database.development_entry_file(self.user["id"], project["id"])
+        self.assertEqual(entry["buildProfile"], "debug")
+        with self.assertRaises(ValidationError):
+            self.database.update_development_project(
+                self.user["id"], project["id"], {"buildProfile": "neplatny"}
+            )
+
     def test_project_test_cases_keep_input_arguments_and_expected_output(self) -> None:
         project = self.database.create_development_project(
             self.user["id"], {"id": "project-tests", "title": "Testy", "language": "python"}
@@ -113,6 +140,63 @@ class DevelopmentWorkspaceTestCase(unittest.TestCase):
         self.assertTrue(result["compiled"])
         self.assertEqual(result["run"]["stdout"], "Ahoj, svet!\n")
 
+    def test_c_project_runner_links_nested_implementation_files(self) -> None:
+        runner = DevelopmentCodeRunner()
+        if not runner.status()["languages"]["c"]["available"]:
+            self.skipTest("Bezpečná skúšobňa C nie je v tomto prostredí dostupná.")
+        main = (
+            '#include <stdio.h>\n'
+            '#include "math/pomoc.h"\n\n'
+            'int main(void) {\n'
+            '  printf("%d\\n", pomoc(7));\n'
+            '  return 0;\n'
+            '}\n'
+        )
+        result = runner.run(
+            "c",
+            main,
+            "",
+            files=[
+                {"title": "main.c", "content": main},
+                {"title": "math/pomoc.h", "content": "int pomoc(int hodnota);\n"},
+                {
+                    "title": "math/pomoc.c",
+                    "content": '#include "pomoc.h"\nint pomoc(int hodnota) { return hodnota * 6; }\n',
+                },
+            ],
+            entry_filename="main.c",
+        )
+        self.assertTrue(result["compiled"])
+        self.assertEqual(result["run"]["stdout"], "42\n")
+
+    def test_cpp_project_runner_links_nested_implementation_files(self) -> None:
+        runner = DevelopmentCodeRunner()
+        if not runner.status()["languages"]["cpp"]["available"]:
+            self.skipTest("Bezpečná skúšobňa C++ nie je v tomto prostredí dostupná.")
+        main = (
+            '#include <iostream>\n'
+            '#include "lib/pozdrav.hpp"\n\n'
+            'int main() {\n'
+            '  std::cout << pozdrav(4) << "\\n";\n'
+            '}\n'
+        )
+        result = runner.run(
+            "cpp",
+            main,
+            "",
+            files=[
+                {"title": "main.cpp", "content": main},
+                {"title": "lib/pozdrav.hpp", "content": "int pozdrav(int hodnota);\n"},
+                {
+                    "title": "lib/pozdrav.cpp",
+                    "content": '#include "pozdrav.hpp"\nint pozdrav(int hodnota) { return hodnota + 9; }\n',
+                },
+            ],
+            entry_filename="main.cpp",
+        )
+        self.assertTrue(result["compiled"])
+        self.assertEqual(result["run"]["stdout"], "13\n")
+
     def test_c_project_can_be_compiled_without_running(self) -> None:
         runner = DevelopmentCodeRunner()
         if not runner.status()["languages"]["c"]["available"]:
@@ -120,6 +204,26 @@ class DevelopmentWorkspaceTestCase(unittest.TestCase):
         result = runner.run("c", "int main(void) { return 0; }\n", "", execute=False)
         self.assertTrue(result["compiled"])
         self.assertIsNone(result["run"])
+
+    def test_c_project_can_be_built_with_release_profile(self) -> None:
+        runner = DevelopmentCodeRunner()
+        if not runner.status()["languages"]["c"]["available"]:
+            self.skipTest("Bezpečná skúšobňa C nie je v tomto prostredí dostupná.")
+        result = runner.run("c", "int main(void) { return 0; }\n", "", execute=False, build_profile="release")
+        self.assertTrue(result["compiled"])
+        self.assertEqual(result["buildProfile"], "release")
+
+    def test_c_debug_profile_reports_undefined_behavior(self) -> None:
+        runner = DevelopmentCodeRunner()
+        if not runner.status()["languages"]["c"]["available"]:
+            self.skipTest("Bezpečná skúšobňa C nie je v tomto prostredí dostupná.")
+        source = (
+            "#include <limits.h>\n"
+            "int main(void) { volatile int value = INT_MAX; return value + 1; }\n"
+        )
+        result = runner.run("c", source, "", build_profile="debug")
+        self.assertTrue(result["compiled"])
+        self.assertIn("runtime error", result["run"]["stderr"])
 
     def test_project_runner_passes_quoted_command_arguments_without_a_shell(self) -> None:
         runner = DevelopmentCodeRunner()

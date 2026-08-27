@@ -6,7 +6,10 @@ import {
   developmentEditorValue,
   focusDevelopmentEditor,
   initializeDevelopmentEditor,
+  insertDevelopmentEditorSnippet,
+  developmentEditorViewState,
   replaceDevelopmentEditorRange,
+  restoreDevelopmentEditorViewState,
   selectDevelopmentEditorRange,
   setDevelopmentEditorDocument,
   setDevelopmentEditorDiagnostics,
@@ -14,12 +17,14 @@ import {
 } from './development-editor.js';
 import { initializeDevelopmentTransfer } from './development-transfer.js';
 import { dom } from './dom.js';
+import { scanProjectSymbols, scanSourceSymbols, sourceForSymbolScan } from './development-symbols.js';
+import { projectSnippetEntries } from './development-completions.js';
 import { updateTopbarVisibility } from './topbar.js';
 
 let projects = [];
 let languages = [];
 let firmwareTargets = [];
-let firmwareBuildProfiles = [];
+let buildProfiles = [];
 let runtime = { available: false, message: 'Skúšobňa sa pripravuje.' };
 let activeProjectId = '';
 let activeFileId = '';
@@ -30,6 +35,7 @@ let panelPinned = false;
 let focusMode = false;
 let consoleExpanded = false;
 let projectTitleBaseline = '';
+let projectRunArgumentsBaseline = '';
 let fileDraftBaseline = '';
 let standardInput = '';
 let runArguments = '';
@@ -39,6 +45,9 @@ let idleResolvers = [];
 let projectDialogProjectId = '';
 let findMatches = [];
 let findMatchIndex = -1;
+let projectFindMatches = [];
+let projectFindIndex = -1;
+let findScope = 'file';
 let diagnostics = [];
 let diagnosticIndex = -1;
 let draggedProjectItemId = '';
@@ -47,6 +56,19 @@ let activeTestId = '';
 let testDraftBaseline = '';
 let testRunResults = new Map();
 let runningAllTests = false;
+let definitionHistory = [];
+let symbolBrowserExpanded = true;
+let quickOpenMode = 'files';
+let quickOpenResults = [];
+let quickOpenResultIndex = 0;
+let editorViewStates = new Map();
+
+const MAX_PROJECT_FIND_MATCHES = 500;
+const MAX_DEFINITION_HISTORY = 64;
+const MAX_PROJECT_FIND_RESULT_ROWS = 80;
+const MAX_QUICK_OPEN_RESULTS = 120;
+const MAX_SYMBOL_REFERENCES = 500;
+const DEVELOPMENT_SESSION_KEY = 'poznamkovnik-development-session-v1';
 
 function runOperation(operation) {
   operationCount += 1;
@@ -76,6 +98,42 @@ function activeFile() {
 
 function activeProjectTest() {
   return projectTests.find((testCase) => testCase.id === activeTestId) || null;
+}
+
+function rememberedDevelopmentSession() {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(DEVELOPMENT_SESSION_KEY) || 'null');
+    return value && typeof value === 'object' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberDevelopmentSession() {
+  try {
+    window.localStorage.setItem(DEVELOPMENT_SESSION_KEY, JSON.stringify({
+      projectId: activeProjectId,
+      fileId: activeFileId,
+    }));
+  } catch {
+    // Private browser settings may deny storage; the editor still remains usable.
+  }
+}
+
+function editorViewStateKey(projectId = activeProjectId, fileId = activeFileId) {
+  return projectId && fileId ? `${projectId}:${fileId}` : '';
+}
+
+function rememberEditorViewState() {
+  const key = editorViewStateKey();
+  const viewState = developmentEditorViewState();
+  if (!key || !viewState) return;
+  editorViewStates.set(key, viewState);
+}
+
+function restoreActiveEditorViewState() {
+  const viewState = editorViewStates.get(editorViewStateKey());
+  if (viewState) restoreDevelopmentEditorViewState(viewState);
 }
 
 function languageLabel(languageId) {
@@ -227,10 +285,134 @@ function textMatchOffsets(text, query) {
   return matches;
 }
 
+function findMatchKey(match) {
+  return match ? `${match.fileId || ''}:${match.offset}` : '';
+}
+
+function updateFindScopeUi() {
+  const projectScope = findScope === 'project';
+  dom.developmentFindBar.classList.toggle('is-project-scope', projectScope);
+  dom.developmentFindInput.placeholder = projectScope ? 'Hľadať v projekte' : 'Hľadať v súbore';
+  dom.developmentFindScope.setAttribute('aria-pressed', String(projectScope));
+  dom.developmentFindScope.title = projectScope
+    ? 'Hľadať len v otvorenom súbore (Ctrl+F)'
+    : 'Hľadať v celom projekte (Ctrl+Shift+F)';
+  dom.developmentFindScope.setAttribute('aria-label', dom.developmentFindScope.title);
+  setAppIcon(dom.developmentFindScope.querySelector('.app-icon'), projectScope ? 'folder' : 'file');
+}
+
+function currentProjectSearchFiles() {
+  const project = activeProject();
+  if (!project) return [];
+  return projectFiles(project).map((file) => ({
+    ...file,
+    content: file.id === activeFileId ? developmentEditorValue() : String(file.content || ''),
+  }));
+}
+
+function collectProjectFindMatches(query) {
+  if (!query) return [];
+  const found = [];
+  for (const file of currentProjectSearchFiles()) {
+    const offsets = textMatchOffsets(file.content, query);
+    for (const offset of offsets) {
+      found.push({ fileId: file.id, offset });
+      if (found.length >= MAX_PROJECT_FIND_MATCHES) return found;
+    }
+  }
+  return found;
+}
+
+function projectFindMatchPreview(match) {
+  const file = currentProjectSearchFiles().find((item) => item.id === match.fileId);
+  const content = String(file?.content || '');
+  const lineStart = content.lastIndexOf('\n', Math.max(0, match.offset - 1)) + 1;
+  const lineEnd = content.indexOf('\n', match.offset);
+  const line = content.slice(lineStart, lineEnd < 0 ? content.length : lineEnd);
+  const lineNumber = content.slice(0, lineStart).split('\n').length;
+  const normalizedLine = line.replace(/\s+/g, ' ').trim();
+  const matchColumn = Math.max(0, match.offset - lineStart);
+  const excerptStart = Math.max(0, matchColumn - 46);
+  const excerpt = normalizedLine.length > 104
+    ? `${excerptStart ? '...' : ''}${normalizedLine.slice(excerptStart, excerptStart + 104)}${excerptStart + 104 < normalizedLine.length ? '...' : ''}`
+    : normalizedLine;
+  return { file, lineNumber, excerpt };
+}
+
+function renderProjectFindResults() {
+  const container = dom.developmentProjectFindResults;
+  if (!container) return;
+  const query = dom.developmentFindInput.value;
+  const visible = findScope === 'project' && !dom.developmentFindBar.hidden && Boolean(query) && projectFindMatches.length > 0;
+  container.hidden = !visible;
+  if (!visible) {
+    container.replaceChildren();
+    return;
+  }
+  const project = activeProject();
+  container.replaceChildren();
+  projectFindMatches.slice(0, MAX_PROJECT_FIND_RESULT_ROWS).forEach((match, index) => {
+    const preview = projectFindMatchPreview(match);
+    if (!preview.file) return;
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'development-project-find-result';
+    row.classList.toggle('is-active', index === projectFindIndex);
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(index === projectFindIndex));
+    row.append(createAppIcon('file'));
+    const copy = document.createElement('span');
+    copy.className = 'development-project-find-result-copy';
+    const path = document.createElement('strong');
+    path.textContent = `${projectFilePath(project, preview.file)}:${preview.lineNumber}`;
+    const excerpt = document.createElement('small');
+    excerpt.textContent = preview.excerpt || '(prázdny riadok)';
+    copy.append(path, excerpt);
+    row.append(copy);
+    row.addEventListener('click', () => {
+      projectFindIndex = index;
+      void selectFindMatch(0);
+    });
+    container.append(row);
+  });
+}
+
+function moveProjectFindSelection(step) {
+  if (!projectFindMatches.length) return;
+  if (projectFindIndex < 0) {
+    projectFindIndex = step < 0 ? projectFindMatches.length - 1 : 0;
+  } else {
+    projectFindIndex = (projectFindIndex + step + projectFindMatches.length) % projectFindMatches.length;
+  }
+  renderProjectFindResults();
+}
+
 function updateFindMatches({ preserveMatch = true } = {}) {
   const query = dom.developmentFindInput.value;
+  if (findScope === 'project') {
+    const previousKey = preserveMatch ? findMatchKey(projectFindMatches[projectFindIndex]) : '';
+    projectFindMatches = collectProjectFindMatches(query);
+    projectFindIndex = previousKey
+      ? projectFindMatches.findIndex((match) => findMatchKey(match) === previousKey)
+      : -1;
+    const fileCount = new Set(projectFindMatches.map((match) => match.fileId)).size;
+    const countLabel = projectFindMatches.length === MAX_PROJECT_FIND_MATCHES ? `${MAX_PROJECT_FIND_MATCHES}+` : String(projectFindMatches.length);
+    dom.developmentFindCount.textContent = query
+      ? `${countLabel} · ${fileCount} ${fileCount === 1 ? 'súbor' : fileCount < 5 ? 'súbory' : 'súborov'}`
+      : '';
+    const unavailable = !query || !projectFindMatches.length;
+    dom.developmentFindPrevious.disabled = unavailable;
+    dom.developmentFindNext.disabled = unavailable;
+    dom.developmentReplaceOne.disabled = true;
+    dom.developmentReplaceAll.disabled = true;
+    updateFindScopeUi();
+    renderProjectFindResults();
+    return;
+  }
   const previousOffset = preserveMatch ? findMatches[findMatchIndex] : -1;
   findMatches = textMatchOffsets(developmentEditorValue(), query);
+  projectFindMatches = [];
+  projectFindIndex = -1;
   findMatchIndex = previousOffset >= 0 ? findMatches.indexOf(previousOffset) : -1;
   if (findMatchIndex < 0 && findMatches.length) {
     const cursor = developmentEditorSelection().from;
@@ -245,9 +427,23 @@ function updateFindMatches({ preserveMatch = true } = {}) {
   dom.developmentFindNext.disabled = unavailable;
   dom.developmentReplaceOne.disabled = unavailable;
   dom.developmentReplaceAll.disabled = unavailable;
+  updateFindScopeUi();
+  renderProjectFindResults();
 }
 
-function selectFindMatch(step = 0) {
+async function selectFindMatch(step = 0) {
+  if (findScope === 'project') {
+    if (!projectFindMatches.length) return;
+    if (projectFindIndex < 0) projectFindIndex = step < 0 ? projectFindMatches.length - 1 : 0;
+    else if (step) projectFindIndex = (projectFindIndex + step + projectFindMatches.length) % projectFindMatches.length;
+    const match = projectFindMatches[projectFindIndex];
+    if (match.fileId !== activeFileId) await selectFile(match.fileId);
+    window.requestAnimationFrame(() => {
+      selectDevelopmentEditorRange(match.offset, match.offset + dom.developmentFindInput.value.length);
+      updateFindMatches({ preserveMatch: true });
+    });
+    return;
+  }
   if (!findMatches.length) return;
   if (step) findMatchIndex = (findMatchIndex + step + findMatches.length) % findMatches.length;
   if (findMatchIndex < 0) findMatchIndex = 0;
@@ -257,10 +453,14 @@ function selectFindMatch(step = 0) {
 }
 
 function setFindOpen(open, { replace = false } = {}) {
+  if (replace) findScope = 'file';
   dom.developmentFindBar.hidden = !open;
   dom.developmentFindToggle.setAttribute('aria-expanded', String(open));
   dom.developmentFindToggle.title = open ? 'Zavrieť vyhľadávanie (Esc)' : 'Hľadať v súbore (Ctrl+F)';
-  if (!open) return;
+  if (!open) {
+    renderProjectFindResults();
+    return;
+  }
   updateFindMatches({ preserveMatch: false });
   window.requestAnimationFrame(() => {
     const field = replace ? dom.developmentReplaceInput : dom.developmentFindInput;
@@ -270,6 +470,7 @@ function setFindOpen(open, { replace = false } = {}) {
 }
 
 function replaceFindMatch(all = false) {
+  if (findScope !== 'file') return;
   const query = dom.developmentFindInput.value;
   if (!query || !findMatches.length) return;
   const replacement = dom.developmentReplaceInput.value;
@@ -285,6 +486,7 @@ function clearDiagnostics() {
   diagnostics = [];
   diagnosticIndex = -1;
   setDevelopmentEditorDiagnostics();
+  renderProblems();
   dom.developmentDiagnosticNext.hidden = true;
   dom.developmentDiagnosticCount.textContent = '';
 }
@@ -300,11 +502,11 @@ function diagnosticsForActiveFile() {
 function readDiagnostics(compileOutput) {
   const found = [];
   const seen = new Set();
-  const add = (filename, line, column = 1, severity = 'error') => {
-    const key = `${filename}:${line}:${column}`;
+  const add = (filename, line, column = 1, severity = 'error', message = '') => {
+    const key = `${filename}:${line}:${column}:${severity}`;
     if (!filename || !Number.isFinite(line) || seen.has(key)) return;
     seen.add(key);
-    found.push({ filename, line, column, severity });
+    found.push({ filename, line, column, severity, message: message.trim() });
   };
   const collect = (pattern, mapper) => {
     let match;
@@ -312,34 +514,85 @@ function readDiagnostics(compileOutput) {
   };
 
   collect(
-    /(?:^|\n)(?:\/work\/)?([^\n:]+(?:\/[^\n:]+)*):(\d+)(?::(\d+))?:\s*(fatal error|error|warning):/gim,
-    (match) => add(match[1], Number(match[2]), Number(match[3] || 1), match[4].toLocaleLowerCase('sk'))
+    /(?:^|\n)(?:\/work\/)?([^\n:]+(?:\/[^\n:]+)*):(\d+)(?::(\d+))?:\s*(fatal error|error|warning):\s*([^\n]*)/gim,
+    (match) => add(match[1], Number(match[2]), Number(match[3] || 1), /warning/i.test(match[4]) ? 'warning' : 'error', match[5])
   );
   collect(
     /(?:^|\n)(?:\.\/|\/work\/)?([^\n:]+\.go):(\d+):(\d+):\s*([^\n]+)/gim,
-    (match) => add(match[1], Number(match[2]), Number(match[3]), /warning/i.test(match[4]) ? 'warning' : 'error')
+    (match) => add(match[1], Number(match[2]), Number(match[3]), /warning/i.test(match[4]) ? 'warning' : 'error', match[4])
   );
   collect(
     /(?:^|\n)\s*-->\s+(?:\/work\/)?([^\n:]+\.rs):(\d+):(\d+)/gim,
-    (match) => add(match[1], Number(match[2]), Number(match[3]), 'error')
+    (match) => add(match[1], Number(match[2]), Number(match[3]), 'error', 'Chyba prekladu Rustu')
   );
   collect(
     /(?:^|\n)\s*File\s+"(?:\/work\/)?([^"\n]+)",\s+line\s+(\d+)/gim,
-    (match) => add(match[1], Number(match[2]), 1, 'error')
+    (match) => add(match[1], Number(match[2]), 1, 'error', 'Chyba interpretácie Pythonu')
   );
   collect(
     /(?:^|\n)(?:\/work\/)?([^\n:]+\.(?:js|mjs|php|sh|bash)):(\d+)(?::(\d+))?/gim,
-    (match) => add(match[1], Number(match[2]), Number(match[3] || 1), 'error')
+    (match) => add(match[1], Number(match[2]), Number(match[3] || 1), 'error', 'Chyba interpretácie')
   );
   diagnostics = found;
   diagnosticIndex = -1;
   setDevelopmentEditorDiagnostics(diagnosticsForActiveFile());
+  renderProblems();
   dom.developmentDiagnosticNext.hidden = !found.length;
   dom.developmentDiagnosticCount.textContent = found.length ? String(found.length) : '';
   dom.developmentDiagnosticNext.title = found.length
     ? `Prejsť na chybu alebo varovanie (1 z ${found.length})`
     : '';
   dom.developmentDiagnosticNext.setAttribute('aria-label', dom.developmentDiagnosticNext.title || 'Diagnostika prekladu');
+}
+
+function diagnosticSeverityLabel(diagnostic) {
+  return diagnostic.severity === 'warning' ? 'Varovanie' : 'Chyba';
+}
+
+function diagnosticSummary() {
+  const errors = diagnostics.filter((diagnostic) => diagnostic.severity !== 'warning').length;
+  const warnings = diagnostics.length - errors;
+  const parts = [];
+  if (errors) parts.push(`${errors} ${errors === 1 ? 'chyba' : errors < 5 ? 'chyby' : 'chýb'}`);
+  if (warnings) parts.push(`${warnings} ${warnings === 1 ? 'varovanie' : warnings < 5 ? 'varovania' : 'varovaní'}`);
+  return parts.join(' · ') || 'Preklad neohlásil žiadne problémy.';
+}
+
+function renderProblems() {
+  const count = diagnostics.length;
+  dom.developmentProblems.hidden = !count;
+  dom.developmentProblemsCount.textContent = count ? String(count) : '';
+  dom.developmentProblems.title = count ? `Zobraziť problémy prekladu (${diagnosticSummary()})` : '';
+  dom.developmentProblems.setAttribute('aria-label', dom.developmentProblems.title || 'Problémy prekladu');
+  dom.developmentProblemsSummary.textContent = diagnosticSummary();
+  dom.developmentProblemsList.replaceChildren();
+  if (!count) {
+    const empty = document.createElement('p');
+    empty.className = 'development-problems-empty';
+    empty.textContent = 'Preklad neohlásil žiadne problémy.';
+    dom.developmentProblemsList.append(empty);
+    return;
+  }
+  diagnostics.forEach((diagnostic, index) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = `development-problem is-${diagnostic.severity === 'warning' ? 'warning' : 'error'}`;
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(index === diagnosticIndex));
+    const marker = document.createElement('span');
+    marker.className = 'development-problem-marker';
+    marker.textContent = diagnostic.severity === 'warning' ? '!' : '×';
+    const copy = document.createElement('span');
+    copy.className = 'development-problem-copy';
+    const title = document.createElement('strong');
+    title.textContent = diagnostic.message || diagnosticSeverityLabel(diagnostic);
+    const detail = document.createElement('small');
+    detail.textContent = `${diagnosticSeverityLabel(diagnostic)} · ${diagnostic.filename}:${diagnostic.line}:${diagnostic.column}`;
+    copy.append(title, detail);
+    row.append(marker, copy);
+    row.addEventListener('click', () => void openDiagnostic(diagnostic, index, { closeProblems: true }));
+    dom.developmentProblemsList.append(row);
+  });
 }
 
 function selectEditorLine(line, column = 1) {
@@ -352,19 +605,226 @@ function selectEditorLine(line, column = 1) {
   selectDevelopmentEditorRange(position, Math.min(start + lines[safeLine - 1].length, position + 1));
 }
 
-async function openNextDiagnostic() {
+function editorLocation() {
   const project = activeProject();
-  if (!project || !diagnostics.length) return;
-  diagnosticIndex = (diagnosticIndex + 1) % diagnostics.length;
-  const diagnostic = diagnostics[diagnosticIndex];
+  const file = activeFile();
+  if (!project || !file) return null;
+  const source = developmentEditorValue();
+  const selection = developmentEditorSelection();
+  const position = Math.min(Math.max(0, selection.from), source.length);
+  const before = source.slice(0, position);
+  return {
+    projectId: project.id,
+    fileId: file.id,
+    line: before.split('\n').length,
+    column: position - before.lastIndexOf('\n'),
+  };
+}
+
+function sameEditorLocation(left, right) {
+  return Boolean(left && right)
+    && left.projectId === right.projectId
+    && left.fileId === right.fileId
+    && left.line === right.line
+    && left.column === right.column;
+}
+
+function renderDefinitionNavigation() {
+  const available = definitionHistory.length > 0;
+  dom.developmentDefinitionBack.hidden = !available;
+  dom.developmentDefinitionBack.disabled = !available;
+}
+
+function rememberDefinitionOrigin(location) {
+  if (!location) return;
+  const previous = definitionHistory[definitionHistory.length - 1];
+  if (!sameEditorLocation(previous, location)) definitionHistory.push(location);
+  if (definitionHistory.length > MAX_DEFINITION_HISTORY) definitionHistory.shift();
+  renderDefinitionNavigation();
+}
+
+async function openEditorLocation(location) {
+  if (!location || !(await saveDevelopmentChanges())) return false;
+  if (location.projectId !== activeProjectId) await selectProject(location.projectId);
+  if (location.fileId !== activeFileId) await selectFile(location.fileId);
+  if (!activeFile() || activeFileId !== location.fileId) return false;
+  window.requestAnimationFrame(() => selectEditorLine(location.line, location.column));
+  return true;
+}
+
+function escapeExpression(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function symbolDefinitionPosition(source, symbol) {
+  const escaped = escapeExpression(symbol);
+  if (!escaped) return null;
+  const patterns = [
+    new RegExp(`^\\s*#\\s*define\\s+${escaped}\\b`, 'm'),
+    new RegExp(`^\\s*(?:async\\s+)?(?:def|func|fn|function)\\s+${escaped}\\b`, 'm'),
+    new RegExp(`^\\s*(?:class|struct|enum|interface|trait|type)\\s+${escaped}\\b`, 'm'),
+    new RegExp(`^\\s*(?:(?:public|private|protected|internal|static|inline|extern|virtual|constexpr|const|unsigned|signed|long|short|void|char|int|float|double|bool|auto|size_t|[A-Za-z_][\\w:<>]*)\\s+)+${escaped}\\s*\\([^;\\n{}]*\\)\\s*\\{`, 'm'),
+    new RegExp(`^\\s*(?:(?:const|let|var|static|extern|unsigned|signed|long|short|int|float|double|char|bool|string|auto|size_t|[A-Za-z_][\\w:<>]*)\\s+)+${escaped}\\s*(?:=|;|,)`, 'm'),
+    new RegExp(`^\\s*${escaped}\\s*=`, 'm'),
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(source);
+    if (!match || match.index === undefined) continue;
+    const before = source.slice(0, match.index);
+    const line = before.split('\n').length;
+    const lineStart = before.lastIndexOf('\n') + 1;
+    const symbolOffset = Math.max(0, match[0].indexOf(symbol));
+    return { line, column: match.index - lineStart + symbolOffset + 1 };
+  }
+  return null;
+}
+
+async function openSymbolDefinition(symbol) {
+  const origin = editorLocation();
+  if (!(await saveDevelopmentChanges())) return;
+  const project = activeProject();
+  if (!project) return;
+  const files = [...projectFiles(project)].sort((left, right) => {
+    if (left.id === activeFileId) return -1;
+    if (right.id === activeFileId) return 1;
+    return 0;
+  });
+  const target = files
+    .map((file) => ({ file, position: symbolDefinitionPosition(file.content, symbol) }))
+    .find((item) => item.position);
+  if (!target) {
+    setRunStatus(`Definícia „${symbol}“ sa nenašla.`);
+    return;
+  }
+  const destination = {
+    projectId: project.id,
+    fileId: target.file.id,
+    line: target.position.line,
+    column: target.position.column,
+  };
+  if (sameEditorLocation(origin, destination)) return;
+  rememberDefinitionOrigin(origin);
+  await openEditorLocation(destination);
+}
+
+async function openPreviousDefinition() {
+  const destination = definitionHistory[definitionHistory.length - 1];
+  if (!destination) return;
+  if (await openEditorLocation(destination)) definitionHistory.pop();
+  renderDefinitionNavigation();
+}
+
+function projectSymbolReferences(symbol) {
+  const project = activeProject();
+  const name = String(symbol || '').trim();
+  if (!project || !name) return [];
+  const expression = new RegExp(`\\b${escapeExpression(name)}\\b`, 'g');
+  const references = [];
+  for (const file of projectFiles(project)) {
+    const source = sourceForProjectFile(file);
+    const searchable = sourceForSymbolScan(source);
+    const definitions = new Set(
+      scanSourceSymbols(source, project.language)
+        .filter((item) => item.name === name)
+        .map((item) => item.offset)
+    );
+    let match;
+    while ((match = expression.exec(searchable))) {
+      const offset = match.index;
+      const lineStart = source.lastIndexOf('\n', offset - 1) + 1;
+      const lineEnd = source.indexOf('\n', offset);
+      const before = source.slice(0, offset);
+      references.push({
+        file,
+        line: before.split('\n').length,
+        column: offset - lineStart + 1,
+        definition: definitions.has(offset),
+        preview: source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd).trim(),
+      });
+      if (references.length >= MAX_SYMBOL_REFERENCES) return references;
+    }
+  }
+  return references;
+}
+
+function renderSymbolReferences(symbol) {
+  const project = activeProject();
+  if (!project) return;
+  const references = projectSymbolReferences(symbol);
+  const uniqueFiles = new Set(references.map((reference) => reference.file.id)).size;
+  const truncated = references.length >= MAX_SYMBOL_REFERENCES;
+  dom.developmentReferencesTitle.textContent = `Použitia: ${symbol}`;
+  dom.developmentReferencesSummary.textContent = references.length
+    ? `${references.length}${truncated ? '+' : ''} ${references.length === 1 ? 'výskyt' : references.length < 5 ? 'výskyty' : 'výskytov'} v ${uniqueFiles} ${uniqueFiles === 1 ? 'súbore' : uniqueFiles < 5 ? 'súboroch' : 'súboroch'}.`
+    : 'Bez nájdených použití.';
+  dom.developmentReferencesList.replaceChildren();
+  if (!references.length) {
+    const empty = document.createElement('p');
+    empty.className = 'development-references-empty';
+    empty.textContent = 'Symbol sa nenachádza v zdrojových súboroch projektu.';
+    dom.developmentReferencesList.append(empty);
+    return;
+  }
+  references.forEach((reference) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `development-reference${reference.definition ? ' is-definition' : ''}`;
+    button.setAttribute('role', 'option');
+    button.title = `${projectFilePath(project, reference.file)}:${reference.line}:${reference.column}`;
+    const marker = document.createElement('span');
+    marker.className = 'development-reference-marker';
+    marker.textContent = reference.definition ? 'D' : '•';
+    const copy = document.createElement('span');
+    copy.className = 'development-reference-copy';
+    const title = document.createElement('strong');
+    title.textContent = `${reference.file.title}:${reference.line}`;
+    const meta = document.createElement('small');
+    meta.textContent = `${reference.definition ? 'Definícia' : 'Použitie'} · ${reference.preview || symbol}`;
+    copy.append(title, meta);
+    button.append(marker, copy);
+    button.addEventListener('click', () => {
+      void openEditorLocation({
+        projectId: project.id,
+        fileId: reference.file.id,
+        line: reference.line,
+        column: reference.column,
+      }).then((opened) => {
+        if (!opened) return;
+        dom.developmentReferencesDialog.close();
+        focusDevelopmentEditor();
+      });
+    });
+    dom.developmentReferencesList.append(button);
+  });
+}
+
+function openSymbolReferences(symbol) {
+  if (!activeProject() || !symbol) return;
+  renderSymbolReferences(symbol);
+  if (!dom.developmentReferencesDialog.open) dom.developmentReferencesDialog.showModal();
+}
+
+async function openDiagnostic(diagnostic, index, { closeProblems = false } = {}) {
+  const project = activeProject();
+  if (!project || !diagnostic) return false;
   const file = projectFiles(project).find((item) => {
     const path = projectFilePath(project, item);
     return path === diagnostic.filename || item.title === diagnostic.filename;
   });
-  if (!file) return;
+  if (!file) return false;
+  diagnosticIndex = index;
   if (file.id !== activeFileId) await selectFile(file.id);
   window.requestAnimationFrame(() => selectEditorLine(diagnostic.line, diagnostic.column));
   dom.developmentDiagnosticNext.title = `Prejsť na chybu alebo varovanie (${diagnosticIndex + 1} z ${diagnostics.length})`;
+  renderProblems();
+  if (closeProblems && dom.developmentProblemsDialog.open) dom.developmentProblemsDialog.close();
+  return true;
+}
+
+async function openNextDiagnostic() {
+  if (!diagnostics.length) return;
+  const nextIndex = (diagnosticIndex + 1) % diagnostics.length;
+  await openDiagnostic(diagnostics[nextIndex], nextIndex);
 }
 
 function fitProjectTitle() {
@@ -489,16 +949,21 @@ function initializePaneResizers() {
 
 function setRuntimeStatus(status) {
   runtime = status || { available: false, message: 'Skúšobňa nie je dostupná.' };
-  const availableLanguages = Object.entries(runtime.languages || {})
+  const languageStatuses = Object.entries(runtime.languages || {});
+  const availableLanguages = languageStatuses
     .filter(([, item]) => item?.available)
     .map(([language]) => languageLabel(language));
+  const details = languageStatuses
+    .map(([language, item]) => `${languageLabel(language)}: ${item?.available ? 'pripravený' : item?.message || 'nedostupný'}`)
+    .join('\n');
   const message = availableLanguages.length
     ? `Pripravené: ${availableLanguages.join(', ')}`
     : runtime.message || 'Skúšobňa nie je dostupná.';
   dom.developmentRuntimeStatus.replaceChildren(createAppIcon('terminal'), document.createTextNode(message));
   dom.developmentRuntimeStatus.classList.toggle('is-ready', availableLanguages.length > 0);
-  dom.developmentRuntimeStatus.title = availableLanguages.length ? message : runtime.message || '';
-  dom.developmentSidebarTitle.title = message;
+  const title = [message, details].filter(Boolean).join('\n\n');
+  dom.developmentRuntimeStatus.title = title;
+  dom.developmentSidebarTitle.title = title;
 }
 
 function setRunStatus(phase) {
@@ -515,6 +980,66 @@ function setRunStatus(phase) {
   dom.developmentConsoleStatus.dataset.state = state;
   dom.developmentConsoleStatus.setAttribute('aria-label', `Skúšobňa: ${value}`);
   dom.developmentConsoleStatus.title = `Skúšobňa: ${value}`;
+}
+
+async function copyDevelopmentConsoleText(value, button, label) {
+  const text = String(value || '');
+  try {
+    let copied = false;
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      } catch {
+        copied = false;
+      }
+    }
+    if (!copied) {
+      const fallback = document.createElement('textarea');
+      fallback.value = text;
+      fallback.setAttribute('readonly', '');
+      fallback.style.position = 'fixed';
+      fallback.style.opacity = '0';
+      document.body.append(fallback);
+      fallback.select();
+      const fallbackCopied = document.execCommand('copy');
+      fallback.remove();
+      if (!fallbackCopied) throw new Error('Prehliadač nepovolil zápis do schránky.');
+    }
+    const icon = button.querySelector('.app-icon');
+    const originalTitle = button.dataset.originalTitle || button.title;
+    button.dataset.originalTitle = originalTitle;
+    button.title = `${label} skopírovaný.`;
+    button.setAttribute('aria-label', button.title);
+    setAppIcon(icon, 'check');
+    window.setTimeout(() => {
+      button.title = originalTitle;
+      button.setAttribute('aria-label', originalTitle);
+      setAppIcon(icon, 'duplicate');
+    }, 1200);
+  } catch (error) {
+    const message = error?.message || `${label} sa nepodarilo skopírovať.`;
+    button.title = message;
+    button.setAttribute('aria-label', message);
+  }
+}
+
+function clearDevelopmentStandardInput() {
+  standardInput = '';
+  dom.developmentInput.value = '';
+  window.dispatchEvent(new CustomEvent('workspace-activate', { detail: { section: 'development' } }));
+  dom.developmentInput.focus();
+}
+
+function clearDevelopmentCompileOutput() {
+  clearDiagnostics();
+  dom.developmentCompileOutput.textContent = '';
+  dom.developmentCompileMeta.textContent = '';
+}
+
+function clearDevelopmentRunOutput() {
+  dom.developmentRunOutput.textContent = '';
+  dom.developmentRunMeta.textContent = '';
 }
 
 function setConsole({ phase = 'Pripravená', compile = 'Projekt ešte nebol spustený.', compileMeta = '', output = 'Výstup programu sa zobrazí tu.', outputMeta = '' } = {}) {
@@ -547,6 +1072,18 @@ function clearTestResult() {
   delete dom.developmentTestResult.dataset.state;
   dom.developmentTestResultTitle.textContent = '';
   dom.developmentTestResultDetails.textContent = '';
+}
+
+function useLastRunOutputForTest() {
+  const output = dom.developmentRunOutput.textContent;
+  const untouched = output === 'Výstup programu sa zobrazí tu.';
+  if (untouched) {
+    setTestStatus('Najprv spusti program, aby bol k dispozícii jeho výstup.');
+    return;
+  }
+  dom.developmentTestExpectedOutput.value = output;
+  setTestStatus('Posledný výstup programu je pripravený ako očakávaný výstup. Ulož test.');
+  dom.developmentTestExpectedOutput.focus();
 }
 
 function showTestResult({ passed, details }) {
@@ -871,7 +1408,7 @@ function renderProjects() {
     const targetLabel = project.kind === 'firmware' ? project.firmwareTarget?.label || 'bez cieľa' : '';
     meta.textContent = targetLabel
       ? `${languageLabel(project.language)} · ${targetLabel} · ${project.buildProfileLabel || 'Ladenie'}`
-      : `${languageLabel(project.language)} · ${projectFiles(project).length} súborov`;
+      : `${languageLabel(project.language)} · ${project.buildProfileLabel || 'Ladenie'} · ${projectFiles(project).length} súborov`;
     copy.append(title, meta);
     button.append(copy);
     button.addEventListener('click', () => void selectProject(project.id));
@@ -1046,6 +1583,240 @@ function renderFileTree() {
   projectChildren(project).forEach((item) => appendRow(item, 0));
 }
 
+function symbolMarker(kind) {
+  return {
+    function: 'F',
+    macro: '#',
+    class: 'C',
+    type: 'T',
+    label: ':',
+  }[kind] || '*';
+}
+
+function sourceForProjectFile(file) {
+  if (file?.id === activeFileId) return developmentEditorValue();
+  return file?.content || '';
+}
+
+function renderSymbolOutline() {
+  const project = activeProject();
+  const file = activeFile();
+  const browser = dom.developmentSymbolBrowser;
+  const sidebar = browser.closest('.development-sidebar');
+  const available = Boolean(project && file);
+  browser.hidden = !available;
+  sidebar.classList.toggle('has-symbol-browser', available);
+  sidebar.classList.toggle('symbols-collapsed', available && !symbolBrowserExpanded);
+  if (!available) return;
+
+  browser.classList.toggle('is-collapsed', !symbolBrowserExpanded);
+  dom.developmentSymbolBrowserToggle.setAttribute('aria-expanded', String(symbolBrowserExpanded));
+  dom.developmentSymbolBrowserToggle.title = symbolBrowserExpanded ? 'Zbaliť osnovu symbolov' : 'Rozbaliť osnovu symbolov';
+  dom.developmentSymbolBrowserToggle.setAttribute('aria-label', dom.developmentSymbolBrowserToggle.title);
+  setAppIcon(
+    dom.developmentSymbolBrowserToggle.querySelector('.app-icon'),
+    symbolBrowserExpanded ? 'chevron-down' : 'chevron-right'
+  );
+  dom.developmentSymbolList.replaceChildren();
+  if (!symbolBrowserExpanded) return;
+
+  const symbols = scanSourceSymbols(sourceForProjectFile(file), project.language);
+  if (!symbols.length) {
+    const empty = document.createElement('p');
+    empty.className = 'development-symbols-empty';
+    empty.textContent = 'Bez rozpoznaných symbolov.';
+    dom.developmentSymbolList.append(empty);
+    return;
+  }
+  symbols.forEach((symbol) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'development-symbol-item';
+    button.title = `${symbol.label}: ${symbol.signature || symbol.name} (riadok ${symbol.line})`;
+    button.setAttribute('aria-label', button.title);
+    const marker = document.createElement('span');
+    marker.className = 'development-symbol-marker';
+    marker.textContent = symbolMarker(symbol.kind);
+    const copy = document.createElement('span');
+    copy.className = 'development-symbol-copy';
+    const title = document.createElement('strong');
+    title.textContent = symbol.name;
+    const meta = document.createElement('small');
+    meta.textContent = `${symbol.label} · ${symbol.line}`;
+    copy.append(title, meta);
+    button.append(marker, copy);
+    button.addEventListener('click', () => {
+      selectEditorLine(symbol.line, symbol.column);
+      focusDevelopmentEditor();
+    });
+    dom.developmentSymbolList.append(button);
+  });
+}
+
+function quickOpenEntriesForMode() {
+  const project = activeProject();
+  if (!project) return [];
+  const files = projectFiles(project).map((file) => ({
+    ...file,
+    content: sourceForProjectFile(file),
+  }));
+  if (quickOpenMode === 'files') {
+    return files.map((file) => ({
+      kind: 'file',
+      label: file.title,
+      detail: projectFilePath(project, file),
+      file,
+    }));
+  }
+  if (quickOpenMode === 'snippets') {
+    return projectSnippetEntries(project.language).map((entry) => ({
+      kind: 'snippet',
+      label: entry.label,
+      detail: entry.detail,
+      template: entry.template,
+    }));
+  }
+  return scanProjectSymbols(files, project.language).map((symbol) => ({
+    kind: symbol.kind,
+    label: symbol.name,
+    detail: `${projectFilePath(project, symbol.file)}:${symbol.line} · ${symbol.label}`,
+    file: symbol.file,
+    line: symbol.line,
+    column: symbol.column,
+  }));
+}
+
+function quickOpenSearchTerms() {
+  return dom.developmentQuickOpenInput.value.trim().toLocaleLowerCase('sk').split(/\s+/).filter(Boolean);
+}
+
+function visibleQuickOpenEntries() {
+  const terms = quickOpenSearchTerms();
+  return quickOpenEntriesForMode()
+    .filter((entry) => {
+      if (!terms.length) return true;
+      const searchable = `${entry.label} ${entry.detail}`.toLocaleLowerCase('sk');
+      return terms.every((term) => searchable.includes(term));
+    })
+    .slice(0, MAX_QUICK_OPEN_RESULTS);
+}
+
+function renderQuickOpen() {
+  quickOpenResults = visibleQuickOpenEntries();
+  quickOpenResultIndex = Math.min(Math.max(0, quickOpenResultIndex), Math.max(quickOpenResults.length - 1, 0));
+  const symbolMode = quickOpenMode === 'symbols';
+  const snippetMode = quickOpenMode === 'snippets';
+  dom.developmentQuickOpenFiles.setAttribute('aria-pressed', String(quickOpenMode === 'files'));
+  dom.developmentQuickOpenSymbols.setAttribute('aria-pressed', String(symbolMode));
+  dom.developmentQuickOpenSnippets.setAttribute('aria-pressed', String(snippetMode));
+  dom.developmentQuickOpenInput.placeholder = snippetMode
+    ? 'Hľadať šablónu'
+    : symbolMode
+      ? 'Hľadať funkciu, makro alebo triedu'
+      : 'Hľadať súbor';
+  dom.developmentQuickOpenResults.replaceChildren();
+  if (!quickOpenResults.length) {
+    const empty = document.createElement('p');
+    empty.className = 'development-quick-open-empty';
+    empty.textContent = 'Bez výsledkov.';
+    dom.developmentQuickOpenResults.append(empty);
+    return;
+  }
+  quickOpenResults.forEach((entry, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'development-quick-open-result';
+    button.setAttribute('role', 'option');
+    button.setAttribute('aria-selected', String(index === quickOpenResultIndex));
+    if (index === quickOpenResultIndex) button.classList.add('is-active');
+    const marker = document.createElement('span');
+    marker.className = 'development-quick-open-marker';
+    marker.textContent = entry.kind === 'file' ? 'S' : entry.kind === 'snippet' ? '+' : symbolMarker(entry.kind);
+    const copy = document.createElement('span');
+    copy.className = 'development-quick-open-copy';
+    const title = document.createElement('strong');
+    title.textContent = entry.label;
+    const detail = document.createElement('small');
+    detail.textContent = entry.detail;
+    copy.append(title, detail);
+    button.append(marker, copy);
+    button.addEventListener('mouseenter', () => {
+      quickOpenResultIndex = index;
+      dom.developmentQuickOpenResults.querySelectorAll('.development-quick-open-result').forEach((item, itemIndex) => {
+        const active = itemIndex === index;
+        item.classList.toggle('is-active', active);
+        item.setAttribute('aria-selected', String(active));
+      });
+    });
+    button.addEventListener('click', () => void chooseQuickOpenEntry(index));
+    dom.developmentQuickOpenResults.append(button);
+  });
+}
+
+function setQuickOpenMode(mode) {
+  quickOpenMode = ['files', 'symbols', 'snippets'].includes(mode) ? mode : 'files';
+  quickOpenResultIndex = 0;
+  renderQuickOpen();
+}
+
+function openQuickOpen(mode = 'files') {
+  if (!activeProject()) return;
+  quickOpenMode = ['files', 'symbols', 'snippets'].includes(mode) ? mode : 'files';
+  quickOpenResultIndex = 0;
+  dom.developmentQuickOpenInput.value = '';
+  renderQuickOpen();
+  if (!dom.developmentQuickOpenDialog.open) dom.developmentQuickOpenDialog.showModal();
+  window.requestAnimationFrame(() => dom.developmentQuickOpenInput.focus());
+}
+
+function openGoToLine() {
+  const location = editorLocation();
+  if (!location) return;
+  const lastLine = Math.max(1, developmentEditorValue().split('\n').length);
+  dom.developmentGoToLineInput.min = '1';
+  dom.developmentGoToLineInput.max = String(lastLine);
+  dom.developmentGoToLineInput.value = String(location.line);
+  dom.developmentGoToLineInput.setCustomValidity('');
+  if (!dom.developmentGoToLineDialog.open) dom.developmentGoToLineDialog.showModal();
+  window.requestAnimationFrame(() => {
+    dom.developmentGoToLineInput.focus();
+    dom.developmentGoToLineInput.select();
+  });
+}
+
+function goToEditorLine(event) {
+  event.preventDefault();
+  const lastLine = Math.max(1, developmentEditorValue().split('\n').length);
+  const line = Number(dom.developmentGoToLineInput.value);
+  if (!Number.isInteger(line) || line < 1 || line > lastLine) {
+    dom.developmentGoToLineInput.setCustomValidity(`Zadaj riadok od 1 do ${lastLine}.`);
+    dom.developmentGoToLineInput.reportValidity();
+    return;
+  }
+  dom.developmentGoToLineInput.setCustomValidity('');
+  dom.developmentGoToLineDialog.close();
+  selectEditorLine(line);
+  focusDevelopmentEditor();
+}
+
+async function chooseQuickOpenEntry(index = quickOpenResultIndex) {
+  const entry = quickOpenResults[index];
+  if (!entry) return;
+  if (entry.kind === 'snippet') {
+    insertDevelopmentEditorSnippet(entry.template);
+    dom.developmentQuickOpenDialog.close();
+    return;
+  }
+  if (entry.file.id !== activeFileId) await selectFile(entry.file.id);
+  if (entry.line) {
+    window.requestAnimationFrame(() => {
+      selectEditorLine(entry.line, entry.column);
+      focusDevelopmentEditor();
+    });
+  }
+  dom.developmentQuickOpenDialog.close();
+}
+
 function renderEditor() {
   const project = activeProject();
   const file = activeFile();
@@ -1053,14 +1824,17 @@ function renderEditor() {
   dom.developmentProjectEditor.hidden = !hasProject;
   dom.developmentProjectExport.disabled = !project;
   dom.developmentWorkspace.querySelector('.development-empty').hidden = Boolean(projects.length);
-  if (!hasProject) return;
+  if (!hasProject) {
+    renderSymbolOutline();
+    return;
+  }
 
   dom.developmentProjectTitle.value = project.title;
   fitProjectTitle();
   projectTitleBaseline = project.title;
   dom.developmentProjectLanguage.textContent = languageLabel(project.language);
   dom.developmentProjectLanguage.dataset.language = project.language;
-  dom.developmentProjectLanguage.title = `${project.title} · ${languageLabel(project.language)}`;
+  dom.developmentProjectLanguage.title = `${project.title} · ${languageLabel(project.language)} · ${project.buildProfileLabel || 'Ladenie'}`;
   const isFirmware = project.kind === 'firmware';
   const target = project.firmwareTarget;
   dom.developmentProjectTarget.hidden = !isFirmware;
@@ -1079,9 +1853,12 @@ function renderEditor() {
     path: projectFilePath(project, item),
   })));
   setDevelopmentEditorDocument(file.content, project.language);
+  restoreActiveEditorViewState();
   setDevelopmentEditorDiagnostics(diagnosticsForActiveFile());
-  if (!dom.developmentFindBar.hidden) updateFindMatches({ preserveMatch: false });
+  if (!dom.developmentFindBar.hidden) updateFindMatches({ preserveMatch: true });
   dom.developmentInput.value = standardInput;
+  runArguments = project.runArguments || '';
+  projectRunArgumentsBaseline = runArguments;
   dom.developmentRunArguments.value = runArguments;
   fileDraftBaseline = activeFileSnapshot();
   dom.developmentFileDelete.disabled = projectFiles(project).length <= 1;
@@ -1113,6 +1890,7 @@ function renderEditor() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'development-file-tab';
+    button.dataset.fileId = String(item.id);
     button.classList.toggle('is-active', item.id === activeFileId);
     button.classList.toggle('is-entry', item.id === project.entryFileId);
     button.setAttribute('role', 'tab');
@@ -1126,6 +1904,20 @@ function renderEditor() {
     button.addEventListener('click', () => void selectFile(item.id));
     dom.developmentFileTabs.append(button);
   });
+  updateDirtyFileState();
+  renderSymbolOutline();
+  renderDefinitionNavigation();
+}
+
+function updateDirtyFileState() {
+  const file = activeFile();
+  const isDirty = Boolean(file) && activeFileSnapshot() !== fileDraftBaseline;
+  const activeTab = dom.developmentFileTabs?.querySelector(`[data-file-id="${activeFileId}"]`);
+  activeTab?.classList.toggle('is-dirty', isDirty);
+  dom.developmentSave?.classList.toggle('is-dirty', isDirty);
+  if (dom.developmentSave) {
+    dom.developmentSave.title = isDirty ? 'Uložiť zmeny (Ctrl+S)' : 'Zmeny sú uložené (Ctrl+S)';
+  }
 }
 
 function replaceProject(project) {
@@ -1134,6 +1926,7 @@ function replaceProject(project) {
   else projects.unshift(project);
   activeProjectId = project.id;
   ensureActiveFile(project);
+  rememberDevelopmentSession();
   renderProjects();
   renderEditor();
 }
@@ -1141,19 +1934,32 @@ function replaceProject(project) {
 async function loadWorkspace() {
   const workspace = await apiRequest('/development');
   projects = workspace.projects || [];
+  editorViewStates = new Map();
   expandedFolderIds = new Set(projects.flatMap((project) => projectFolders(project).map((folder) => folder.id)));
   languages = workspace.languages || [];
   firmwareTargets = workspace.firmwareTargets || [];
-  firmwareBuildProfiles = workspace.firmwareBuildProfiles || [];
+  buildProfiles = workspace.buildProfiles || workspace.firmwareBuildProfiles || [];
   setRuntimeStatus(workspace.runtime);
-  if (!projects.some((project) => project.id === activeProjectId)) activeProjectId = projects[0]?.id || '';
+  const session = rememberedDevelopmentSession();
+  const rememberedProject = projects.find((project) => project.id === session?.projectId);
+  if (rememberedProject) {
+    activeProjectId = rememberedProject.id;
+    activeFileId = projectFiles(rememberedProject).some((file) => file.id === session?.fileId)
+      ? session.fileId
+      : '';
+  } else if (!projects.some((project) => project.id === activeProjectId)) {
+    activeProjectId = projects[0]?.id || '';
+    activeFileId = '';
+  }
   ensureActiveFile();
+  rememberDevelopmentSession();
   renderProjects();
   renderEditor();
 }
 
 async function selectProject(projectId) {
   if (projectId === activeProjectId) return;
+  rememberEditorViewState();
   if (!(await saveDevelopmentChanges())) return;
   activeProjectId = projectId;
   selectedFolderId = '';
@@ -1163,6 +1969,7 @@ async function selectProject(projectId) {
   projectTests = [];
   activeTestId = '';
   testDraftBaseline = '';
+  rememberDevelopmentSession();
   setConsole();
   renderProjects();
   renderEditor();
@@ -1176,11 +1983,13 @@ async function selectFile(fileId) {
     renderProjects();
     return;
   }
+  rememberEditorViewState();
   if (!(await saveActiveFile())) return;
   activeFileId = fileId;
   const file = activeFile();
   selectedFolderId = String(file?.parentId || '');
   expandFolderAncestors(activeProject(), selectedFolderId);
+  rememberDevelopmentSession();
   setConsole();
   renderProjects();
   renderEditor();
@@ -1237,17 +2046,17 @@ function populateFirmwareTargets(preferredTarget = '') {
     : firmwareTargets[0]?.id || '';
 }
 
-function populateFirmwareBuildProfiles(preferredProfile = 'debug') {
-  dom.developmentFirmwareBuildProfileInput.replaceChildren();
-  firmwareBuildProfiles.forEach((profile) => {
+function populateBuildProfiles(preferredProfile = 'debug') {
+  dom.developmentProjectBuildProfileInput.replaceChildren();
+  buildProfiles.forEach((profile) => {
     const option = document.createElement('option');
     option.value = profile.id;
     option.textContent = profile.label;
-    dom.developmentFirmwareBuildProfileInput.append(option);
+    dom.developmentProjectBuildProfileInput.append(option);
   });
-  dom.developmentFirmwareBuildProfileInput.value = firmwareBuildProfiles.some((profile) => profile.id === preferredProfile)
+  dom.developmentProjectBuildProfileInput.value = buildProfiles.some((profile) => profile.id === preferredProfile)
     ? preferredProfile
-    : firmwareBuildProfiles[0]?.id || 'debug';
+    : buildProfiles[0]?.id || 'debug';
 }
 
 function syncProjectKindFields(preferredLanguage = '') {
@@ -1288,14 +2097,14 @@ function openProjectDialog(project = null) {
   projectDialogProjectId = project?.id || '';
   dom.developmentProjectForm.reset();
   populateFirmwareTargets(project?.firmwareTargetId || 'avr-atmega328p');
-  populateFirmwareBuildProfiles(project?.buildProfile || 'debug');
+  populateBuildProfiles(project?.buildProfile || 'debug');
   setDialogProjectKind(project?.kind || 'program');
   populateProjectLanguages(project?.language || 'c');
   syncProjectKindFields(project?.language || 'c');
   dom.developmentProjectNameInput.value = project?.title || 'Nový projekt';
-  dom.developmentProjectDialog.querySelector('h2').textContent = project ? 'Cieľ firmvéru' : 'Nový projekt';
+  dom.developmentProjectDialog.querySelector('h2').textContent = project ? 'Nastavenie projektu' : 'Nový projekt';
   setProjectDialogDescription(project
-    ? 'Zmeň cieľ, jazyk alebo režim buildu. Obsah súborov zostane zachovaný.'
+    ? 'Profil, jazyk a cieľ menia zostavenie, nie súbory projektu.'
     : 'Vyber bežný program alebo cieľ firmvéru. Vznikne pripravený hlavný súbor.');
   setProjectDialogSubmit(Boolean(project));
   dom.developmentProjectFormStatus.textContent = '';
@@ -1351,7 +2160,7 @@ async function createProject(event) {
       language: dom.developmentProjectLanguageInput.value,
       kind: dialogProjectKind(),
       firmwareTargetId: dom.developmentFirmwareTargetInput.value,
-      buildProfile: dom.developmentFirmwareBuildProfileInput.value,
+      buildProfile: dom.developmentProjectBuildProfileInput.value,
       templateId: dom.developmentProjectTemplateInput.value,
     };
     const result = await runOperation(() => apiRequest(
@@ -1398,12 +2207,13 @@ async function deleteProject() {
   }
 }
 
-async function saveProjectTitle() {
+async function saveProjectSettings() {
   const project = activeProject();
   const title = dom.developmentProjectTitle.value.trim();
-  if (!project || !title || title === projectTitleBaseline) return true;
+  const nextRunArguments = dom.developmentRunArguments.value;
+  if (!project || !title || (title === projectTitleBaseline && nextRunArguments === projectRunArgumentsBaseline)) return true;
   const result = await runOperation(() => apiRequest(`/development/projects/${encodeURIComponent(project.id)}`, {
-    method: 'PUT', body: { title }
+    method: 'PUT', body: { title, runArguments: nextRunArguments }
   }));
   replaceProject(result.project);
   return true;
@@ -1439,10 +2249,12 @@ export async function saveDevelopmentChanges() {
   window.clearTimeout(saveTimer);
   try {
     const pendingProjectTitle = dom.developmentProjectTitle.value.trim();
+    const pendingRunArguments = dom.developmentRunArguments.value;
     await saveActiveFile();
-    if (pendingProjectTitle && pendingProjectTitle !== projectTitleBaseline) {
+    if (pendingProjectTitle && (pendingProjectTitle !== projectTitleBaseline || pendingRunArguments !== projectRunArgumentsBaseline)) {
       dom.developmentProjectTitle.value = pendingProjectTitle;
-      await saveProjectTitle();
+      dom.developmentRunArguments.value = pendingRunArguments;
+      await saveProjectSettings();
     }
     return true;
   } catch (error) {
@@ -1452,7 +2264,9 @@ export async function saveDevelopmentChanges() {
 }
 
 export function hasUnsavedDevelopmentChanges() {
-  return dom.developmentProjectTitle.value.trim() !== projectTitleBaseline || activeFileSnapshot() !== fileDraftBaseline;
+  return dom.developmentProjectTitle.value.trim() !== projectTitleBaseline
+    || dom.developmentRunArguments.value !== projectRunArgumentsBaseline
+    || activeFileSnapshot() !== fileDraftBaseline;
 }
 
 export function discardDevelopmentDraft() {
@@ -1625,7 +2439,9 @@ async function runProject({ execute = true } = {}) {
     const compileText = resultText(compile);
     readDiagnostics(compileText);
     setConsole({
-      phase: result.compiled ? (execute ? 'Hotovo' : 'Preložené') : 'Chyba prekladu',
+      phase: result.compiled
+        ? `${execute ? 'Hotovo' : 'Preložené'} · ${project.buildProfileLabel || 'Ladenie'}`
+        : 'Chyba prekladu',
       compile: compileText,
       compileMeta: formatResultMeta(compile),
       output: result.compiled
@@ -1676,6 +2492,11 @@ export function closeDevelopmentPanel({ force = false } = {}) {
   if (dom.developmentProjectDialog.open) dom.developmentProjectDialog.close();
   if (dom.developmentProjectImportDialog.open) dom.developmentProjectImportDialog.close();
   if (dom.developmentTestDialog.open) dom.developmentTestDialog.close();
+  if (dom.developmentQuickOpenDialog.open) dom.developmentQuickOpenDialog.close();
+  if (dom.developmentGoToLineDialog.open) dom.developmentGoToLineDialog.close();
+  if (dom.developmentShortcutsDialog.open) dom.developmentShortcutsDialog.close();
+  if (dom.developmentProblemsDialog.open) dom.developmentProblemsDialog.close();
+  if (dom.developmentReferencesDialog.open) dom.developmentReferencesDialog.close();
   projectDialogProjectId = '';
   if (dom.developmentFileDialog.open) dom.developmentFileDialog.close();
   panelPinned = false;
@@ -1691,12 +2512,25 @@ export function initializeDevelopment() {
     mount: dom.developmentCodeMount,
     onChange: () => {
       if (!dom.developmentFindBar.hidden) updateFindMatches({ preserveMatch: true });
+      updateDirtyFileState();
+      renderSymbolOutline();
       scheduleSave();
     },
-    onFind: () => setFindOpen(true),
+    onFind: () => {
+      findScope = 'file';
+      setFindOpen(true);
+    },
+    onProjectFind: () => {
+      findScope = 'project';
+      setFindOpen(true);
+    },
     onReplace: () => setFindOpen(true, { replace: true }),
     onSave: () => void saveDevelopmentChanges(),
     onRun: () => void runProject(),
+    onGoToLine: openGoToLine,
+    onNavigateSymbol: (symbol) => void openSymbolDefinition(symbol),
+    onNavigateBack: () => void openPreviousDefinition(),
+    onFindReferences: (symbol) => openSymbolReferences(symbol),
   });
   initializePaneResizers();
   initializeDevelopmentTransfer({
@@ -1726,6 +2560,55 @@ export function initializeDevelopment() {
   dom.developmentFirmwareTargetInput.addEventListener('change', () => syncProjectKindFields());
   dom.developmentProjectLanguageInput.addEventListener('change', () => populateProjectTemplates());
   dom.developmentTargetConfigure.addEventListener('click', () => void configureProject());
+  dom.developmentDefinitionBack.addEventListener('click', () => void openPreviousDefinition());
+  dom.developmentSymbolBrowserToggle.addEventListener('click', () => {
+    symbolBrowserExpanded = !symbolBrowserExpanded;
+    renderSymbolOutline();
+  });
+  dom.developmentQuickOpen.addEventListener('click', () => openQuickOpen('files'));
+  dom.developmentShortcuts.addEventListener('click', () => {
+    if (!dom.developmentShortcutsDialog.open) dom.developmentShortcutsDialog.showModal();
+  });
+  dom.developmentQuickOpenCancel.addEventListener('click', () => dom.developmentQuickOpenDialog.close());
+  dom.developmentGoToLineCancel.addEventListener('click', () => dom.developmentGoToLineDialog.close());
+  dom.developmentShortcutsCancel.addEventListener('click', () => dom.developmentShortcutsDialog.close());
+  dom.developmentProblemsCancel.addEventListener('click', () => dom.developmentProblemsDialog.close());
+  dom.developmentReferencesCancel.addEventListener('click', () => dom.developmentReferencesDialog.close());
+  installDialogBackdropClose(dom.developmentQuickOpenDialog, () => dom.developmentQuickOpenDialog.close());
+  installDialogBackdropClose(dom.developmentGoToLineDialog, () => dom.developmentGoToLineDialog.close());
+  installDialogBackdropClose(dom.developmentShortcutsDialog, () => dom.developmentShortcutsDialog.close());
+  installDialogBackdropClose(dom.developmentProblemsDialog, () => dom.developmentProblemsDialog.close());
+  installDialogBackdropClose(dom.developmentReferencesDialog, () => dom.developmentReferencesDialog.close());
+  dom.developmentQuickOpenFiles.addEventListener('click', () => setQuickOpenMode('files'));
+  dom.developmentQuickOpenSymbols.addEventListener('click', () => setQuickOpenMode('symbols'));
+  dom.developmentQuickOpenSnippets.addEventListener('click', () => setQuickOpenMode('snippets'));
+  dom.developmentQuickOpenInput.addEventListener('input', () => {
+    quickOpenResultIndex = 0;
+    renderQuickOpen();
+  });
+  dom.developmentQuickOpenInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      dom.developmentQuickOpenDialog.close();
+      focusDevelopmentEditor();
+      return;
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (!quickOpenResults.length) return;
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      quickOpenResultIndex = (quickOpenResultIndex + direction + quickOpenResults.length) % quickOpenResults.length;
+      renderQuickOpen();
+      dom.developmentQuickOpenResults.querySelector('.is-active')?.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void chooseQuickOpenEntry();
+    }
+  });
+  dom.developmentGoToLineForm.addEventListener('submit', goToEditorLine);
+  dom.developmentGoToLineInput.addEventListener('input', () => dom.developmentGoToLineInput.setCustomValidity(''));
   dom.developmentFileForm.addEventListener('submit', (event) => void createFile(event));
   dom.developmentFileCancel.addEventListener('click', () => dom.developmentFileDialog.close());
   installDialogBackdropClose(dom.developmentFileDialog, () => dom.developmentFileDialog.close());
@@ -1742,26 +2625,69 @@ export function initializeDevelopment() {
     runArguments = dom.developmentRunArguments.value;
     window.dispatchEvent(new CustomEvent('workspace-activate', { detail: { section: 'development' } }));
   });
+  dom.developmentRunArguments.addEventListener('blur', () => void saveProjectSettings());
+  dom.developmentInputClear.addEventListener('click', clearDevelopmentStandardInput);
+  dom.developmentCompileCopy.addEventListener('click', () => void copyDevelopmentConsoleText(
+    dom.developmentCompileOutput.textContent,
+    dom.developmentCompileCopy,
+    'Preklad'
+  ));
+  dom.developmentCompileClear.addEventListener('click', clearDevelopmentCompileOutput);
+  dom.developmentProblems.addEventListener('click', () => {
+    renderProblems();
+    if (!dom.developmentProblemsDialog.open) dom.developmentProblemsDialog.showModal();
+  });
+  dom.developmentRunCopy.addEventListener('click', () => void copyDevelopmentConsoleText(
+    dom.developmentRunOutput.textContent,
+    dom.developmentRunCopy,
+    'Výstup'
+  ));
+  dom.developmentRunClear.addEventListener('click', clearDevelopmentRunOutput);
   dom.developmentSave.addEventListener('click', () => void saveDevelopmentChanges());
   dom.developmentFocusMode.addEventListener('click', () => setFocusMode(!focusMode));
   dom.developmentConsoleToggle.addEventListener('click', () => setConsoleExpanded(!consoleExpanded));
-  dom.developmentFindToggle.addEventListener('click', () => setFindOpen(dom.developmentFindBar.hidden));
+  dom.developmentFindToggle.addEventListener('click', () => {
+    if (dom.developmentFindBar.hidden) findScope = 'file';
+    setFindOpen(dom.developmentFindBar.hidden);
+  });
+  dom.developmentFindScope.addEventListener('click', () => {
+    findScope = findScope === 'file' ? 'project' : 'file';
+    updateFindMatches({ preserveMatch: false });
+    dom.developmentFindInput.focus();
+  });
   dom.developmentFindClose.addEventListener('click', () => {
     setFindOpen(false);
     focusDevelopmentEditor();
   });
   dom.developmentFindInput.addEventListener('input', () => {
     updateFindMatches({ preserveMatch: false });
-    selectFindMatch(0);
+    if (findScope === 'file') void selectFindMatch(0);
   });
   dom.developmentFindInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      setFindOpen(false);
+      focusDevelopmentEditor();
+      return;
+    }
+    if (findScope === 'project' && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+      event.preventDefault();
+      moveProjectFindSelection(event.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
     if (event.key === 'Enter') {
       event.preventDefault();
-      selectFindMatch(event.shiftKey ? -1 : 1);
+      if (findScope === 'project') {
+        if (projectFindIndex < 0) moveProjectFindSelection(1);
+        void selectFindMatch(0);
+        return;
+      }
+      void selectFindMatch(event.shiftKey ? -1 : 1);
     }
   });
-  dom.developmentFindPrevious.addEventListener('click', () => selectFindMatch(-1));
-  dom.developmentFindNext.addEventListener('click', () => selectFindMatch(1));
+  dom.developmentFindPrevious.addEventListener('click', () => void selectFindMatch(-1));
+  dom.developmentFindNext.addEventListener('click', () => void selectFindMatch(1));
   dom.developmentReplaceOne.addEventListener('click', () => replaceFindMatch(false));
   dom.developmentReplaceAll.addEventListener('click', () => replaceFindMatch(true));
   dom.developmentDiagnosticNext.addEventListener('click', () => void openNextDiagnostic());
@@ -1786,6 +2712,7 @@ export function initializeDevelopment() {
     void closeDevelopmentTests();
   });
   dom.developmentTestCreate.addEventListener('click', () => void createDevelopmentTest());
+  dom.developmentTestUseOutput.addEventListener('click', useLastRunOutputForTest);
   dom.developmentTestRunAll.addEventListener('click', () => void runAllDevelopmentTests());
   dom.developmentTestCaseForm.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -1795,9 +2722,32 @@ export function initializeDevelopment() {
   dom.developmentTestRun.addEventListener('click', () => void runDevelopmentTest());
   window.addEventListener('keydown', (event) => {
     if (!isDevelopmentPanelOpen() || (!event.ctrlKey && !event.metaKey)) return;
+    if (event.defaultPrevented) return;
+    if (event.key.toLowerCase() === 'p') {
+      event.preventDefault();
+      openQuickOpen('files');
+      return;
+    }
+    if (event.key.toLowerCase() === 'o' && event.shiftKey) {
+      event.preventDefault();
+      openQuickOpen('symbols');
+      return;
+    }
+    if (event.key.toLowerCase() === 'f' && event.shiftKey) {
+      event.preventDefault();
+      findScope = 'project';
+      setFindOpen(true);
+      return;
+    }
     if (event.key.toLowerCase() === 'f') {
       event.preventDefault();
+      findScope = 'file';
       setFindOpen(true);
+      return;
+    }
+    if (event.key.toLowerCase() === 'g') {
+      event.preventDefault();
+      openGoToLine();
       return;
     }
     if (event.key.toLowerCase() === 'h') {

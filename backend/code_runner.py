@@ -285,6 +285,7 @@ class CCodeRunner:
 class DevelopmentCodeRunner(CCodeRunner):
     """Spúšťa malé projekty v rovnakej izolácii ako skúšobňa učebnice."""
 
+    BUILD_PROFILES = {"debug", "release"}
     LANGUAGE_DEFINITIONS = {
         "c": {"label": "C", "tool": "gcc", "filename": "main.c", "compile": True},
         "cpp": {"label": "C++", "tool": "g++", "filename": "main.cpp", "compile": True},
@@ -357,6 +358,7 @@ class DevelopmentCodeRunner(CCodeRunner):
         entry_filename: Any = None,
         execute: bool = True,
         arguments: Any = None,
+        build_profile: Any = "debug",
     ) -> dict[str, Any]:
         language_id = str(language or "").strip()
         definition = self.LANGUAGE_DEFINITIONS.get(language_id)
@@ -368,6 +370,9 @@ class DevelopmentCodeRunner(CCodeRunner):
         source_text = self._limited_text(source, MAX_SOURCE_BYTES, "Zdrojový kód je príliš veľký.")
         input_text = self._limited_text(stdin, MAX_INPUT_BYTES, "Vstup programu je príliš veľký.")
         command_arguments = self._command_arguments(arguments)
+        profile = str(build_profile or "debug").strip().lower()
+        if profile not in self.BUILD_PROFILES:
+            raise CodeRunnerError("Neznámy profil zostavenia.")
         if not source_text.strip():
             raise CodeRunnerError("Zdrojový kód nemôže byť prázdny.")
 
@@ -381,6 +386,11 @@ class DevelopmentCodeRunner(CCodeRunner):
             tool = str(self.tool_paths[language_id])
             entry_path = f"/work/{filename}"
             run_memory_limit = MEMORY_LIMIT_BYTES
+            # -g1 keeps source locations while fitting inside the sandbox file-size limit.
+            native_profile_flags = ["-O0", "-g1"] if profile == "debug" else ["-O2", "-DNDEBUG"]
+            # AddressSanitizer needs a virtual-memory reservation larger than this sandbox permits.
+            # UndefinedBehaviorSanitizer remains useful here and reports source locations safely.
+            debug_runtime_checks = ["-fsanitize=undefined", "-fno-omit-frame-pointer"] if profile == "debug" else []
 
             if language_id == "c":
                 source_paths = [f"/work/{name}" for name, _ in project_files if name.lower().endswith(".c")]
@@ -396,7 +406,8 @@ class DevelopmentCodeRunner(CCodeRunner):
                         "-Wconversion",
                         "-Wshadow",
                         "-Wformat=2",
-                        "-O0",
+                        *native_profile_flags,
+                        *debug_runtime_checks,
                         "-I/work",
                         *self._project_include_paths(project_files),
                         *source_paths,
@@ -425,7 +436,8 @@ class DevelopmentCodeRunner(CCodeRunner):
                         "-Wall",
                         "-Wextra",
                         "-Wpedantic",
-                        "-O0",
+                        *native_profile_flags,
+                        *debug_runtime_checks,
                         "-I/work",
                         *self._project_include_paths(project_files),
                         *source_paths,
@@ -516,7 +528,7 @@ class DevelopmentCodeRunner(CCodeRunner):
                         "build",
                         f"/work/{project_name}.csproj",
                         "--configuration",
-                        "Release",
+                        "Debug" if profile == "debug" else "Release",
                         "--output",
                         "/work/build",
                         "--nologo",
@@ -571,7 +583,9 @@ class DevelopmentCodeRunner(CCodeRunner):
                         tool,
                         "--edition=2021",
                         "-C",
-                        "debuginfo=1",
+                        "debuginfo=2" if profile == "debug" else "debuginfo=0",
+                        "-C",
+                        "opt-level=0" if profile == "debug" else "opt-level=2",
                         entry_path,
                         "-o",
                         "/work/program",
@@ -593,7 +607,7 @@ class DevelopmentCodeRunner(CCodeRunner):
                 if not any(name == "go.mod" for name, _ in project_files):
                     (workspace / "go.mod").write_text("module poznamkovnik.local/project\ngo 1.20\n", encoding="utf-8")
                 compile_result = self._execute(
-                    [tool, "build", "-o", "/work/program", package_path],
+                    [tool, "build", *(["-trimpath"] if profile == "release" else []), "-o", "/work/program", package_path],
                     workspace,
                     timeout=COMPILE_TIMEOUT_SECONDS,
                     memory_limit=COMPILED_LANGUAGE_MEMORY_LIMIT_BYTES,
@@ -621,6 +635,7 @@ class DevelopmentCodeRunner(CCodeRunner):
                         tool,
                         f"-J-Xmx{JAVA_MAX_HEAP_MB}m",
                         f"-J-XX:MaxMetaspaceSize={JAVA_MAX_METASPACE_MB}m",
+                        "-g" if profile == "debug" else "-g:none",
                         "-d",
                         "/work/classes",
                         *source_paths,
@@ -645,7 +660,7 @@ class DevelopmentCodeRunner(CCodeRunner):
                 raise CodeRunnerError("Tento jazyk ešte nemá bezpečný profil spúšťania.")
 
             if not execute:
-                return {"compiled": True, "compile": compile_result, "run": None}
+                return {"compiled": True, "compile": compile_result, "run": None, "buildProfile": profile}
             run_result = self._execute(
                 [*run_command, *command_arguments],
                 workspace,
@@ -653,7 +668,7 @@ class DevelopmentCodeRunner(CCodeRunner):
                 stdin_path=input_path,
                 memory_limit=run_memory_limit,
             )
-            return {"compiled": True, "compile": compile_result, "run": run_result}
+            return {"compiled": True, "compile": compile_result, "run": run_result, "buildProfile": profile}
 
     def _command_arguments(self, arguments: Any) -> list[str]:
         raw_arguments = self._limited_text(arguments, MAX_ARGUMENT_BYTES, "Parametre spúšťania sú príliš dlhé.")

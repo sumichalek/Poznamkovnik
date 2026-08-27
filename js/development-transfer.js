@@ -54,6 +54,7 @@ function projectManifest(project, tests = []) {
       kind: String(project?.kind || 'program'),
       firmwareTargetId: String(project?.firmwareTargetId || ''),
       buildProfile: String(project?.buildProfile || 'debug'),
+      runArguments: String(project?.runArguments || ''),
       entryPath: entry ? projectPath(project, entry) : '',
       files,
       tests: tests.map((test) => ({
