@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import signal
 from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -9,6 +10,10 @@ from backend.api import AppContext, AppHandler
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = 1111
+
+
+def _stop_server(_signal_number: int, _frame: object) -> None:
+    raise KeyboardInterrupt
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,8 +28,17 @@ def main() -> None:
     args = parse_args()
     context = AppContext(BASE_DIR, args.data_dir.resolve())
     server = ThreadingHTTPServer((args.host, args.port), partial(AppHandler, context=context))
+    signal.signal(signal.SIGTERM, _stop_server)
     print(f"Poznámkovník beží na http://{args.host}:{args.port}")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        context.development_debugger.close()
+        context.serial_monitor.close()
+        context.language_services.close()
 
 
 if __name__ == "__main__":

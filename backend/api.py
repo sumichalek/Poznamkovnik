@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -21,13 +22,20 @@ from .backups import AutomaticBackupScheduler, BackupArtifact, BackupManager, MA
 from .bibliography import BibliographyLookupError, lookup_bibliographic_metadata
 from .calendar_reminders import CalendarReminderScheduler, DesktopNotifier
 from .code_runner import CCodeRunner, CodeRunnerError, DevelopmentCodeRunner
+from .debugger import DebuggerError, DevelopmentDebugger
 from .data_integrity import DataIntegrityService
 from .database import Database, ValidationError
 from .document_workshop import DocumentWorkshop, MAX_DOCUMENT_PROJECT_TRANSFER_BYTES
 from .files import BackgroundStore, FileStore, MAX_BACKGROUND_BYTES, UploadError
+from .firmware import FirmwareDeviceInventory, FirmwareToolchains
+from .firmware_builder import FirmwareBuildRunner
+from .firmware_programmer import FirmwareProgrammer
+from .lsp import LanguageService, LanguageServiceError
+from .serial_monitor import SerialMonitor
 from .podcast import PodcastFeedError, fetch_podcast_feed
 from .radio_recording import RadioRecordingManager
 from .radio_schedule import RadioRecordingScheduler
+from .tutorial_exercises import evaluate_tutorial_practice, tutorial_practice_public
 from .source_text import SourceTextIndex
 from .source_tables import SourceTablePreview
 
@@ -38,6 +46,35 @@ MULTIPART_MEMORY_THRESHOLD = 2 * 1024 * 1024
 MUSIC_FILE_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".weba", ".webm"}
 RADIO_STREAM_TIMEOUT_SECONDS = 20
 RADIO_STREAM_CHUNK_BYTES = 64 * 1024
+
+
+def _normalized_development_test_output(value: Any) -> str:
+    return re.sub(r"\n+$", "", re.sub(r"[ \t]+\n", "\n", str(value or "").replace("\r\n", "\n")))
+
+
+def _development_test_result_data(test_case: dict[str, Any], result: dict[str, Any]) -> dict[str, int | str]:
+    compile_result = result.get("compile") if isinstance(result.get("compile"), dict) else {}
+    run_result = result.get("run") if isinstance(result.get("run"), dict) else {}
+    compiled = bool(result.get("compiled"))
+    try:
+        exit_code = int(run_result.get("exitCode", 0))
+    except (TypeError, ValueError):
+        exit_code = 0
+    duration_ms = 0
+    for item in (compile_result, run_result):
+        try:
+            duration_ms += int(item.get("durationMs") or 0)
+        except (TypeError, ValueError):
+            continue
+    if not compiled:
+        status = "compile_error"
+    elif exit_code != 0:
+        status = "runtime_error"
+    else:
+        output = "\n".join(str(run_result.get(key) or "") for key in ("stdout", "stderr") if run_result.get(key))
+        expected = _normalized_development_test_output(test_case.get("expectedOutput"))
+        status = "passed" if _normalized_development_test_output(output) == expected else "output_mismatch"
+    return {"status": status, "durationMs": duration_ms, "exitCode": exit_code}
 
 
 @dataclass
@@ -77,6 +114,13 @@ class AppContext:
         self.automatic_backups.start()
         self.c_runner = CCodeRunner()
         self.development_runner = DevelopmentCodeRunner()
+        self.development_debugger = DevelopmentDebugger()
+        self.firmware_toolchains = FirmwareToolchains()
+        self.firmware_devices = FirmwareDeviceInventory()
+        self.firmware_builder = FirmwareBuildRunner(data_dir / "firmware-builds")
+        self.firmware_programmer = FirmwareProgrammer(self.firmware_builder)
+        self.serial_monitor = SerialMonitor()
+        self.language_services = LanguageService()
 
 
 class AppHandler(SimpleHTTPRequestHandler):
@@ -157,7 +201,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                 self._write_json(HTTPStatus.OK, result)
         except ApiError as error:
             self._write_json(error.status, {"error": error.message})
-        except (ValidationError, UploadError, CodeRunnerError, PodcastFeedError, BibliographyLookupError) as error:
+        except (ValidationError, UploadError, CodeRunnerError, DebuggerError, LanguageServiceError, PodcastFeedError, BibliographyLookupError) as error:
             self._write_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
         except AuthError as error:
             self._write_json(HTTPStatus.UNAUTHORIZED, {"error": str(error)})
@@ -314,7 +358,24 @@ class AppHandler(SimpleHTTPRequestHandler):
         if route == ["development"] and method == "GET":
             workspace = self.context.database.development_workspace(user["id"])
             workspace["runtime"] = self.context.development_runner.status()
+            workspace["debugger"] = self.context.development_debugger.status()
+            workspace["firmwareTools"] = self.context.firmware_toolchains.status()
+            workspace["firmwareDevices"] = self.context.firmware_devices.status()
+            workspace["firmwareBuild"] = self.context.firmware_builder.status()
+            workspace["serialMonitor"] = self.context.serial_monitor.status()
+            workspace["languageServices"] = self.context.language_services.status()
             return workspace
+        if route == ["development", "firmware-devices"] and method == "GET":
+            return self.context.firmware_devices.status()
+        if route == ["development", "tutorial-project"] and method == "GET":
+            query = parse_qs(request_url.query)
+            project = self.context.database.development_project_for_tutorial(
+                user["id"],
+                query.get("languageId", [""])[0],
+                query.get("pageId", [""])[0],
+                query.get("exampleId", [""])[0],
+            )
+            return {"project": project}
         if route == ["development", "projects"] and method == "POST":
             data = self._read_json()
             data.setdefault("id", str(uuid.uuid4()))
@@ -340,6 +401,74 @@ class AppHandler(SimpleHTTPRequestHandler):
                         user["id"], project_id, route[4], self._read_json()
                     )
                 }
+            if len(route) == 4 and route[3] == "rename-symbol" and method == "POST":
+                return self.context.database.rename_development_symbol(user["id"], project_id, self._read_json())
+            if len(route) == 4 and route[3] == "preview-symbol-rename" and method == "POST":
+                return self.context.database.preview_development_symbol_rename(user["id"], project_id, self._read_json())
+            if len(route) == 4 and route[3] == "firmware-build" and method == "POST":
+                data = self._read_json()
+                entry = self.context.database.development_entry_file(
+                    user["id"], project_id, str(data.get("fileId") or "")
+                )
+                if entry["projectKind"] != "firmware":
+                    raise ValidationError("Tento projekt nie je firmvér.")
+                return self.context.firmware_builder.build(user["id"], project_id, entry)
+            if len(route) == 4 and route[3] == "firmware-memory" and method == "GET":
+                entry = self.context.database.development_entry_file(user["id"], project_id)
+                if entry["projectKind"] != "firmware":
+                    raise ValidationError("Tento projekt nie je firmvér.")
+                return self.context.firmware_builder.memory_map(user["id"], project_id, entry)
+            if len(route) == 4 and route[3] == "firmware-program" and method == "POST":
+                entry = self.context.database.development_entry_file(user["id"], project_id)
+                if entry["projectKind"] != "firmware":
+                    raise ValidationError("Tento projekt nie je firmvér.")
+                return self.context.firmware_programmer.prepare(user["id"], project_id, entry)
+            if len(route) == 5 and route[3] == "firmware-program" and route[4] == "confirm" and method == "POST":
+                entry = self.context.database.development_entry_file(user["id"], project_id)
+                if entry["projectKind"] != "firmware":
+                    raise ValidationError("Tento projekt nie je firmvér.")
+                return self.context.firmware_programmer.program(user["id"], project_id, entry, self._read_json())
+            if len(route) == 4 and route[3] == "serial-monitor" and method == "POST":
+                entry = self.context.database.development_entry_file(user["id"], project_id)
+                return self.context.serial_monitor.start(user["id"], project_id, entry, self._read_json())
+            if len(route) == 5 and route[3] == "serial-monitor":
+                if method == "GET":
+                    query = parse_qs(request_url.query)
+                    return self.context.serial_monitor.poll(
+                        user["id"], project_id, route[4], query.get("cursor", [0])[0]
+                    )
+                if method == "DELETE":
+                    return self.context.serial_monitor.stop(user["id"], project_id, route[4])
+            if len(route) == 6 and route[3] == "serial-monitor" and route[5] == "send" and method == "POST":
+                return self.context.serial_monitor.send(user["id"], project_id, route[4], self._read_json())
+            if len(route) == 4 and route[3] == "debug" and method == "POST":
+                data = self._read_json()
+                entry = self.context.database.development_entry_file(
+                    user["id"], project_id, str(data.get("fileId") or "")
+                )
+                if entry["projectKind"] == "firmware":
+                    raise ValidationError("Firmvér zatiaľ nemožno ladiť v skúšobni.")
+                return self.context.development_debugger.start(
+                    user["id"],
+                    project_id,
+                    entry,
+                    stdin=data.get("stdin", ""),
+                    arguments=data.get("arguments", ""),
+                    breakpoints=data.get("breakpoints"),
+                )
+            if len(route) == 5 and route[3] == "debug" and method == "DELETE":
+                self.context.development_debugger.stop(user["id"], route[4])
+                return {"stopped": True}
+            if len(route) == 6 and route[3] == "debug" and route[5] == "command" and method == "POST":
+                return self.context.development_debugger.command(user["id"], route[4], self._read_json().get("action"))
+            if len(route) == 4 and route[3] == "language-service" and method == "POST":
+                data = self._read_json()
+                entry = self.context.database.development_entry_file(
+                    user["id"], project_id, str(data.get("fileId") or "")
+                )
+                return self.context.language_services.request(user["id"], entry, data)
+            if len(route) == 4 and route[3] == "apply-text-edits" and method == "POST":
+                return self.context.database.apply_development_text_edits(user["id"], project_id, self._read_json())
             if len(route) == 4 and route[3] == "tests" and method == "GET":
                 return {"tests": self.context.database.list_development_test_cases(user["id"], project_id)}
             if len(route) == 4 and route[3] == "tests" and method == "POST":
@@ -372,7 +501,10 @@ class AppHandler(SimpleHTTPRequestHandler):
                     build_profile=entry["buildProfile"],
                 )
                 result["entryFileId"] = entry["fileId"]
-                return {"result": result, "test": test_case}
+                updated_test = self.context.database.record_development_test_result(
+                    user["id"], project_id, route[4], _development_test_result_data(test_case, result)
+                )
+                return {"result": result, "test": updated_test}
             if len(route) == 4 and route[3] == "run" and method == "POST":
                 data = self._read_json()
                 entry = self.context.database.development_entry_file(user["id"], project_id, str(data.get("fileId") or ""))
@@ -397,7 +529,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                 return result
 
         if route == ["tutorial", "runtime"] and method == "GET":
-            return self.context.c_runner.status()
+            return self.context.development_runner.status()
         if route == ["tutorial", "languages"] and method == "GET":
             return {"languages": self.context.database.list_tutorial_languages(user["id"])}
         if len(route) == 3 and route[:2] == ["tutorial", "languages"] and method == "GET":
@@ -410,6 +542,21 @@ class AppHandler(SimpleHTTPRequestHandler):
             return {"page": self.context.database.create_tutorial_page(user["id"], route[2], data)}
         if len(route) == 4 and route[:2] == ["tutorial", "pages"] and route[3] == "note" and method == "PUT":
             return {"note": self.context.database.save_tutorial_note(user["id"], route[2], self._read_json())}
+        if len(route) == 4 and route[:2] == ["tutorial", "pages"] and route[3] == "progress" and method == "PUT":
+            return {"progress": self.context.database.save_tutorial_page_progress(user["id"], route[2], self._read_json())}
+        if len(route) == 4 and route[:2] == ["tutorial", "pages"] and route[3] == "checkpoint" and method == "POST":
+            return {"checkpoint": self.context.database.answer_tutorial_checkpoint(user["id"], route[2], self._read_json())}
+        if len(route) == 4 and route[:2] == ["tutorial", "pages"] and route[3] == "practice" and method == "GET":
+            query = parse_qs(request_url.query)
+            practice = self.context.database.tutorial_page_practice(user["id"], route[2], query.get("variant", [0])[0])
+            return {"practice": tutorial_practice_public(practice)}
+        if route == ["tutorial", "practice", "run"] and method == "POST":
+            data = self._read_json()
+            practice = self.context.database.tutorial_page_practice(user["id"], str(data.get("pageId") or ""), data.get("variant", 0))
+            stdin = str(data.get("stdin") or "")
+            result = self.context.c_runner.run(str(data.get("source") or ""), stdin, "c17")
+            result["evaluation"] = evaluate_tutorial_practice(practice, result, stdin)
+            return result
         if len(route) == 4 and route[:2] == ["tutorial", "examples"] and route[3] == "draft" and method == "PUT":
             return {"draft": self.context.database.save_tutorial_example_draft(user["id"], route[2], self._read_json())}
         if len(route) == 4 and route[:2] == ["tutorial", "examples"] and route[3] == "run" and method == "POST":
@@ -417,8 +564,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             data = self._read_json()
             source = data.get("source", example["source"])
             stdin = data.get("stdin", example["stdin"])
-            standard = data.get("standard", example["standard"])
-            return self.context.c_runner.run(source, stdin, standard)
+            return self.context.development_runner.run(example["language"], source, stdin)
 
         if route == ["tasks"] and method == "GET":
             query = parse_qs(request_url.query)

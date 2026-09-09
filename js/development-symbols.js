@@ -14,12 +14,21 @@ function blankKeepLines(value) {
   return String(value || '').replace(/[^\n]/g, ' ');
 }
 
-export function sourceForSymbolScan(content) {
-  return String(content || '')
-    .replace(/'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`/g, blankKeepLines)
+const HASH_COMMENT_LANGUAGES = new Set(['python', 'ruby', 'perl', 'php', 'bash', 'asm']);
+const SEMICOLON_COMMENT_LANGUAGES = new Set(['asm']);
+const SLASH_COMMENT_LANGUAGES = new Set(['c', 'cpp', 'csharp', 'go', 'java', 'javascript', 'php', 'rust']);
+
+export function sourceForSymbolScan(content, languageId = '') {
+  let source = String(content || '')
+    .replace(/'''[\s\S]*?'''|"""[\s\S]*?"""|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`/g, blankKeepLines)
     .replace(/\/\*[\s\S]*?\*\//g, blankKeepLines)
-    .replace(/\/\/[^\n]*/g, blankKeepLines)
-    .replace(/(^|\n)\s*#\s*(?!define\b)[^\n]*/g, (match) => blankKeepLines(match));
+  if (SLASH_COMMENT_LANGUAGES.has(languageId)) source = source.replace(/\/\/[^\n]*/g, blankKeepLines);
+  if (HASH_COMMENT_LANGUAGES.has(languageId)) source = source.replace(/#[^\n]*/g, blankKeepLines);
+  if (SEMICOLON_COMMENT_LANGUAGES.has(languageId)) source = source.replace(/;[^\n]*/g, blankKeepLines);
+  if (languageId === 'c' || languageId === 'cpp') {
+    source = source.replace(/(^|\n)\s*#\s*(?!define\b)[^\n]*/g, blankKeepLines);
+  }
+  return source;
 }
 
 function locationAt(source, offset) {
@@ -58,7 +67,7 @@ function collect(source, expression, kind, symbols) {
 
 export function scanSourceSymbols(content, languageId = '') {
   const raw = String(content || '');
-  const source = sourceForSymbolScan(raw);
+  const source = sourceForSymbolScan(raw, languageId);
   const symbols = new Map();
 
   collect(source, /^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b/gm, 'macro', symbols);
@@ -69,6 +78,12 @@ export function scanSourceSymbols(content, languageId = '') {
 
   if (languageId === 'python') {
     collect(source, /^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm, 'function', symbols);
+  } else if (languageId === 'ruby') {
+    collect(source, /^\s*def\s+([A-Za-z_][A-Za-z0-9_!?=]*)(?=\s|\(|$)/gm, 'function', symbols);
+    collect(source, /^\s*module\s+([A-Za-z_][A-Za-z0-9_:]*)\b/gm, 'type', symbols);
+  } else if (languageId === 'perl') {
+    collect(source, /^\s*sub\s+([A-Za-z_][A-Za-z0-9_]*)\b/gm, 'function', symbols);
+    collect(source, /^\s*package\s+([A-Za-z_][A-Za-z0-9_:]*)\b/gm, 'type', symbols);
   } else if (languageId === 'go') {
     collect(source, /^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm, 'function', symbols);
   } else if (languageId === 'rust') {

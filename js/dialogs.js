@@ -4,6 +4,8 @@ export function hasOpenApplicationDialog() {
 
 const WINDOW_MARGIN = 12;
 const COMPACT_WINDOW_QUERY = '(max-width: 640px)';
+const MINIMUM_WINDOW_WIDTH = 320;
+const MINIMUM_WINDOW_HEIGHT = 180;
 const windowControllers = new WeakMap();
 
 function isCompactWindow() {
@@ -27,6 +29,51 @@ function clampWindowPosition(dialog) {
   dialog.style.top = `${Math.min(maxTop, Math.max(WINDOW_MARGIN, Number.isFinite(top) ? top : WINDOW_MARGIN))}px`;
 }
 
+function dialogContent(dialog) {
+  return [...dialog.children].find((child) => child.matches('section, form, div')) || null;
+}
+
+function clampWindowSize(value, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, Math.ceil(value)));
+}
+
+function centerWindow(dialog) {
+  dialog.style.left = `${Math.max(WINDOW_MARGIN, Math.round((window.innerWidth - dialog.offsetWidth) / 2))}px`;
+  dialog.style.top = `${Math.max(WINDOW_MARGIN, Math.round((window.innerHeight - dialog.offsetHeight) / 2))}px`;
+}
+
+export function fitDialogWindowToContent(dialog, { preferredWidth = 0 } = {}) {
+  if (!dialog?.open || isCompactWindow()) return;
+  const content = dialogContent(dialog);
+  if (!content) return;
+
+  const maximumWidth = Math.max(MINIMUM_WINDOW_WIDTH, window.innerWidth - (WINDOW_MARGIN * 2));
+  const maximumHeight = Math.max(MINIMUM_WINDOW_HEIGHT, window.innerHeight - (WINDOW_MARGIN * 2));
+  const dialogRect = dialog.getBoundingClientRect();
+  const contentRect = content.getBoundingClientRect();
+  const horizontalChrome = Math.max(0, dialogRect.width - contentRect.width);
+  const minimumWidth = Math.min(MINIMUM_WINDOW_WIDTH, maximumWidth);
+  const naturalWidth = preferredWidth || Math.max(dialogRect.width, content.scrollWidth + horizontalChrome);
+  dialog.style.width = `${clampWindowSize(naturalWidth, minimumWidth, maximumWidth)}px`;
+
+  const inlineHeight = content.style.height;
+  const inlineMaxHeight = content.style.maxHeight;
+  content.style.height = 'auto';
+  content.style.maxHeight = 'none';
+  const naturalContentHeight = Math.max(content.scrollHeight, content.getBoundingClientRect().height);
+  content.style.height = inlineHeight;
+  content.style.maxHeight = inlineMaxHeight;
+
+  const resizedDialogRect = dialog.getBoundingClientRect();
+  const verticalChrome = Math.max(0, resizedDialogRect.height - content.getBoundingClientRect().height);
+  const minimumHeight = Math.min(MINIMUM_WINDOW_HEIGHT, maximumHeight);
+  dialog.style.height = `${clampWindowSize(naturalContentHeight + verticalChrome, minimumHeight, maximumHeight)}px`;
+  dialog.dataset.windowSized = 'true';
+
+  if (dialog.dataset.windowCentered === 'true') centerWindow(dialog);
+  clampWindowPosition(dialog);
+}
+
 function prepareWindow(dialog) {
   if (!dialog.open || isCompactWindow()) return;
   const rect = dialog.getBoundingClientRect();
@@ -36,9 +83,9 @@ function prepareWindow(dialog) {
     dialog.dataset.windowSized = 'true';
   }
   if (!dialog.dataset.windowPositioned) {
-    dialog.style.left = `${Math.max(WINDOW_MARGIN, Math.round((window.innerWidth - dialog.offsetWidth) / 2))}px`;
-    dialog.style.top = `${Math.max(WINDOW_MARGIN, Math.round((window.innerHeight - dialog.offsetHeight) / 2))}px`;
+    centerWindow(dialog);
     dialog.dataset.windowPositioned = 'true';
+    dialog.dataset.windowCentered = 'true';
   }
   clampWindowPosition(dialog);
 }
@@ -127,11 +174,19 @@ function installDialogSectionResizers(dialog) {
 export function installDialogWindowBehavior(dialog) {
   if (!dialog || dialog.dataset.windowFixed === 'true' || windowControllers.has(dialog)) return;
   dialog.classList.add('app-window-dialog');
-  const content = [...dialog.children].find((child) => child.matches('section, form, div'));
+  const content = dialogContent(dialog);
   const handle = dialog.querySelector('[data-dialog-drag-handle]') || content?.querySelector(':scope > header');
-  const controller = { drag: null, resizeObserver: null };
+  const controller = { drag: null, resizeObserver: null, contentObserver: null, fitFrame: 0 };
   windowControllers.set(dialog, controller);
   installDialogSectionResizers(dialog);
+
+  const scheduleContentFit = () => {
+    if (controller.fitFrame || !dialog.open) return;
+    controller.fitFrame = window.requestAnimationFrame(() => {
+      controller.fitFrame = 0;
+      fitDialogWindowToContent(dialog);
+    });
+  };
 
   if (handle) {
     handle.classList.add('dialog-window-drag-handle');
@@ -145,6 +200,7 @@ export function installDialogWindowBehavior(dialog) {
         offsetY: event.clientY - rect.top
       };
       dialog.dataset.windowPositioned = 'true';
+      delete dialog.dataset.windowCentered;
       dialog.setPointerCapture(event.pointerId);
       event.preventDefault();
     });
@@ -163,16 +219,35 @@ export function installDialogWindowBehavior(dialog) {
   dialog.addEventListener('pointerup', stopDragging);
   dialog.addEventListener('pointercancel', stopDragging);
   dialog.addEventListener('toggle', () => {
-    if (dialog.open) requestAnimationFrame(() => prepareWindow(dialog));
+    if (!dialog.open) return;
+    window.requestAnimationFrame(() => {
+      prepareWindow(dialog);
+      fitDialogWindowToContent(dialog);
+    });
   });
   dialog.addEventListener('close', () => {
     controller.drag = null;
+    if (controller.fitFrame) {
+      window.cancelAnimationFrame(controller.fitFrame);
+      controller.fitFrame = 0;
+    }
   });
   window.addEventListener('resize', () => clampWindowPosition(dialog));
 
   if (typeof ResizeObserver === 'function') {
     controller.resizeObserver = new ResizeObserver(() => clampWindowPosition(dialog));
     controller.resizeObserver.observe(dialog);
+  }
+
+  if (content && typeof MutationObserver === 'function') {
+    controller.contentObserver = new MutationObserver(scheduleContentFit);
+    controller.contentObserver.observe(content, {
+      attributes: true,
+      attributeFilter: ['hidden'],
+      childList: true,
+      characterData: true,
+      subtree: true
+    });
   }
 }
 

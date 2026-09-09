@@ -1,9 +1,11 @@
 import { apiRequest } from './api.js';
 import { createAppIcon, setAppIcon } from './app-icons.js';
-import { installDialogBackdropClose } from './dialogs.js';
+import { fitDialogWindowToContent, installDialogBackdropClose } from './dialogs.js';
 import {
   developmentEditorSelection,
+  developmentEditorSymbol,
   developmentEditorValue,
+  formatDevelopmentEditor,
   focusDevelopmentEditor,
   initializeDevelopmentEditor,
   insertDevelopmentEditorSnippet,
@@ -19,13 +21,24 @@ import { initializeDevelopmentTransfer } from './development-transfer.js';
 import { dom } from './dom.js';
 import { scanProjectSymbols, scanSourceSymbols, sourceForSymbolScan } from './development-symbols.js';
 import { projectSnippetEntries } from './development-completions.js';
+import { firstTestFailureDiagnostic, parseDevelopmentDiagnostics } from './development-diagnostics.js';
+import { firstOutputDifference, fullOutputComparison, normalizedTestOutput } from './development-test-results.js';
 import { updateTopbarVisibility } from './topbar.js';
 
 let projects = [];
 let languages = [];
 let firmwareTargets = [];
+let firmwareTools = {};
+let firmwareDevices = { ports: [], programmers: {} };
+let firmwareBuild = { targets: {} };
+let serialMonitor = { available: false, baudRates: [], defaultBaudRate: 115200, message: 'Sériový monitor sa pripravuje.' };
+let firmwareProgrammingChallenge = null;
+let serialMonitorSession = null;
+let serialMonitorCursor = 0;
+let serialMonitorPollTimer = 0;
 let buildProfiles = [];
 let runtime = { available: false, message: 'Skúšobňa sa pripravuje.' };
+let debuggerRuntime = { available: false, message: 'Debugger sa pripravuje.' };
 let activeProjectId = '';
 let activeFileId = '';
 let selectedFolderId = '';
@@ -56,12 +69,21 @@ let activeTestId = '';
 let testDraftBaseline = '';
 let testRunResults = new Map();
 let runningAllTests = false;
+let displayedTestEvaluation = null;
 let definitionHistory = [];
 let symbolBrowserExpanded = true;
 let quickOpenMode = 'files';
 let quickOpenResults = [];
 let quickOpenResultIndex = 0;
 let editorViewStates = new Map();
+let tutorialGuideOpen = false;
+let binaryInspection = null;
+let debugSession = null;
+let renamePreview = null;
+let symbolOutlineRefreshTimer = 0;
+let symbolOutlineRefreshKey = '';
+const tutorialGuideCache = new Map();
+const languageServiceSymbolCache = new Map();
 
 const MAX_PROJECT_FIND_MATCHES = 500;
 const MAX_DEFINITION_HISTORY = 64;
@@ -69,6 +91,14 @@ const MAX_PROJECT_FIND_RESULT_ROWS = 80;
 const MAX_QUICK_OPEN_RESULTS = 120;
 const MAX_SYMBOL_REFERENCES = 500;
 const DEVELOPMENT_SESSION_KEY = 'poznamkovnik-development-session-v1';
+const DEVELOPMENT_LAYOUT_KEY = 'poznamkovnik-development-layout-v1';
+const DEVELOPMENT_LAYOUT_PROPERTIES = new Set([
+  '--development-sidebar-size',
+  '--development-console-size',
+  '--development-input-size',
+  '--development-compile-size',
+  '--development-tutorial-guide-size',
+]);
 
 function runOperation(operation) {
   operationCount += 1;
@@ -120,6 +150,69 @@ function rememberDevelopmentSession() {
   }
 }
 
+function rememberedDevelopmentLayout() {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(DEVELOPMENT_LAYOUT_KEY) || 'null');
+    return value && typeof value === 'object' ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function rememberDevelopmentLayout(property, value) {
+  if (!DEVELOPMENT_LAYOUT_PROPERTIES.has(property) || !Number.isFinite(value)) return;
+  try {
+    const layout = rememberedDevelopmentLayout();
+    layout[property] = Math.round(value);
+    window.localStorage.setItem(DEVELOPMENT_LAYOUT_KEY, JSON.stringify(layout));
+  } catch {
+    // Private browser settings may deny storage; resizing still remains usable.
+  }
+}
+
+function forgetDevelopmentLayout(property) {
+  if (!DEVELOPMENT_LAYOUT_PROPERTIES.has(property)) return;
+  try {
+    const layout = rememberedDevelopmentLayout();
+    delete layout[property];
+    window.localStorage.setItem(DEVELOPMENT_LAYOUT_KEY, JSON.stringify(layout));
+  } catch {
+    // The default layout still takes effect when storage is unavailable.
+  }
+}
+
+function layoutBounds(property) {
+  const panelWidth = dom.developmentPanel.getBoundingClientRect().width || window.innerWidth;
+  const editorHeight = dom.developmentEditorResize.parentElement.getBoundingClientRect().height || window.innerHeight;
+  const consoleWidth = dom.developmentConsoleSection.getBoundingClientRect().width || panelWidth;
+  if (property === '--development-sidebar-size') {
+    return [168, Math.max(168, Math.min(440, panelWidth - 520))];
+  }
+  if (property === '--development-console-size') {
+    return [120, Math.max(120, editorHeight - 188)];
+  }
+  if (property === '--development-input-size') {
+    return [120, Math.max(120, consoleWidth - 376)];
+  }
+  if (property === '--development-compile-size') {
+    const savedInputSize = Number(rememberedDevelopmentLayout()['--development-input-size']);
+    const inputWidth = Number.isFinite(savedInputSize) ? savedInputSize : consoleWidth * 0.24;
+    return [180, Math.max(180, consoleWidth - Math.max(120, inputWidth) - 196)];
+  }
+  const codeWidth = dom.developmentCodeSection.getBoundingClientRect().width || panelWidth;
+  return [220, Math.max(220, Math.min(1000, codeWidth - 260))];
+}
+
+function restoreDevelopmentLayout() {
+  const layout = rememberedDevelopmentLayout();
+  for (const property of DEVELOPMENT_LAYOUT_PROPERTIES) {
+    const value = Number(layout[property]);
+    if (!Number.isFinite(value)) continue;
+    const [minimum, maximum] = layoutBounds(property);
+    setResizeValue(property, clamp(value, minimum, maximum));
+  }
+}
+
 function editorViewStateKey(projectId = activeProjectId, fileId = activeFileId) {
   return projectId && fileId ? `${projectId}:${fileId}` : '';
 }
@@ -148,6 +241,8 @@ function languageShortLabel(languageId) {
     php: 'PHP',
     python: 'Py',
     javascript: 'JS',
+    ruby: 'Rb',
+    perl: 'Pl',
     typescript: 'TS',
     java: 'Java',
     rust: 'Rs',
@@ -189,6 +284,39 @@ function languageTemplates(languageId) {
 
 function firmwareTarget(targetId) {
   return firmwareTargets.find((target) => target.id === targetId) || null;
+}
+
+function firmwareToolchainStatus(targetId) {
+  return firmwareTools?.[targetId] || {
+    buildAvailable: false,
+    programmerAvailable: false,
+    message: 'Stav firmvérového toolchainu sa nepodarilo načítať.',
+  };
+}
+
+function firmwareBuildStatus(targetId, language) {
+  return firmwareBuild?.targets?.[targetId]?.languages?.[language] || {
+    available: false,
+    message: firmwareToolchainStatus(targetId).message,
+  };
+}
+
+function firmwareProgrammers(targetId) {
+  return firmwareDevices?.programmers?.[targetId] || [];
+}
+
+function firmwareProgrammer(targetId, programmerId) {
+  return firmwareProgrammers(targetId).find((profile) => profile.id === programmerId) || null;
+}
+
+function configuredFirmwareDevice(project) {
+  if (project?.kind !== 'firmware') return null;
+  const programmer = firmwareProgrammer(project.firmwareTargetId, project.firmwareProgrammerId);
+  return {
+    programmer,
+    port: String(project.firmwareSerialPort || ''),
+    baudRate: Number(project.firmwareSerialBaud) || Number(serialMonitor.defaultBaudRate) || 115200,
+  };
 }
 
 function dialogProjectKind() {
@@ -500,39 +628,7 @@ function diagnosticsForActiveFile() {
 }
 
 function readDiagnostics(compileOutput) {
-  const found = [];
-  const seen = new Set();
-  const add = (filename, line, column = 1, severity = 'error', message = '') => {
-    const key = `${filename}:${line}:${column}:${severity}`;
-    if (!filename || !Number.isFinite(line) || seen.has(key)) return;
-    seen.add(key);
-    found.push({ filename, line, column, severity, message: message.trim() });
-  };
-  const collect = (pattern, mapper) => {
-    let match;
-    while ((match = pattern.exec(compileOutput))) mapper(match);
-  };
-
-  collect(
-    /(?:^|\n)(?:\/work\/)?([^\n:]+(?:\/[^\n:]+)*):(\d+)(?::(\d+))?:\s*(fatal error|error|warning):\s*([^\n]*)/gim,
-    (match) => add(match[1], Number(match[2]), Number(match[3] || 1), /warning/i.test(match[4]) ? 'warning' : 'error', match[5])
-  );
-  collect(
-    /(?:^|\n)(?:\.\/|\/work\/)?([^\n:]+\.go):(\d+):(\d+):\s*([^\n]+)/gim,
-    (match) => add(match[1], Number(match[2]), Number(match[3]), /warning/i.test(match[4]) ? 'warning' : 'error', match[4])
-  );
-  collect(
-    /(?:^|\n)\s*-->\s+(?:\/work\/)?([^\n:]+\.rs):(\d+):(\d+)/gim,
-    (match) => add(match[1], Number(match[2]), Number(match[3]), 'error', 'Chyba prekladu Rustu')
-  );
-  collect(
-    /(?:^|\n)\s*File\s+"(?:\/work\/)?([^"\n]+)",\s+line\s+(\d+)/gim,
-    (match) => add(match[1], Number(match[2]), 1, 'error', 'Chyba interpretácie Pythonu')
-  );
-  collect(
-    /(?:^|\n)(?:\/work\/)?([^\n:]+\.(?:js|mjs|php|sh|bash)):(\d+)(?::(\d+))?/gim,
-    (match) => add(match[1], Number(match[2]), Number(match[3] || 1), 'error', 'Chyba interpretácie')
-  );
+  const found = parseDevelopmentDiagnostics(compileOutput);
   diagnostics = found;
   diagnosticIndex = -1;
   setDevelopmentEditorDiagnostics(diagnosticsForActiveFile());
@@ -621,6 +717,52 @@ function editorLocation() {
   };
 }
 
+async function requestEditorLanguageService(payload) {
+  const project = activeProject();
+  const file = activeFile();
+  if (!project || !file) return null;
+  return apiRequest(`/development/projects/${encodeURIComponent(project.id)}/language-service`, {
+    method: 'POST',
+    body: {
+      ...payload,
+      fileId: file.id,
+      source: developmentEditorValue(),
+    },
+  });
+}
+
+async function requestLanguageServiceLocations(operation, position = editorLocation()) {
+  if (!position) return [];
+  try {
+    const result = await requestEditorLanguageService({ operation, line: position.line, column: position.column });
+    return result?.available && Array.isArray(result.locations) ? result.locations : [];
+  } catch {
+    // The local symbol index remains the dependable fallback.
+    return [];
+  }
+}
+
+function projectFileForLanguageServicePath(project, path) {
+  const normalized = String(path || '').replaceAll('\\', '/');
+  return projectFiles(project).find((file) => projectFilePath(project, file) === normalized) || null;
+}
+
+function referenceFromLanguageServiceLocation(project, location) {
+  const file = projectFileForLanguageServicePath(project, location.path);
+  if (!file) return null;
+  const source = sourceForProjectFile(file);
+  const line = Math.min(Math.max(1, Number(location.line) || 1), source.split('\n').length);
+  const lines = source.split('\n');
+  const sourceLine = lines[line - 1] || '';
+  return {
+    file,
+    line,
+    column: Math.min(Math.max(1, Number(location.column) || 1), sourceLine.length + 1),
+    definition: false,
+    preview: sourceLine.trim(),
+  };
+}
+
 function sameEditorLocation(left, right) {
   return Boolean(left && right)
     && left.projectId === right.projectId
@@ -656,42 +798,38 @@ function escapeExpression(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function symbolDefinitionPosition(source, symbol) {
-  const escaped = escapeExpression(symbol);
-  if (!escaped) return null;
-  const patterns = [
-    new RegExp(`^\\s*#\\s*define\\s+${escaped}\\b`, 'm'),
-    new RegExp(`^\\s*(?:async\\s+)?(?:def|func|fn|function)\\s+${escaped}\\b`, 'm'),
-    new RegExp(`^\\s*(?:class|struct|enum|interface|trait|type)\\s+${escaped}\\b`, 'm'),
-    new RegExp(`^\\s*(?:(?:public|private|protected|internal|static|inline|extern|virtual|constexpr|const|unsigned|signed|long|short|void|char|int|float|double|bool|auto|size_t|[A-Za-z_][\\w:<>]*)\\s+)+${escaped}\\s*\\([^;\\n{}]*\\)\\s*\\{`, 'm'),
-    new RegExp(`^\\s*(?:(?:const|let|var|static|extern|unsigned|signed|long|short|int|float|double|char|bool|string|auto|size_t|[A-Za-z_][\\w:<>]*)\\s+)+${escaped}\\s*(?:=|;|,)`, 'm'),
-    new RegExp(`^\\s*${escaped}\\s*=`, 'm'),
-  ];
-  for (const pattern of patterns) {
-    const match = pattern.exec(source);
-    if (!match || match.index === undefined) continue;
-    const before = source.slice(0, match.index);
-    const line = before.split('\n').length;
-    const lineStart = before.lastIndexOf('\n') + 1;
-    const symbolOffset = Math.max(0, match[0].indexOf(symbol));
-    return { line, column: match.index - lineStart + symbolOffset + 1 };
-  }
-  return null;
-}
-
-async function openSymbolDefinition(symbol) {
+async function openSymbolDefinition(symbol, position = editorLocation()) {
   const origin = editorLocation();
   if (!(await saveDevelopmentChanges())) return;
   const project = activeProject();
   if (!project) return;
-  const files = [...projectFiles(project)].sort((left, right) => {
-    if (left.id === activeFileId) return -1;
-    if (right.id === activeFileId) return 1;
-    return 0;
-  });
-  const target = files
-    .map((file) => ({ file, position: symbolDefinitionPosition(file.content, symbol) }))
-    .find((item) => item.position);
+  const languageServiceLocations = await requestLanguageServiceLocations('definition', position);
+  const languageServiceTarget = languageServiceLocations
+    .map((location) => ({ location, file: projectFileForLanguageServicePath(project, location.path) }))
+    .find((item) => item.file);
+  if (languageServiceTarget) {
+    const destination = {
+      projectId: project.id,
+      fileId: languageServiceTarget.file.id,
+      line: languageServiceTarget.location.line,
+      column: languageServiceTarget.location.column,
+    };
+    if (!sameEditorLocation(origin, destination)) {
+      rememberDefinitionOrigin(origin);
+      await openEditorLocation(destination);
+    }
+    return;
+  }
+  const kindPriority = { function: 0, macro: 0, class: 1, type: 1, label: 2 };
+  const files = projectFiles(project).map((file) => ({ ...file, content: sourceForProjectFile(file) }));
+  const target = scanProjectSymbols(files, project.language)
+    .filter((item) => item.name === symbol)
+    .sort((left, right) => {
+      const activeDifference = Number(right.file.id === activeFileId) - Number(left.file.id === activeFileId);
+      if (activeDifference) return activeDifference;
+      const kindDifference = (kindPriority[left.kind] ?? 9) - (kindPriority[right.kind] ?? 9);
+      return kindDifference || left.line - right.line || left.column - right.column;
+    })[0];
   if (!target) {
     setRunStatus(`Definícia „${symbol}“ sa nenašla.`);
     return;
@@ -699,8 +837,8 @@ async function openSymbolDefinition(symbol) {
   const destination = {
     projectId: project.id,
     fileId: target.file.id,
-    line: target.position.line,
-    column: target.position.column,
+    line: target.line,
+    column: target.column,
   };
   if (sameEditorLocation(origin, destination)) return;
   rememberDefinitionOrigin(origin);
@@ -722,7 +860,7 @@ function projectSymbolReferences(symbol) {
   const references = [];
   for (const file of projectFiles(project)) {
     const source = sourceForProjectFile(file);
-    const searchable = sourceForSymbolScan(source);
+    const searchable = sourceForSymbolScan(source, project.language);
     const definitions = new Set(
       scanSourceSymbols(source, project.language)
         .filter((item) => item.name === name)
@@ -747,10 +885,10 @@ function projectSymbolReferences(symbol) {
   return references;
 }
 
-function renderSymbolReferences(symbol) {
+function renderSymbolReferences(symbol, providedReferences = null) {
   const project = activeProject();
   if (!project) return;
-  const references = projectSymbolReferences(symbol);
+  const references = providedReferences || projectSymbolReferences(symbol);
   const uniqueFiles = new Set(references.map((reference) => reference.file.id)).size;
   const truncated = references.length >= MAX_SYMBOL_REFERENCES;
   dom.developmentReferencesTitle.textContent = `Použitia: ${symbol}`;
@@ -798,10 +936,214 @@ function renderSymbolReferences(symbol) {
   });
 }
 
-function openSymbolReferences(symbol) {
+async function openSymbolReferences(symbol, position = editorLocation()) {
   if (!activeProject() || !symbol) return;
-  renderSymbolReferences(symbol);
+  const project = activeProject();
+  const locations = await requestLanguageServiceLocations('references', position);
+  const references = locations
+    .map((location) => referenceFromLanguageServiceLocation(project, location))
+    .filter(Boolean)
+    .slice(0, MAX_SYMBOL_REFERENCES);
+  renderSymbolReferences(symbol, references.length ? references : null);
   if (!dom.developmentReferencesDialog.open) dom.developmentReferencesDialog.showModal();
+}
+
+function resetSymbolRenamePreview() {
+  renamePreview = null;
+  dom.developmentSymbolRenamePreview.hidden = true;
+  dom.developmentSymbolRenamePreviewList.replaceChildren();
+  dom.developmentSymbolRenameSubmit.disabled = false;
+  dom.developmentSymbolRenameSubmit.querySelector('span:last-child').textContent = 'Náhľad zmien';
+  setAppIcon(dom.developmentSymbolRenameSubmit.querySelector('.app-icon'), 'eye');
+  fitSymbolRenameDialogToContent();
+}
+
+function fitSymbolRenameDialogToContent() {
+  const dialog = dom.developmentSymbolRenameDialog;
+  if (!dialog.open) return;
+  window.requestAnimationFrame(() => {
+    const hasPreview = !dom.developmentSymbolRenamePreview.hidden;
+    fitDialogWindowToContent(dialog, { preferredWidth: hasPreview ? 520 : 380 });
+  });
+}
+
+function renamePreviewEditCount(workspaceEdits) {
+  return (workspaceEdits || []).reduce((total, item) => total + (item.edits?.length || 0), 0);
+}
+
+function selectedRenameWorkspaceEdits() {
+  if (!renamePreview) return [];
+  return renamePreview.workspaceEdits.map((group) => ({
+    path: group.path,
+    edits: (group.edits || []).filter((edit) => edit.enabled !== false).map(({ enabled, ...edit }) => edit),
+  })).filter((group) => group.edits.length);
+}
+
+function updateSymbolRenamePreviewStatus() {
+  const workspaceEdits = selectedRenameWorkspaceEdits();
+  const editCount = renamePreviewEditCount(workspaceEdits);
+  const files = workspaceEdits.length;
+  dom.developmentSymbolRenameSubmit.disabled = !editCount;
+  dom.developmentSymbolRenameStatus.textContent = editCount
+    ? `Náhľad: ${editCount} ${editCount === 1 ? 'zmena' : editCount < 5 ? 'zmeny' : 'zmien'} v ${files} ${files === 1 ? 'súbore' : 'súboroch'}. Potvrď ich.`
+    : 'Označ aspoň jednu zmenu na potvrdenie.';
+}
+
+function renderSymbolRenamePreview(workspaceEdits) {
+  dom.developmentSymbolRenamePreviewList.replaceChildren();
+  workspaceEdits.forEach((group) => {
+    (group.edits || []).forEach((edit) => {
+      const row = document.createElement('div');
+      row.className = 'development-symbol-rename-preview-row';
+      row.setAttribute('role', 'listitem');
+      const select = document.createElement('input');
+      select.type = 'checkbox';
+      select.checked = edit.enabled !== false;
+      select.setAttribute('aria-label', `Použiť zmenu v ${group.path}:${edit.startLine}:${edit.startColumn}`);
+      const path = document.createElement('code');
+      path.textContent = group.path;
+      path.title = group.path;
+      const position = document.createElement('span');
+      position.textContent = `${edit.startLine}:${edit.startColumn}`;
+      const replacement = document.createElement('input');
+      replacement.type = 'text';
+      replacement.value = String(edit.newText || '');
+      replacement.spellcheck = false;
+      replacement.setAttribute('aria-label', `Náhradný text pre ${group.path}:${edit.startLine}:${edit.startColumn}`);
+      replacement.disabled = !select.checked;
+      select.addEventListener('change', () => {
+        edit.enabled = select.checked;
+        replacement.disabled = !select.checked;
+        row.classList.toggle('is-skipped', !select.checked);
+        updateSymbolRenamePreviewStatus();
+      });
+      replacement.addEventListener('input', () => {
+        edit.newText = replacement.value;
+      });
+      replacement.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') event.preventDefault();
+      });
+      row.classList.toggle('is-skipped', !select.checked);
+      row.append(select, path, position, replacement);
+      dom.developmentSymbolRenamePreviewList.append(row);
+    });
+  });
+  dom.developmentSymbolRenamePreview.hidden = !dom.developmentSymbolRenamePreviewList.childElementCount;
+  dom.developmentSymbolRenameSubmit.querySelector('span:last-child').textContent = 'Potvrdiť zmeny';
+  setAppIcon(dom.developmentSymbolRenameSubmit.querySelector('.app-icon'), 'check');
+  updateSymbolRenamePreviewStatus();
+  fitSymbolRenameDialogToContent();
+}
+
+function prepareSymbolRenamePreview(project, oldName, newName, workspaceEdits) {
+  const editCount = renamePreviewEditCount(workspaceEdits);
+  if (!editCount) return false;
+  const editableWorkspaceEdits = workspaceEdits.map((group) => ({
+    path: group.path,
+    edits: (group.edits || []).map((edit) => ({ ...edit, enabled: true })),
+  }));
+  renamePreview = { projectId: project.id, oldName, newName, workspaceEdits: editableWorkspaceEdits };
+  renderSymbolRenamePreview(editableWorkspaceEdits);
+  return true;
+}
+
+function renameDialogOrigin() {
+  const line = Number(dom.developmentSymbolRenameDialog.dataset.line);
+  const column = Number(dom.developmentSymbolRenameDialog.dataset.column);
+  return Number.isFinite(line) && Number.isFinite(column) ? { line, column } : editorLocation();
+}
+
+function openSymbolRename(symbol = developmentEditorSymbol(), position = editorLocation()) {
+  if (!activeProject() || !symbol) {
+    setRunStatus('Najprv umiestni kurzor na názov symbolu.');
+    return;
+  }
+  const origin = position || editorLocation();
+  dom.developmentSymbolRenameDialog.dataset.symbol = symbol;
+  dom.developmentSymbolRenameDialog.dataset.line = String(origin?.line || '');
+  dom.developmentSymbolRenameDialog.dataset.column = String(origin?.column || '');
+  dom.developmentSymbolRenameInput.value = symbol;
+  dom.developmentSymbolRenameStatus.textContent = '';
+  resetSymbolRenamePreview();
+  if (!dom.developmentSymbolRenameDialog.open) dom.developmentSymbolRenameDialog.showModal();
+  fitSymbolRenameDialogToContent();
+  window.setTimeout(() => dom.developmentSymbolRenameInput.select(), 0);
+}
+
+async function renameProjectSymbol(event) {
+  event.preventDefault();
+  const project = activeProject();
+  const oldName = dom.developmentSymbolRenameDialog.dataset.symbol || '';
+  const newName = dom.developmentSymbolRenameInput.value.trim();
+  if (!project || !oldName) return;
+  if (!newName) {
+    dom.developmentSymbolRenameStatus.textContent = 'Zadaj nový názov.';
+    return;
+  }
+  if (newName === oldName) {
+    dom.developmentSymbolRenameStatus.textContent = 'Názov sa nezmenil.';
+    return;
+  }
+  dom.developmentSymbolRenameSubmit.disabled = true;
+  try {
+    if (
+      renamePreview
+      && renamePreview.projectId === project.id
+      && renamePreview.oldName === oldName
+      && renamePreview.newName === newName
+    ) {
+      const workspaceEdits = selectedRenameWorkspaceEdits();
+      if (!renamePreviewEditCount(workspaceEdits)) {
+        dom.developmentSymbolRenameStatus.textContent = 'Označ aspoň jednu zmenu na potvrdenie.';
+        return;
+      }
+      dom.developmentSymbolRenameStatus.textContent = 'Ukladám potvrdené zmeny...';
+      const result = await runOperation(() => apiRequest(
+        `/development/projects/${encodeURIComponent(project.id)}/apply-text-edits`,
+        { method: 'POST', body: { workspaceEdits } }
+      ));
+      replaceProject(result.project);
+      dom.developmentSymbolRenameDialog.close();
+      resetSymbolRenamePreview();
+      const files = Number(result.files) || 0;
+      setRunStatus(`Premenované: ${result.replacements}× v ${files} ${files === 1 ? 'súbore' : 'súboroch'}.`);
+      window.requestAnimationFrame(() => focusDevelopmentEditor());
+      return;
+    }
+
+    dom.developmentSymbolRenameStatus.textContent = 'Pripravujem náhľad zmien...';
+    if (!(await saveDevelopmentChanges())) {
+      dom.developmentSymbolRenameStatus.textContent = 'Aktuálny súbor sa nepodarilo uložiť.';
+      return;
+    }
+    let workspaceEdits = [];
+    try {
+      const languageService = await requestEditorLanguageService({
+        operation: 'rename',
+        line: renameDialogOrigin()?.line,
+        column: renameDialogOrigin()?.column,
+        newName,
+      });
+      workspaceEdits = languageService?.available && Array.isArray(languageService.workspaceEdits)
+        ? languageService.workspaceEdits
+        : [];
+    } catch {
+      workspaceEdits = [];
+    }
+    if (prepareSymbolRenamePreview(project, oldName, newName, workspaceEdits)) return;
+
+    dom.developmentSymbolRenameStatus.textContent = 'Pripravujem miestny náhľad zmien...';
+    const fallbackPreview = await apiRequest(
+      `/development/projects/${encodeURIComponent(project.id)}/preview-symbol-rename`,
+      { method: 'POST', body: { oldName, newName } }
+    );
+    if (prepareSymbolRenamePreview(project, oldName, newName, fallbackPreview.workspaceEdits || [])) return;
+    dom.developmentSymbolRenameStatus.textContent = 'Symbol sa v kóde projektu nenašiel.';
+  } catch (error) {
+    dom.developmentSymbolRenameStatus.textContent = error.message || 'Symbol sa nepodarilo premenovať.';
+  } finally {
+    dom.developmentSymbolRenameSubmit.disabled = Boolean(renamePreview) && !renamePreviewEditCount(selectedRenameWorkspaceEdits());
+  }
 }
 
 async function openDiagnostic(diagnostic, index, { closeProblems = false } = {}) {
@@ -867,13 +1209,41 @@ function clamp(value, minimum, maximum) {
 }
 
 function setResizeValue(property, value, handle) {
-  dom.developmentPanel.style.setProperty(property, `${Math.round(value)}px`);
-  handle?.setAttribute('aria-valuenow', String(Math.round(value)));
+  const rounded = Math.round(value);
+  dom.developmentPanel.style.setProperty(property, `${rounded}px`);
+  handle?.setAttribute('aria-valuenow', String(rounded));
+  rememberDevelopmentLayout(property, rounded);
 }
 
-function installResizeHandle(handle, createSession) {
+function resetResizeValue(property, handle) {
+  dom.developmentPanel.style.removeProperty(property);
+  handle?.removeAttribute('aria-valuenow');
+  forgetDevelopmentLayout(property);
+}
+
+function keyboardResizeDelta(event, orientation, reverse = false) {
+  let direction = 0;
+  if (orientation === 'vertical') {
+    if (event.key === 'ArrowUp') direction = 1;
+    if (event.key === 'ArrowDown') direction = -1;
+  } else {
+    if (event.key === 'ArrowRight') direction = 1;
+    if (event.key === 'ArrowLeft') direction = -1;
+  }
+  if (!direction) return 0;
+  return direction * (event.shiftKey ? 40 : 12) * (reverse ? -1 : 1);
+}
+
+function installResizeHandle(handle, createSession, { property = '', orientation = 'horizontal', reverseKeys = false, onKeyboardResize = null } = {}) {
   if (!handle || handle.dataset.resizeReady) return;
   handle.dataset.resizeReady = 'true';
+  if (property && onKeyboardResize) {
+    const label = handle.getAttribute('aria-label') || 'Zmeniť veľkosť panela';
+    const keys = orientation === 'vertical' ? 'Šípka hore a dole' : 'Šípka vľavo a vpravo';
+    const hint = `${keys} mení veľkosť, Shift zrýchli krok a dvojklik obnoví predvolenú veľkosť.`;
+    handle.title = `${label}. ${hint}`;
+    handle.setAttribute('aria-description', hint);
+  }
   handle.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
     const session = createSession(event);
@@ -896,6 +1266,14 @@ function installResizeHandle(handle, createSession) {
     handle.addEventListener('pointerup', finish);
     handle.addEventListener('pointercancel', finish);
   });
+  if (!property || !onKeyboardResize) return;
+  handle.addEventListener('keydown', (event) => {
+    const delta = keyboardResizeDelta(event, orientation, reverseKeys);
+    if (!delta) return;
+    event.preventDefault();
+    onKeyboardResize(delta);
+  });
+  handle.addEventListener('dblclick', () => resetResizeValue(property, handle));
 }
 
 function initializePaneResizers() {
@@ -908,6 +1286,15 @@ function initializePaneResizers() {
         setResizeValue('--development-sidebar-size', clamp(event.clientX - panelRect.left, minimum, maximum), dom.developmentSidebarResize);
       }
     };
+  }, {
+    property: '--development-sidebar-size',
+    onKeyboardResize(delta) {
+      const panelRect = dom.developmentPanel.getBoundingClientRect();
+      const minimum = 168;
+      const maximum = Math.min(440, panelRect.width - 520);
+      const current = dom.developmentSidebarResize.getBoundingClientRect().left - panelRect.left;
+      setResizeValue('--development-sidebar-size', clamp(current + delta, minimum, maximum), dom.developmentSidebarResize);
+    },
   });
 
   installResizeHandle(dom.developmentEditorResize, () => {
@@ -920,6 +1307,17 @@ function initializePaneResizers() {
         setResizeValue('--development-console-size', clamp(gridRect.bottom - event.clientY, minimum, maximum), dom.developmentEditorResize);
       }
     };
+  }, {
+    property: '--development-console-size',
+    orientation: 'vertical',
+    onKeyboardResize(delta) {
+      if (!consoleExpanded) return;
+      const gridRect = dom.developmentEditorResize.parentElement.getBoundingClientRect();
+      const minimum = 120;
+      const maximum = gridRect.height - 180 - 8;
+      const current = gridRect.bottom - dom.developmentEditorResize.getBoundingClientRect().top;
+      setResizeValue('--development-console-size', clamp(current + delta, minimum, maximum), dom.developmentEditorResize);
+    },
   });
 
   installResizeHandle(dom.developmentInputResize, () => {
@@ -931,6 +1329,15 @@ function initializePaneResizers() {
         setResizeValue('--development-input-size', clamp(event.clientX - consoleRect.left, minimum, maximum), dom.developmentInputResize);
       }
     };
+  }, {
+    property: '--development-input-size',
+    onKeyboardResize(delta) {
+      const consoleRect = dom.developmentConsoleSection.getBoundingClientRect();
+      const minimum = 120;
+      const maximum = consoleRect.width - 16 - 180 - 180;
+      const current = dom.developmentInputResize.getBoundingClientRect().left - consoleRect.left;
+      setResizeValue('--development-input-size', clamp(current + delta, minimum, maximum), dom.developmentInputResize);
+    },
   });
 
   installResizeHandle(dom.developmentCompileResize, () => {
@@ -944,6 +1351,39 @@ function initializePaneResizers() {
         setResizeValue('--development-compile-size', clamp(event.clientX - compileRect.left, minimum, maximum), dom.developmentCompileResize);
       }
     };
+  }, {
+    property: '--development-compile-size',
+    onKeyboardResize(delta) {
+      const consoleRect = dom.developmentConsoleSection.getBoundingClientRect();
+      const inputWidth = dom.developmentConsoleInputPanel.getBoundingClientRect().width;
+      const minimum = 180;
+      const maximum = consoleRect.width - inputWidth - 16 - 180;
+      const current = dom.developmentCompilePanel.getBoundingClientRect().width;
+      setResizeValue('--development-compile-size', clamp(current + delta, minimum, maximum), dom.developmentCompileResize);
+    },
+  });
+
+  installResizeHandle(dom.developmentTutorialGuideResize, () => {
+    if (!tutorialGuideOpen) return null;
+    const codeRect = dom.developmentCodeSection.getBoundingClientRect();
+    const minimum = 220;
+    const maximum = Math.max(minimum, codeRect.width - 260);
+    return {
+      move(event) {
+        setResizeValue('--development-tutorial-guide-size', clamp(codeRect.right - event.clientX, minimum, maximum), dom.developmentTutorialGuideResize);
+      }
+    };
+  }, {
+    property: '--development-tutorial-guide-size',
+    reverseKeys: true,
+    onKeyboardResize(delta) {
+      if (!tutorialGuideOpen) return;
+      const codeRect = dom.developmentCodeSection.getBoundingClientRect();
+      const minimum = 220;
+      const maximum = Math.max(minimum, codeRect.width - 260);
+      const current = codeRect.right - dom.developmentTutorialGuideResize.getBoundingClientRect().left;
+      setResizeValue('--development-tutorial-guide-size', clamp(current + delta, minimum, maximum), dom.developmentTutorialGuideResize);
+    },
   });
 }
 
@@ -964,6 +1404,36 @@ function setRuntimeStatus(status) {
   const title = [message, details].filter(Boolean).join('\n\n');
   dom.developmentRuntimeStatus.title = title;
   dom.developmentSidebarTitle.title = title;
+}
+
+function projectSupportsDebugging(project = activeProject()) {
+  return Boolean(project && project.kind === 'program' && ['c', 'cpp'].includes(project.language));
+}
+
+function renderDebugButton(project = activeProject()) {
+  const supported = projectSupportsDebugging(project);
+  dom.developmentDebug.hidden = !supported;
+  if (!supported) return;
+  const available = Boolean(debuggerRuntime.available);
+  const title = available
+    ? 'Ladiť projekt (zastaví sa na začiatku main)'
+    : debuggerRuntime.message || 'Debugger nie je dostupný.';
+  dom.developmentDebug.disabled = false;
+  dom.developmentDebug.title = title;
+  dom.developmentDebug.setAttribute('aria-label', title);
+  dom.developmentDebug.dataset.available = String(available);
+}
+
+function renderSymbolRenameButton(project = activeProject()) {
+  const available = Boolean(project && activeFile());
+  const symbol = available ? developmentEditorSymbol() : '';
+  dom.developmentSymbolRename.hidden = !available;
+  dom.developmentSymbolRename.disabled = !symbol;
+  const title = symbol
+    ? `Premenovať „${symbol}“ (F2)`
+    : 'Umiestni kurzor na názov symbolu, ktorý chceš premenovať.';
+  dom.developmentSymbolRename.title = title;
+  dom.developmentSymbolRename.setAttribute('aria-label', title);
 }
 
 function setRunStatus(phase) {
@@ -1068,10 +1538,19 @@ function setTestStatus(message = '') {
 }
 
 function clearTestResult() {
+  displayedTestEvaluation = null;
   dom.developmentTestResult.hidden = true;
   delete dom.developmentTestResult.dataset.state;
   dom.developmentTestResultTitle.textContent = '';
-  dom.developmentTestResultDetails.textContent = '';
+  dom.developmentTestResultSummary.textContent = '';
+  dom.developmentTestResultOpenLocation.hidden = true;
+  dom.developmentTestResultOpenLocation.disabled = true;
+  dom.developmentTestResultOpenLocation.title = '';
+  dom.developmentTestResultOpenLocation.setAttribute('aria-label', 'Prejsť na chybu');
+  dom.developmentTestResultComparison.replaceChildren();
+  dom.developmentTestResultDetails.open = false;
+  dom.developmentTestResultDetails.hidden = true;
+  dom.developmentTestResultDetailsText.textContent = '';
 }
 
 function useLastRunOutputForTest() {
@@ -1086,11 +1565,54 @@ function useLastRunOutputForTest() {
   dom.developmentTestExpectedOutput.focus();
 }
 
-function showTestResult({ passed, details }) {
+function testComparisonLine(value) {
+  if (value === null) return '(riadok chýba)';
+  return value || '(prázdny riadok)';
+}
+
+function showTestComparison(comparison) {
+  dom.developmentTestResultComparison.replaceChildren();
+  if (!comparison) return;
+  const appendValue = (label, value, state) => {
+    const item = document.createElement('div');
+    item.className = `development-test-result-value is-${state}`;
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const description = document.createElement('dd');
+    description.textContent = testComparisonLine(value);
+    item.append(term, description);
+    dom.developmentTestResultComparison.append(item);
+  };
+  dom.developmentTestResultSummary.textContent = `Prvý rozdiel je na riadku ${comparison.line}.`;
+  appendValue('Očakávané', comparison.expected, 'expected');
+  appendValue('Skutočné', comparison.actual, 'actual');
+}
+
+function showTestResult(evaluation) {
+  const {
+    passed,
+    title = '',
+    summary = '',
+    comparison = null,
+    details = '',
+    diagnostic = null,
+  } = evaluation;
+  displayedTestEvaluation = evaluation;
   dom.developmentTestResult.hidden = false;
   dom.developmentTestResult.dataset.state = passed ? 'success' : 'error';
-  dom.developmentTestResultTitle.textContent = passed ? 'Test prešiel.' : 'Výstup sa nezhoduje.';
-  dom.developmentTestResultDetails.textContent = details;
+  dom.developmentTestResultTitle.textContent = title || (passed ? 'Test prešiel.' : 'Test neprešiel.');
+  dom.developmentTestResultSummary.textContent = summary || (!comparison ? details : '');
+  dom.developmentTestResultOpenLocation.hidden = passed || !diagnostic;
+  dom.developmentTestResultOpenLocation.disabled = !diagnostic;
+  const locationTitle = diagnostic
+    ? `Prejsť na ${diagnostic.filename}:${diagnostic.line}`
+    : 'Prejsť na chybu';
+  dom.developmentTestResultOpenLocation.title = locationTitle;
+  dom.developmentTestResultOpenLocation.setAttribute('aria-label', locationTitle);
+  showTestComparison(comparison);
+  dom.developmentTestResultDetails.open = false;
+  dom.developmentTestResultDetails.hidden = !comparison || !details;
+  dom.developmentTestResultDetailsText.textContent = details;
 }
 
 function evaluateTestResponse(response) {
@@ -1099,15 +1621,46 @@ function evaluateTestResponse(response) {
   const run = result.run || {};
   const actual = resultRawText(run);
   const expected = response.test.expectedOutput;
-  const passed = Boolean(result.compiled) && Number(run.exitCode) === 0
-    && normalizedTestOutput(actual) === normalizedTestOutput(expected);
+  const compiled = Boolean(result.compiled);
+  const exitCode = Number(run.exitCode);
+  const compileText = resultText(compile);
+  const runText = resultRawText(run);
+  const outputMatches = normalizedTestOutput(actual) === normalizedTestOutput(expected);
+  const passed = compiled && exitCode === 0 && outputMatches;
+  const comparison = compiled && exitCode === 0 ? firstOutputDifference(expected, actual) : null;
+  const status = passed
+    ? 'passed'
+    : !compiled
+      ? 'compile_error'
+      : exitCode !== 0
+        ? 'runtime_error'
+        : 'output_mismatch';
+  const durationMs = [compile, run].reduce((total, item) => total + Math.max(0, Number(item.durationMs) || 0), 0);
+  const title = passed
+    ? 'Test prešiel.'
+    : !compiled
+      ? 'Preklad zlyhal.'
+      : exitCode !== 0
+        ? `Program skončil kódom ${Number.isFinite(exitCode) ? exitCode : '?'}.'`
+        : 'Výstup sa nezhoduje.';
+  const summary = passed
+    ? 'Skutočný výstup zodpovedá očakávanému výstupu.'
+    : !compiled
+      ? 'Podrobnosti sú v paneli Preklad.'
+      : exitCode !== 0
+        ? 'Podrobnosti sú v paneli Výstup.'
+        : '';
   return {
     response,
     result,
     passed,
-    details: passed
-      ? 'Skutočný výstup zodpovedá očakávanému výstupu.'
-      : `Očakávané:\n${expected || '(prázdny výstup)'}\n\nSkutočné:\n${actual || '(prázdny výstup)'}`,
+    status,
+    durationMs,
+    title,
+    summary,
+    comparison,
+    details: comparison ? fullOutputComparison(expected, actual) : '',
+    diagnostic: firstTestFailureDiagnostic({ compiled, compileOutput: compileText, runOutput: runText }),
   };
 }
 
@@ -1116,14 +1669,61 @@ function showTestConsole(evaluation) {
   const compile = result.compile || {};
   const run = result.run || {};
   const compileText = resultText(compile);
-  readDiagnostics(compileText);
+  const runText = resultRawText(run);
+  readDiagnostics([compileText, runText].filter(Boolean).join('\n'));
   setConsole({
     phase: result.compiled ? 'Hotovo' : 'Chyba prekladu',
     compile: compileText,
     compileMeta: formatResultMeta(compile),
-    output: result.compiled ? resultText(run) : 'Program sa nespustil, pretože preklad zlyhal.',
+    output: result.compiled ? runText : 'Program sa nespustil, pretože preklad zlyhal.',
     outputMeta: result.compiled ? formatResultMeta(run) : '',
   });
+}
+
+async function openDisplayedTestFailureLocation() {
+  const evaluation = displayedTestEvaluation;
+  const diagnostic = evaluation?.diagnostic;
+  const project = activeProject();
+  if (!project || !diagnostic) return;
+  if (!(await saveDevelopmentTest({ quiet: true }))) return;
+
+  let index = diagnostics.findIndex((item) => (
+    item.filename === diagnostic.filename
+    && item.line === diagnostic.line
+    && item.column === diagnostic.column
+  ));
+  if (index < 0) {
+    diagnostics = [diagnostic];
+    diagnosticIndex = -1;
+    setDevelopmentEditorDiagnostics(diagnosticsForActiveFile());
+    renderProblems();
+    index = 0;
+  }
+
+  if (!(await openDiagnostic(diagnostic, index))) {
+    setTestStatus('Miesto chyby sa v súboroch projektu nenašlo.');
+    return;
+  }
+  if (dom.developmentTestDialog.open) dom.developmentTestDialog.close();
+  window.requestAnimationFrame(() => focusDevelopmentEditor());
+}
+
+function testResultLabel(result, { stored = false } = {}) {
+  const labels = {
+    passed: stored ? 'naposledy prešiel' : 'prešiel',
+    output_mismatch: stored ? 'naposledy sa líšil výstup' : 'výstup sa líši',
+    compile_error: stored ? 'naposledy chyba prekladu' : 'chyba prekladu',
+    runtime_error: stored ? 'naposledy chyba behu' : 'chyba behu',
+    request_error: 'nepodarilo sa spustiť',
+  };
+  return labels[result?.status] || '';
+}
+
+function testResultMeta(result, { stored = false } = {}) {
+  const label = testResultLabel(result, { stored });
+  if (!label) return '';
+  const duration = Number(result.durationMs);
+  return Number.isFinite(duration) && duration > 0 ? `${label} · ${duration} ms` : label;
 }
 
 function renderDevelopmentTests() {
@@ -1139,11 +1739,13 @@ function renderDevelopmentTests() {
     title.textContent = testCase.title;
     const details = document.createElement('small');
     const inputLines = testCase.stdin ? `${testCase.stdin.split('\n').length} r. vstupu` : 'bez vstupu';
-    const runResult = testRunResults.get(testCase.id);
+    const sessionResult = testRunResults.get(testCase.id);
+    const runResult = sessionResult || testCase.lastResult;
+    const resultMeta = testResultMeta(runResult, { stored: !sessionResult && Boolean(testCase.lastResult) });
     details.textContent = runResult
-      ? `${inputLines} · ${runResult.passed ? 'prešiel' : 'neprešiel'}`
+      ? `${inputLines} · ${resultMeta}`
       : `${inputLines} · ${testCase.expectedOutput ? 'výstup' : 'bez očakávania'}`;
-    if (runResult) button.classList.add(runResult.passed ? 'is-passed' : 'is-failed');
+    if (runResult) button.classList.add(runResult.status === 'passed' ? 'is-passed' : 'is-failed');
     button.append(title, details);
     button.addEventListener('click', () => void selectDevelopmentTest(testCase.id));
     dom.developmentTestList.append(button);
@@ -1251,7 +1853,13 @@ async function selectDevelopmentTest(testId) {
   if (testId === activeTestId) return;
   if (!(await saveDevelopmentTest({ quiet: true }))) return;
   activeTestId = testId;
-  clearTestResult();
+  const evaluation = testRunResults.get(testId);
+  if (evaluation) {
+    if (evaluation.result) showTestConsole(evaluation);
+    showTestResult(evaluation);
+  } else {
+    clearTestResult();
+  }
   setTestStatus('');
   renderDevelopmentTests();
 }
@@ -1302,10 +1910,6 @@ function resultRawText(result) {
   return [result.stdout, result.stderr].filter(Boolean).join(result.stdout && result.stderr ? '\n' : '');
 }
 
-function normalizedTestOutput(value) {
-  return String(value || '').replace(/\r\n/g, '\n').replace(/[ \t]+\n/g, '\n').replace(/\n+$/, '');
-}
-
 async function runDevelopmentTest() {
   const project = activeProject();
   const testCase = activeProjectTest();
@@ -1319,6 +1923,7 @@ async function runDevelopmentTest() {
       { method: 'POST', body: {} }
     ));
     const evaluation = evaluateTestResponse(response);
+    if (response.test) projectTests = projectTests.map((item) => item.id === response.test.id ? response.test : item);
     testRunResults.set(testCase.id, evaluation);
     showTestConsole(evaluation);
     showTestResult(evaluation);
@@ -1340,6 +1945,7 @@ async function runAllDevelopmentTests() {
   runningAllTests = true;
   testRunResults = new Map();
   let lastEvaluation = null;
+  let firstFailedTestId = '';
   let passedCount = 0;
   clearDiagnostics();
   try {
@@ -1352,22 +1958,28 @@ async function runAllDevelopmentTests() {
           { method: 'POST', body: {} }
         ));
         const evaluation = evaluateTestResponse(response);
+        if (response.test) projectTests = projectTests.map((item) => item.id === response.test.id ? response.test : item);
         testRunResults.set(testCase.id, evaluation);
         if (evaluation.passed) passedCount += 1;
+        if (!evaluation.passed && !firstFailedTestId) firstFailedTestId = testCase.id;
         if (!evaluation.passed || testCase.id === activeTestId) lastEvaluation = evaluation;
       } catch (error) {
-        const evaluation = { passed: false, details: error.message || 'Test sa nepodarilo spustiť.' };
+        const evaluation = { passed: false, status: 'request_error', details: error.message || 'Test sa nepodarilo spustiť.' };
         testRunResults.set(testCase.id, evaluation);
+        if (!firstFailedTestId) firstFailedTestId = testCase.id;
         lastEvaluation = evaluation;
       }
       renderDevelopmentTests();
     }
+    if (firstFailedTestId) activeTestId = firstFailedTestId;
     const selectedEvaluation = testRunResults.get(activeTestId) || lastEvaluation;
     if (selectedEvaluation) {
-      showTestResult(selectedEvaluation);
       if (selectedEvaluation.result) showTestConsole(selectedEvaluation);
+      showTestResult(selectedEvaluation);
     }
-    setTestStatus(`${passedCount} z ${tests.length} testov prešlo.`);
+    setTestStatus(firstFailedTestId
+      ? `${passedCount} z ${tests.length} testov prešlo. Otvorený je prvý neúspešný test.`
+      : `Všetkých ${tests.length} testov prešlo.`);
     setConsoleExpanded(true);
   } finally {
     runningAllTests = false;
@@ -1590,6 +2202,7 @@ function symbolMarker(kind) {
     class: 'C',
     type: 'T',
     label: ':',
+    variable: 'V',
   }[kind] || '*';
 }
 
@@ -1598,29 +2211,43 @@ function sourceForProjectFile(file) {
   return file?.content || '';
 }
 
-function renderSymbolOutline() {
-  const project = activeProject();
-  const file = activeFile();
-  const browser = dom.developmentSymbolBrowser;
-  const sidebar = browser.closest('.development-sidebar');
-  const available = Boolean(project && file);
-  browser.hidden = !available;
-  sidebar.classList.toggle('has-symbol-browser', available);
-  sidebar.classList.toggle('symbols-collapsed', available && !symbolBrowserExpanded);
-  if (!available) return;
+function symbolOutlineCacheKey(project, file) {
+  return project && file ? `${project.id}:${file.id}` : '';
+}
 
-  browser.classList.toggle('is-collapsed', !symbolBrowserExpanded);
-  dom.developmentSymbolBrowserToggle.setAttribute('aria-expanded', String(symbolBrowserExpanded));
-  dom.developmentSymbolBrowserToggle.title = symbolBrowserExpanded ? 'Zbaliť osnovu symbolov' : 'Rozbaliť osnovu symbolov';
-  dom.developmentSymbolBrowserToggle.setAttribute('aria-label', dom.developmentSymbolBrowserToggle.title);
-  setAppIcon(
-    dom.developmentSymbolBrowserToggle.querySelector('.app-icon'),
-    symbolBrowserExpanded ? 'chevron-down' : 'chevron-right'
-  );
+function languageServiceSymbolCategory(kind) {
+  const value = Number(kind);
+  if ([6, 9, 12].includes(value)) return { kind: 'function', label: 'Funkcia' };
+  if ([5, 10, 11, 23, 26].includes(value)) return { kind: value === 5 ? 'class' : 'type', label: value === 5 ? 'Trieda' : 'Typ' };
+  if (value === 14) return { kind: 'macro', label: 'Konštanta' };
+  if ([7, 8, 13, 22].includes(value)) return { kind: 'variable', label: 'Premenná' };
+  return { kind: 'variable', label: 'Symbol' };
+}
+
+function languageServiceOutlineSymbols(response) {
+  const symbols = Array.isArray(response?.symbols) ? response.symbols : [];
+  return symbols.map((symbol) => {
+    const category = languageServiceSymbolCategory(symbol.kind);
+    return {
+      name: String(symbol.name || ''),
+      signature: String(symbol.detail || ''),
+      kind: category.kind,
+      label: category.label,
+      line: Math.max(1, Number(symbol.line) || 1),
+      column: Math.max(1, Number(symbol.column) || 1),
+    };
+  }).filter((symbol) => symbol.name);
+}
+
+function visibleOutlineSymbols(project, file) {
+  const source = sourceForProjectFile(file);
+  const cached = languageServiceSymbolCache.get(symbolOutlineCacheKey(project, file));
+  if (cached?.source === source && cached.symbols.length) return cached.symbols;
+  return scanSourceSymbols(source, project.language);
+}
+
+function renderOutlineSymbolRows(symbols) {
   dom.developmentSymbolList.replaceChildren();
-  if (!symbolBrowserExpanded) return;
-
-  const symbols = scanSourceSymbols(sourceForProjectFile(file), project.language);
   if (!symbols.length) {
     const empty = document.createElement('p');
     empty.className = 'development-symbols-empty';
@@ -1651,6 +2278,66 @@ function renderSymbolOutline() {
     });
     dom.developmentSymbolList.append(button);
   });
+}
+
+async function refreshSymbolOutline() {
+  const project = activeProject();
+  const file = activeFile();
+  if (!project || !file) return;
+  const key = symbolOutlineCacheKey(project, file);
+  const source = sourceForProjectFile(file);
+  symbolOutlineRefreshKey = key;
+  dom.developmentSymbolBrowserRefresh.disabled = true;
+  dom.developmentSymbolBrowserRefresh.title = 'Načítavam presnejšiu osnovu...';
+  dom.developmentSymbolBrowserRefresh.setAttribute('aria-label', dom.developmentSymbolBrowserRefresh.title);
+  try {
+    const response = await requestEditorLanguageService({ operation: 'symbols', line: 1, column: 1 });
+    if (!response?.available || activeProjectId !== project.id || activeFileId !== file.id || sourceForProjectFile(file) !== source) return;
+    const symbols = languageServiceOutlineSymbols(response);
+    languageServiceSymbolCache.set(key, { source, symbols });
+    renderSymbolOutline();
+  } catch {
+    // A local outline is already visible and remains the fallback.
+  } finally {
+    if (symbolOutlineRefreshKey === key) {
+      symbolOutlineRefreshKey = '';
+      dom.developmentSymbolBrowserRefresh.disabled = false;
+      dom.developmentSymbolBrowserRefresh.title = 'Spresniť osnovu cez jazykový server';
+      dom.developmentSymbolBrowserRefresh.setAttribute('aria-label', dom.developmentSymbolBrowserRefresh.title);
+    }
+  }
+}
+
+function queueSymbolOutlineRefresh() {
+  window.clearTimeout(symbolOutlineRefreshTimer);
+  const project = activeProject();
+  const file = activeFile();
+  if (!project || !file) return;
+  symbolOutlineRefreshTimer = window.setTimeout(() => void refreshSymbolOutline(), 0);
+}
+
+function renderSymbolOutline() {
+  const project = activeProject();
+  const file = activeFile();
+  const browser = dom.developmentSymbolBrowser;
+  const sidebar = browser.closest('.development-sidebar');
+  const available = Boolean(project && file);
+  browser.hidden = !available;
+  sidebar.classList.toggle('has-symbol-browser', available);
+  sidebar.classList.toggle('symbols-collapsed', available && !symbolBrowserExpanded);
+  if (!available) return;
+
+  browser.classList.toggle('is-collapsed', !symbolBrowserExpanded);
+  dom.developmentSymbolBrowserToggle.setAttribute('aria-expanded', String(symbolBrowserExpanded));
+  dom.developmentSymbolBrowserToggle.title = symbolBrowserExpanded ? 'Zbaliť osnovu symbolov' : 'Rozbaliť osnovu symbolov';
+  dom.developmentSymbolBrowserToggle.setAttribute('aria-label', dom.developmentSymbolBrowserToggle.title);
+  setAppIcon(
+    dom.developmentSymbolBrowserToggle.querySelector('.app-icon'),
+    symbolBrowserExpanded ? 'chevron-down' : 'chevron-right'
+  );
+  dom.developmentSymbolBrowserRefresh.disabled = symbolOutlineRefreshKey === symbolOutlineCacheKey(project, file);
+  if (!symbolBrowserExpanded) return;
+  renderOutlineSymbolRows(visibleOutlineSymbols(project, file));
 }
 
 function quickOpenEntriesForMode() {
@@ -1817,6 +2504,127 @@ async function chooseQuickOpenEntry(index = quickOpenResultIndex) {
   dom.developmentQuickOpenDialog.close();
 }
 
+function projectTutorialLink(project = activeProject()) {
+  const link = project?.tutorialLink;
+  return link?.languageId && link?.pageId ? link : null;
+}
+
+function renderTutorialGuideMessage(message) {
+  dom.developmentTutorialGuideTopic.textContent = '';
+  dom.developmentTutorialGuideTitle.textContent = 'Učebnica';
+  dom.developmentTutorialGuideContent.replaceChildren();
+  const paragraph = document.createElement('p');
+  paragraph.className = 'development-tutorial-guide-message';
+  paragraph.textContent = message;
+  dom.developmentTutorialGuideContent.append(paragraph);
+}
+
+function renderTutorialGuidePage(language, page) {
+  dom.developmentTutorialGuideTopic.textContent = language.title || 'Učebnica';
+  dom.developmentTutorialGuideTitle.textContent = page.title || 'Výklad';
+  dom.developmentTutorialGuideContent.replaceChildren();
+  const content = page.content || {};
+  if (content.lead) {
+    const lead = document.createElement('p');
+    lead.className = 'development-tutorial-guide-lead';
+    lead.textContent = content.lead;
+    dom.developmentTutorialGuideContent.append(lead);
+  }
+  (content.sections || []).forEach((section) => {
+    const block = document.createElement('section');
+    if (section.title) {
+      const heading = document.createElement('h4');
+      heading.textContent = section.title;
+      block.append(heading);
+    }
+    (section.paragraphs || []).forEach((text) => {
+      const paragraph = document.createElement('p');
+      paragraph.textContent = text;
+      block.append(paragraph);
+    });
+    if (section.bullets?.length) {
+      const list = document.createElement('ul');
+      section.bullets.forEach((text) => {
+        const item = document.createElement('li');
+        item.textContent = text;
+        list.append(item);
+      });
+      block.append(list);
+    }
+    if (section.callout) {
+      const callout = document.createElement('p');
+      callout.className = 'development-tutorial-guide-callout';
+      callout.textContent = section.callout;
+      block.append(callout);
+    }
+    dom.developmentTutorialGuideContent.append(block);
+  });
+  if (!dom.developmentTutorialGuideContent.childElementCount) {
+    renderTutorialGuideMessage('Táto stránka zatiaľ nemá výklad.');
+  }
+}
+
+async function loadTutorialGuide() {
+  const project = activeProject();
+  const link = projectTutorialLink(project);
+  if (!tutorialGuideOpen || !project || !link) return;
+  const cacheKey = `${link.languageId}:${link.pageId}`;
+  const cached = tutorialGuideCache.get(cacheKey);
+  if (cached) {
+    renderTutorialGuidePage(cached.language, cached.page);
+    return;
+  }
+  renderTutorialGuideMessage('Načítavam výklad...');
+  try {
+    const result = await runOperation(() => apiRequest(`/tutorial/languages/${encodeURIComponent(link.languageId)}`));
+    const page = (result.pages || []).find((item) => item.id === link.pageId);
+    if (!page) throw new Error('Prepojená stránka učebnice už neexistuje.');
+    tutorialGuideCache.set(cacheKey, { language: result.language || {}, page });
+    const activeLink = projectTutorialLink();
+    if (
+      tutorialGuideOpen
+      && activeProjectId === project.id
+      && activeLink?.languageId === link.languageId
+      && activeLink?.pageId === link.pageId
+    ) {
+      renderTutorialGuidePage(result.language || {}, page);
+    }
+  } catch (error) {
+    if (tutorialGuideOpen && activeProjectId === project.id) {
+      renderTutorialGuideMessage(error.message || 'Výklad sa nepodarilo načítať.');
+    }
+  }
+}
+
+function setTutorialGuideOpen(open) {
+  const enabled = Boolean(open && projectTutorialLink());
+  tutorialGuideOpen = enabled;
+  dom.developmentCodeSection.classList.toggle('has-tutorial-guide', enabled);
+  dom.developmentTutorialGuide.hidden = !enabled;
+  dom.developmentTutorialGuideResize.hidden = !enabled;
+  dom.developmentTutorialGuideToggle.setAttribute('aria-pressed', String(enabled));
+  dom.developmentTutorialGuideToggle.title = enabled ? 'Skryť výklad z učebnice' : 'Výklad z učebnice';
+  dom.developmentTutorialGuideToggle.setAttribute('aria-label', enabled ? 'Skryť výklad z učebnice' : 'Zobraziť výklad z učebnice');
+  if (enabled) void loadTutorialGuide();
+}
+
+function syncTutorialGuide(project) {
+  const linked = Boolean(projectTutorialLink(project));
+  dom.developmentTutorialGuideToggle.hidden = !linked;
+  if (!linked && tutorialGuideOpen) {
+    setTutorialGuideOpen(false);
+    return;
+  }
+  dom.developmentTutorialGuideToggle.setAttribute('aria-pressed', String(tutorialGuideOpen));
+  if (linked && tutorialGuideOpen) void loadTutorialGuide();
+}
+
+function openTutorialSource() {
+  const link = projectTutorialLink();
+  if (!link) return;
+  window.dispatchEvent(new CustomEvent('development-tutorial-open', { detail: link }));
+}
+
 function renderEditor() {
   const project = activeProject();
   const file = activeFile();
@@ -1825,6 +2633,12 @@ function renderEditor() {
   dom.developmentProjectExport.disabled = !project;
   dom.developmentWorkspace.querySelector('.development-empty').hidden = Boolean(projects.length);
   if (!hasProject) {
+    syncTutorialGuide(null);
+    renderDebugButton(null);
+    renderSymbolRenameButton(null);
+    renderBinaryInspectorButton(null);
+    renderFirmwareProgramButton(null);
+    renderSerialMonitorButton(null);
     renderSymbolOutline();
     return;
   }
@@ -1837,21 +2651,27 @@ function renderEditor() {
   dom.developmentProjectLanguage.title = `${project.title} · ${languageLabel(project.language)} · ${project.buildProfileLabel || 'Ladenie'}`;
   const isFirmware = project.kind === 'firmware';
   const target = project.firmwareTarget;
+  const toolchain = isFirmware ? firmwareToolchainStatus(project.firmwareTargetId) : null;
+  const firmwareStatus = isFirmware ? firmwareBuildStatus(project.firmwareTargetId, project.language) : null;
+  const device = configuredFirmwareDevice(project);
   dom.developmentProjectTarget.hidden = !isFirmware;
   dom.developmentProjectTarget.textContent = target
     ? `${target.label} · ${project.buildProfileLabel || 'Ladenie'}`
     : 'Firmvér bez cieľa';
   dom.developmentProjectTarget.title = target
-    ? `${target.family} · ${target.board}\n${target.architecture} · ${target.toolchain}`
+    ? `${target.family} · ${target.board}\n${target.architecture} · ${target.toolchain}\n\n${toolchain?.message || ''}${device?.programmer ? `\n${device.programmer.label}${device.port ? ` · ${device.port}` : ''}` : ''}`
     : 'Vyber cieľový čip alebo dosku.';
+  dom.developmentProjectTarget.dataset.state = firmwareStatus?.available ? 'ready' : toolchain?.programmerAvailable ? 'partial' : 'missing';
   dom.developmentTargetConfigure.hidden = false;
-  dom.developmentTargetConfigure.title = isFirmware ? 'Nastaviť projekt firmvéru' : 'Nastaviť projekt';
+  dom.developmentTargetConfigure.title = isFirmware
+    ? `Nastaviť projekt firmvéru\n\n${toolchain?.message || ''}`
+    : 'Nastaviť projekt';
   dom.developmentTargetConfigure.setAttribute('aria-label', dom.developmentTargetConfigure.title);
   dom.developmentFileTitle.value = file.title;
   setDevelopmentEditorProjectFiles(projectFiles(project).map((item) => ({
     ...item,
     path: projectFilePath(project, item),
-  })));
+  })), { activePath: projectFilePath(project, file) });
   setDevelopmentEditorDocument(file.content, project.language);
   restoreActiveEditorViewState();
   setDevelopmentEditorDiagnostics(diagnosticsForActiveFile());
@@ -1868,22 +2688,31 @@ function renderEditor() {
   dom.developmentEntryFile.setAttribute('aria-label', dom.developmentEntryFile.title);
   const languageStatus = languageRuntime(project.language);
   const canRun = !isFirmware && Boolean(languageStatus.available);
-  dom.developmentBuild.disabled = !canRun;
+  const canBuildFirmware = isFirmware && Boolean(firmwareStatus?.available);
+  dom.developmentBuild.disabled = !(canRun || canBuildFirmware);
   dom.developmentBuild.title = canRun
     ? 'Preložiť bez spustenia (Ctrl+Shift+Enter)'
     : isFirmware
-      ? 'Firmvérový toolchain pripojíme v ďalšom kroku.'
+      ? firmwareStatus?.available
+        ? 'Zostaviť firmvér (Ctrl+Shift+Enter)'
+        : firmwareStatus?.message || 'Firmvérový toolchain nie je dostupný.'
       : languageStatus.message;
   dom.developmentRun.disabled = !canRun;
   dom.developmentRun.title = canRun
     ? 'Preložiť a spustiť projekt (Ctrl+Enter)'
     : isFirmware
-      ? 'Firmvérový toolchain pripojíme v ďalšom kroku.'
+      ? toolchain?.message || 'Firmvérový toolchain nie je dostupný.'
       : languageStatus.message;
   dom.developmentTests.disabled = !project;
   dom.developmentTests.title = isFirmware
     ? 'Testy projektu sa pripravia; spúšťanie firmvéru pripojíme s toolchainom.'
     : 'Testy projektu';
+  renderDebugButton(project);
+  renderSymbolRenameButton(project);
+  renderBinaryInspectorButton(project);
+  renderFirmwareProgramButton(project);
+  renderSerialMonitorButton(project);
+  syncTutorialGuide(project);
 
   dom.developmentFileTabs.replaceChildren();
   projectFiles(project).forEach((item) => {
@@ -1920,6 +2749,22 @@ function updateDirtyFileState() {
   }
 }
 
+function formatActiveFile() {
+  if (!activeFile()) return;
+  const changed = formatDevelopmentEditor();
+  const button = dom.developmentFormat;
+  const originalTitle = 'Zarovnať odsadenie (Ctrl+Alt+F)';
+  const message = changed ? 'Odsadenie bolo zarovnané.' : 'Odsadenie už bolo zarovnané.';
+  button.title = message;
+  button.setAttribute('aria-label', message);
+  setAppIcon(button.querySelector('.app-icon'), 'check');
+  window.setTimeout(() => {
+    button.title = originalTitle;
+    button.setAttribute('aria-label', 'Zarovnať odsadenie otvoreného súboru');
+    setAppIcon(button.querySelector('.app-icon'), 'indent');
+  }, 1300);
+}
+
 function replaceProject(project) {
   const index = projects.findIndex((item) => item.id === project.id);
   if (index >= 0) projects[index] = project;
@@ -1929,6 +2774,7 @@ function replaceProject(project) {
   rememberDevelopmentSession();
   renderProjects();
   renderEditor();
+  queueSymbolOutlineRefresh();
 }
 
 async function loadWorkspace() {
@@ -1938,8 +2784,13 @@ async function loadWorkspace() {
   expandedFolderIds = new Set(projects.flatMap((project) => projectFolders(project).map((folder) => folder.id)));
   languages = workspace.languages || [];
   firmwareTargets = workspace.firmwareTargets || [];
+  firmwareTools = workspace.firmwareTools || {};
+  firmwareDevices = workspace.firmwareDevices || { ports: [], programmers: {} };
+  firmwareBuild = workspace.firmwareBuild || { targets: {} };
+  serialMonitor = workspace.serialMonitor || serialMonitor;
   buildProfiles = workspace.buildProfiles || workspace.firmwareBuildProfiles || [];
   setRuntimeStatus(workspace.runtime);
+  debuggerRuntime = workspace.debugger || { available: false, message: 'Debugger nie je dostupný.' };
   const session = rememberedDevelopmentSession();
   const rememberedProject = projects.find((project) => project.id === session?.projectId);
   if (rememberedProject) {
@@ -1955,10 +2806,12 @@ async function loadWorkspace() {
   rememberDevelopmentSession();
   renderProjects();
   renderEditor();
+  queueSymbolOutlineRefresh();
 }
 
 async function selectProject(projectId) {
   if (projectId === activeProjectId) return;
+  void stopDebugging({ quiet: true });
   rememberEditorViewState();
   if (!(await saveDevelopmentChanges())) return;
   activeProjectId = projectId;
@@ -1973,6 +2826,7 @@ async function selectProject(projectId) {
   setConsole();
   renderProjects();
   renderEditor();
+  queueSymbolOutlineRefresh();
 }
 
 async function selectFile(fileId) {
@@ -1993,6 +2847,7 @@ async function selectFile(fileId) {
   setConsole();
   renderProjects();
   renderEditor();
+  queueSymbolOutlineRefresh();
 }
 
 function populateProjectLanguages(preferredLanguage = '') {
@@ -2038,12 +2893,97 @@ function populateFirmwareTargets(preferredTarget = '') {
     const option = document.createElement('option');
     option.value = target.id;
     option.textContent = `${target.family} · ${target.label}`;
-    option.title = `${target.board}\n${target.architecture}\n${target.toolchain}`;
+    option.title = `${target.board}\n${target.architecture}\n${target.toolchain}\n\n${firmwareToolchainStatus(target.id).message}`;
     dom.developmentFirmwareTargetInput.append(option);
   });
   dom.developmentFirmwareTargetInput.value = firmwareTargets.some((target) => target.id === preferredTarget)
     ? preferredTarget
     : firmwareTargets[0]?.id || '';
+}
+
+function populateFirmwareProgrammers(targetId, preferredProgrammer = '') {
+  const select = dom.developmentFirmwareProgrammerInput;
+  select.replaceChildren();
+  const empty = document.createElement('option');
+  empty.value = '';
+  empty.textContent = 'Programátor nevybraný';
+  select.append(empty);
+  firmwareProgrammers(targetId).forEach((profile) => {
+    const option = document.createElement('option');
+    option.value = profile.id;
+    option.textContent = profile.label;
+    option.title = profile.message;
+    select.append(option);
+  });
+  select.value = firmwareProgrammers(targetId).some((profile) => profile.id === preferredProgrammer)
+    ? preferredProgrammer
+    : '';
+}
+
+function populateFirmwarePorts(preferredPort = '') {
+  const select = dom.developmentFirmwarePortInput;
+  const ports = Array.isArray(firmwareDevices?.ports) ? [...firmwareDevices.ports] : [];
+  const currentPort = String(preferredPort || '');
+  if (currentPort && !ports.some((port) => port.id === currentPort)) {
+    ports.unshift({ id: currentPort, label: `${currentPort} · momentálne neviditeľný` });
+  }
+  select.replaceChildren();
+  const empty = document.createElement('option');
+  empty.value = '';
+  empty.textContent = 'Port nevybraný';
+  select.append(empty);
+  ports.forEach((port) => {
+    const option = document.createElement('option');
+    option.value = port.id;
+    option.textContent = port.label;
+    select.append(option);
+  });
+  select.value = ports.some((port) => port.id === currentPort) ? currentPort : '';
+}
+
+function populateFirmwareBaudRate(preferredBaud = '') {
+  const select = dom.developmentFirmwareBaudInput;
+  const rates = Array.isArray(serialMonitor?.baudRates) && serialMonitor.baudRates.length
+    ? serialMonitor.baudRates
+    : [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
+  const current = Number(preferredBaud) || Number(serialMonitor?.defaultBaudRate) || 115200;
+  select.replaceChildren();
+  rates.forEach((rate) => {
+    const option = document.createElement('option');
+    option.value = String(rate);
+    option.textContent = `${rate} Bd`;
+    select.append(option);
+  });
+  select.value = rates.includes(current) ? String(current) : String(Number(serialMonitor?.defaultBaudRate) || rates[0]);
+}
+
+function renderFirmwareDeviceSettings() {
+  const isFirmware = dialogProjectKind() === 'firmware';
+  const showDeviceSettings = isFirmware && Boolean(projectDialogProjectId);
+  dom.developmentFirmwareDeviceFields.hidden = !showDeviceSettings;
+  if (!showDeviceSettings) return;
+
+  const targetId = dom.developmentFirmwareTargetInput.value;
+  const currentProgrammer = dom.developmentFirmwareProgrammerInput.value;
+  const currentPort = dom.developmentFirmwarePortInput.value;
+  const currentBaud = dom.developmentFirmwareBaudInput.value;
+  populateFirmwareProgrammers(targetId, currentProgrammer);
+  populateFirmwarePorts(currentPort);
+  populateFirmwareBaudRate(currentBaud);
+  const programmer = firmwareProgrammer(targetId, dom.developmentFirmwareProgrammerInput.value);
+  const requiresPort = Boolean(programmer?.requiresPort);
+  dom.developmentFirmwarePortInput.disabled = !requiresPort;
+  if (!programmer) {
+    dom.developmentFirmwareDeviceStatus.textContent = 'Programátor nevybraný.';
+  } else if (!programmer.available) {
+    dom.developmentFirmwareDeviceStatus.textContent = programmer.message;
+  } else if (requiresPort && !dom.developmentFirmwarePortInput.value) {
+    dom.developmentFirmwareDeviceStatus.textContent = 'Vyber sériový port.';
+  } else if (requiresPort) {
+    dom.developmentFirmwareDeviceStatus.textContent = 'Pripojenie je uložené; port otvorí až sériový monitor po príkaze.';
+  } else {
+    dom.developmentFirmwareDeviceStatus.textContent = 'Sériový port sa pre tento programátor nepoužíva.';
+  }
 }
 
 function populateBuildProfiles(preferredProfile = 'debug') {
@@ -2065,19 +3005,14 @@ function syncProjectKindFields(preferredLanguage = '') {
   populateProjectLanguages(preferredLanguage || dom.developmentProjectLanguageInput.value);
   dom.developmentProjectTemplateField.hidden = isFirmware || Boolean(projectDialogProjectId);
   if (!isFirmware && !projectDialogProjectId) populateProjectTemplates();
+  renderFirmwareDeviceSettings();
   fitProjectDialogToContent();
 }
 
 function fitProjectDialogToContent() {
   const dialog = dom.developmentProjectDialog;
   if (!dialog.open) return;
-  window.requestAnimationFrame(() => {
-    const form = dom.developmentProjectForm;
-    const maximum = Math.max(240, window.innerHeight - 24);
-    const requiredHeight = Math.max(220, Math.ceil(form.scrollHeight));
-    dialog.style.height = `${Math.min(maximum, requiredHeight)}px`;
-    dialog.dataset.windowSized = 'true';
-  });
+  window.requestAnimationFrame(() => fitDialogWindowToContent(dialog));
 }
 
 function setProjectDialogSubmit(editing = false) {
@@ -2101,6 +3036,12 @@ function openProjectDialog(project = null) {
   setDialogProjectKind(project?.kind || 'program');
   populateProjectLanguages(project?.language || 'c');
   syncProjectKindFields(project?.language || 'c');
+  if (project?.kind === 'firmware') {
+    populateFirmwareProgrammers(project.firmwareTargetId, project.firmwareProgrammerId || '');
+    populateFirmwarePorts(project.firmwareSerialPort || '');
+    populateFirmwareBaudRate(project.firmwareSerialBaud);
+    renderFirmwareDeviceSettings();
+  }
   dom.developmentProjectNameInput.value = project?.title || 'Nový projekt';
   dom.developmentProjectDialog.querySelector('h2').textContent = project ? 'Nastavenie projektu' : 'Nový projekt';
   setProjectDialogDescription(project
@@ -2117,6 +3058,20 @@ async function configureProject() {
   const project = activeProject();
   if (!project || !(await saveDevelopmentChanges())) return;
   openProjectDialog(project);
+}
+
+async function refreshFirmwareDevices() {
+  const button = dom.developmentFirmwareDevicesRefresh;
+  button.disabled = true;
+  try {
+    firmwareDevices = await runOperation(() => apiRequest('/development/firmware-devices'));
+    renderFirmwareDeviceSettings();
+    fitProjectDialogToContent();
+  } catch (error) {
+    dom.developmentFirmwareDeviceStatus.textContent = error.message || 'Zariadenia sa nepodarilo obnoviť.';
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function openFileDialog(kind = 'file') {
@@ -2160,6 +3115,19 @@ async function createProject(event) {
       language: dom.developmentProjectLanguageInput.value,
       kind: dialogProjectKind(),
       firmwareTargetId: dom.developmentFirmwareTargetInput.value,
+      firmwareProgrammerId: dialogProjectKind() === 'firmware'
+        ? dom.developmentFirmwareProgrammerInput.value
+        : '',
+      firmwareSerialPort: dialogProjectKind() === 'firmware'
+        && firmwareProgrammer(
+          dom.developmentFirmwareTargetInput.value,
+          dom.developmentFirmwareProgrammerInput.value,
+        )?.requiresPort
+        ? dom.developmentFirmwarePortInput.value
+        : '',
+      firmwareSerialBaud: dialogProjectKind() === 'firmware'
+        ? Number(dom.developmentFirmwareBaudInput.value) || 115200
+        : 115200,
       buildProfile: dom.developmentProjectBuildProfileInput.value,
       templateId: dom.developmentProjectTemplateInput.value,
     };
@@ -2406,15 +3374,700 @@ function resultText(result) {
   return [result.stdout, result.stderr].filter(Boolean).join(result.stdout && result.stderr ? '\n' : '') || 'Bez výstupu.';
 }
 
+function projectSupportsBinaryInspection(project = activeProject()) {
+  return Boolean(project && project.kind === 'program' && ['c', 'cpp', 'asm'].includes(project.language));
+}
+
+function projectSupportsFirmwareMemoryMap(project = activeProject()) {
+  return Boolean(project?.kind === 'firmware');
+}
+
+function activeBinaryInspection() {
+  if (!binaryInspection || binaryInspection.projectId !== activeProjectId) return null;
+  return binaryInspection;
+}
+
+function byteLabel(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderBinaryInspectorButton(project = activeProject()) {
+  const firmwareMemory = projectSupportsFirmwareMemoryMap(project);
+  const supported = firmwareMemory || projectSupportsBinaryInspection(project);
+  const inspection = activeBinaryInspection();
+  dom.developmentBinaryInspector.hidden = !supported;
+  dom.developmentBinaryInspector.disabled = firmwareMemory ? false : !inspection;
+  dom.developmentBinaryInspector.title = firmwareMemory
+    ? 'Pamäťová mapa posledného zostavenia firmvéru'
+    : inspection
+      ? 'Rozbor binárky'
+      : 'Prelož projekt, aby bol dostupný rozbor binárky.';
+  dom.developmentBinaryInspector.setAttribute('aria-label', dom.developmentBinaryInspector.title);
+}
+
+function binaryInspectorRow(name, value, title = '') {
+  const row = document.createElement('div');
+  row.className = 'development-binary-entry';
+  row.setAttribute('role', 'listitem');
+  row.title = title || `${name}: ${value}`;
+  const label = document.createElement('code');
+  label.textContent = name;
+  const size = document.createElement('span');
+  size.textContent = value;
+  row.append(label, size);
+  return row;
+}
+
+function renderBinaryInspector() {
+  const project = activeProject();
+  const snapshot = activeBinaryInspection();
+  if (!project || !snapshot) return false;
+  const inspection = snapshot.data;
+  const memory = inspection.memory || {};
+  document.getElementById('development-binary-inspector-title').textContent = 'Rozbor binárky';
+  document.getElementById('development-binary-sections-title').textContent = 'Sekcie';
+  document.getElementById('development-binary-symbols-title').textContent = 'Symboly';
+  dom.developmentBinaryInspectorSummary.textContent = `${languageLabel(project.language)} · ${snapshot.buildProfileLabel || 'Ladenie'}`;
+  dom.developmentBinaryInspectorMemory.replaceChildren();
+  [
+    ['Kód', memory.text],
+    ['Dáta', memory.data],
+    ['BSS', memory.bss],
+    ['Celkom', memory.total],
+  ].forEach(([label, value]) => {
+    const item = document.createElement('div');
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const detail = document.createElement('dd');
+    detail.textContent = byteLabel(value);
+    item.append(term, detail);
+    dom.developmentBinaryInspectorMemory.append(item);
+  });
+  dom.developmentBinaryInspectorSections.replaceChildren(
+    ...(inspection.sections || []).map((section) => binaryInspectorRow(
+      section.name,
+      byteLabel(section.size),
+      `${section.name}: ${byteLabel(section.size)} · adresa ${Number(section.address || 0).toString(16)}`
+    ))
+  );
+  dom.developmentBinaryInspectorSymbols.replaceChildren(
+    ...(inspection.symbols || []).map((symbol) => binaryInspectorRow(
+      symbol.name,
+      byteLabel(symbol.size),
+      `${symbol.type || '?'} · ${byteLabel(symbol.size)} · adresa ${Number(symbol.address || 0).toString(16)}`
+    ))
+  );
+  return true;
+}
+
+function firmwareMapDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('sk-SK', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function firmwareMapAddress(value) {
+  return `0x${Math.max(0, Number(value) || 0).toString(16).toUpperCase().padStart(8, '0')}`;
+}
+
+function renderFirmwareMemoryMap(snapshot) {
+  const memory = snapshot?.memory || {};
+  const flash = memory.flash || {};
+  const ram = memory.ram || {};
+  const target = snapshot?.target || {};
+  const flashFree = Math.max(0, Number(flash.capacity || 0) - Number(flash.used || 0));
+  const ramFree = Math.max(0, Number(ram.capacity || 0) - Number(ram.used || 0));
+  const builtAt = firmwareMapDate(snapshot?.createdAt);
+  document.getElementById('development-binary-inspector-title').textContent = 'Pamäťová mapa';
+  document.getElementById('development-binary-sections-title').textContent = 'Sekcie';
+  document.getElementById('development-binary-symbols-title').textContent = 'Artefakty';
+  dom.developmentBinaryInspectorSummary.textContent = [
+    target.label || 'Firmvér',
+    snapshot?.fresh ? 'zodpovedá aktuálnym zdrojom' : 'zdroje sa od zostavenia zmenili',
+    builtAt,
+  ].filter(Boolean).join(' · ');
+  dom.developmentBinaryInspectorMemory.replaceChildren();
+  [
+    ['FLASH', `${firmwareBytes(flash.used)} / ${firmwareBytes(flash.capacity)} (${Number(flash.percent || 0)} %)`],
+    ['FLASH voľná', firmwareBytes(flashFree)],
+    ['RAM', `${firmwareBytes(ram.used)} / ${firmwareBytes(ram.capacity)} (${Number(ram.percent || 0)} %)`],
+    ['RAM voľná', firmwareBytes(ramFree)],
+  ].forEach(([label, value]) => {
+    const item = document.createElement('div');
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const detail = document.createElement('dd');
+    detail.textContent = value;
+    item.append(term, detail);
+    dom.developmentBinaryInspectorMemory.append(item);
+  });
+  const sections = Array.isArray(memory.sections) ? [...memory.sections] : [];
+  sections.sort((left, right) => Number(left.address || 0) - Number(right.address || 0));
+  dom.developmentBinaryInspectorSections.replaceChildren(
+    ...sections.map((section) => binaryInspectorRow(
+      section.name || '?',
+      `${firmwareBytes(section.size)} · ${firmwareMapAddress(section.address)}`,
+      `${section.name || '?'}: ${firmwareBytes(section.size)} od ${firmwareMapAddress(section.address)}`,
+    )),
+  );
+  const artifacts = Array.isArray(snapshot?.artifacts) ? snapshot.artifacts : [];
+  dom.developmentBinaryInspectorSymbols.replaceChildren(
+    ...artifacts.map((artifact) => binaryInspectorRow(
+      artifact.name || '?',
+      firmwareBytes(artifact.bytes),
+    )),
+  );
+}
+
+function renderFirmwareMemoryMapUnavailable(message) {
+  document.getElementById('development-binary-inspector-title').textContent = 'Pamäťová mapa';
+  document.getElementById('development-binary-sections-title').textContent = 'Sekcie';
+  document.getElementById('development-binary-symbols-title').textContent = 'Artefakty';
+  dom.developmentBinaryInspectorSummary.textContent = message;
+  dom.developmentBinaryInspectorMemory.replaceChildren();
+  dom.developmentBinaryInspectorSections.replaceChildren();
+  dom.developmentBinaryInspectorSymbols.replaceChildren();
+}
+
+async function openBinaryInspector() {
+  const project = activeProject();
+  if (projectSupportsFirmwareMemoryMap(project)) {
+    try {
+      if (!(await saveDevelopmentChanges())) return;
+      const snapshot = await runOperation(() => apiRequest(
+        `/development/projects/${encodeURIComponent(project.id)}/firmware-memory`,
+      ));
+      renderFirmwareMemoryMap(snapshot);
+    } catch (error) {
+      renderFirmwareMemoryMapUnavailable(error.message || 'Pamäťovú mapu sa nepodarilo načítať.');
+    }
+    if (!dom.developmentBinaryInspectorDialog.open) dom.developmentBinaryInspectorDialog.showModal();
+    return;
+  }
+  if (!renderBinaryInspector()) return;
+  if (!dom.developmentBinaryInspectorDialog.open) dom.developmentBinaryInspectorDialog.showModal();
+}
+
+function debugReasonLabel(reason = '') {
+  return {
+    'breakpoint-hit': 'Zastavené na bode prerušenia.',
+    'end-stepping-range': 'Krok dokončený.',
+    'function-finished': 'Funkcia skončila.',
+    'exited-normally': 'Program skončil.',
+    'exited': 'Program skončil.',
+    'signal-received': 'Program bol prerušený signálom.',
+  }[reason] || 'Debugger je pripravený.';
+}
+
+function debugLocationLabel(location) {
+  if (!location?.filename || !Number.isInteger(location.line)) return '';
+  return `${location.filename}:${location.line}${location.function ? ` · ${location.function}` : ''}`;
+}
+
+function debugListEmpty(message) {
+  const empty = document.createElement('p');
+  empty.className = 'development-debug-empty';
+  empty.textContent = message;
+  return empty;
+}
+
+function renderDebugList(container, entries, { variables = false } = {}) {
+  container.replaceChildren();
+  if (!entries.length) {
+    container.append(debugListEmpty(variables ? 'Bez dostupných premenných.' : 'Bez dostupných rámcov.'));
+    return;
+  }
+  entries.forEach((entry) => {
+    const location = variables ? null : entry.location;
+    const item = location ? document.createElement('button') : document.createElement('div');
+    if (location) item.type = 'button';
+    item.className = 'development-debug-list-item';
+    const name = document.createElement('strong');
+    name.textContent = variables ? entry.name : entry.function || '?';
+    const detail = document.createElement('small');
+    detail.textContent = variables ? entry.value : debugLocationLabel(location) || 'bez zdrojovej pozície';
+    item.append(name, detail);
+    if (location) item.addEventListener('click', () => void openDebugLocation(location));
+    container.append(item);
+  });
+}
+
+function renderDebugSession(snapshot = null, { message = '' } = {}) {
+  const paused = snapshot?.state === 'paused';
+  const hasSession = Boolean(debugSession?.id);
+  dom.developmentDebugStep.disabled = !paused;
+  dom.developmentDebugNext.disabled = !paused;
+  dom.developmentDebugContinue.disabled = !paused;
+  dom.developmentDebugStop.disabled = !hasSession;
+  dom.developmentDebugStatus.textContent = message || (snapshot ? debugReasonLabel(snapshot.reason) : debuggerRuntime.message);
+  const locationLabel = debugLocationLabel(snapshot?.location);
+  dom.developmentDebugLocation.hidden = !locationLabel;
+  dom.developmentDebugLocation.textContent = locationLabel;
+  dom.developmentDebugLocation.title = locationLabel ? `Prejsť na ${locationLabel}` : '';
+  renderDebugList(dom.developmentDebugFrames, snapshot?.frames || []);
+  renderDebugList(dom.developmentDebugVariables, snapshot?.variables || [], { variables: true });
+  dom.developmentDebugTranscript.textContent = snapshot?.transcript || '';
+}
+
+function showDebugDialog() {
+  if (!dom.developmentDebugDialog.open) dom.developmentDebugDialog.show();
+}
+
+async function openDebugLocation(location) {
+  const project = activeProject();
+  if (!project || !location?.filename || !Number.isInteger(location.line)) return;
+  const diagnostic = {
+    filename: location.filename,
+    line: location.line,
+    column: 1,
+    severity: 'error',
+    message: location.function ? `Zastavené vo funkcii ${location.function}.` : 'Zastavené debuggerom.',
+  };
+  diagnostics = [diagnostic];
+  diagnosticIndex = -1;
+  setDevelopmentEditorDiagnostics(diagnosticsForActiveFile());
+  renderProblems();
+  if (!(await openDiagnostic(diagnostic, 0))) {
+    dom.developmentDebugStatus.textContent = 'Miesto zastavenia sa v projekte nenašlo.';
+  }
+}
+
+async function startDebugging() {
+  const project = activeProject();
+  showDebugDialog();
+  if (!projectSupportsDebugging(project)) {
+    renderDebugSession(null, { message: 'Krokové ladenie je zatiaľ pripravené pre C a C++.' });
+    return;
+  }
+  if (!debuggerRuntime.available) {
+    renderDebugSession(null, { message: debuggerRuntime.message || 'Debugger nie je dostupný.' });
+    return;
+  }
+  if (!(await saveDevelopmentChanges())) return;
+  if (debugSession) await stopDebugging({ quiet: true });
+  renderDebugSession(null, { message: 'Pripravujem ladiacu reláciu...' });
+  try {
+    const result = await runOperation(() => apiRequest(`/development/projects/${encodeURIComponent(project.id)}/debug`, {
+      method: 'POST',
+      body: {
+        fileId: project.entryFileId,
+        stdin: dom.developmentInput.value,
+        arguments: dom.developmentRunArguments.value,
+      },
+    }));
+    const compile = result.compile || {};
+    const compileText = resultText(compile);
+    readDiagnostics(compileText);
+    if (!result.compiled || !result.session) {
+      setConsole({ phase: 'Chyba prekladu', compile: compileText, compileMeta: formatResultMeta(compile), output: 'Ladenie sa nespustilo.' });
+      renderDebugSession(null, { message: 'Preklad pre ladenie zlyhal.' });
+      return;
+    }
+    debugSession = result.session;
+    setConsole({
+      phase: 'Ladenie',
+      compile: compileText,
+      compileMeta: formatResultMeta(compile),
+      output: result.session.transcript || 'Program je zastavený v debuggeri.',
+    });
+    renderDebugSession(result.session);
+    setConsoleExpanded(true);
+  } catch (error) {
+    renderDebugSession(null, { message: error.message || 'Ladenie sa nepodarilo spustiť.' });
+  }
+}
+
+async function runDebugCommand(action) {
+  const session = debugSession;
+  if (!session?.id) return;
+  renderDebugSession(session, { message: 'Debugger pracuje...' });
+  try {
+    const result = await runOperation(() => apiRequest(`/development/projects/${encodeURIComponent(activeProjectId)}/debug/${encodeURIComponent(session.id)}/command`, {
+      method: 'POST', body: { action }
+    }));
+    debugSession = result.session || null;
+    if (debugSession) {
+      dom.developmentRunOutput.textContent = debugSession.transcript || dom.developmentRunOutput.textContent;
+      renderDebugSession(debugSession);
+    }
+  } catch (error) {
+    debugSession = null;
+    renderDebugSession(null, { message: error.message || 'Príkaz debuggeru zlyhal.' });
+  }
+}
+
+async function stopDebugging({ quiet = false } = {}) {
+  const session = debugSession;
+  debugSession = null;
+  renderDebugSession(null, { message: quiet ? '' : 'Ladenie je ukončené.' });
+  if (!session?.id || !activeProjectId) return;
+  try {
+    await runOperation(() => apiRequest(`/development/projects/${encodeURIComponent(activeProjectId)}/debug/${encodeURIComponent(session.id)}`, {
+      method: 'DELETE'
+    }));
+  } catch (error) {
+    if (!quiet) renderDebugSession(null, { message: error.message || 'Ladiacu reláciu sa nepodarilo ukončiť.' });
+  }
+}
+
+async function closeDebugDialog() {
+  await stopDebugging({ quiet: true });
+  if (dom.developmentDebugDialog.open) dom.developmentDebugDialog.close();
+}
+
+function firmwareBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+}
+
+function firmwareBuildOutput(result, project) {
+  const lines = [];
+  const memory = result.memory;
+  if (memory?.flash && memory?.ram) {
+    lines.push(
+      `FLASH: ${firmwareBytes(memory.flash.used)} / ${firmwareBytes(memory.flash.capacity)} (${memory.flash.percent} %)`
+    );
+    lines.push(`RAM: ${firmwareBytes(memory.ram.used)} / ${firmwareBytes(memory.ram.capacity)} (${memory.ram.percent} %)`);
+  }
+  const artifacts = Array.isArray(result.artifacts) ? result.artifacts : [];
+  if (artifacts.length) {
+    lines.push('', ...artifacts.map((artifact) => `${artifact.name} · ${firmwareBytes(artifact.bytes)}`));
+  }
+  const device = configuredFirmwareDevice(project);
+  if (!device?.programmer) {
+    lines.push('', 'Na zápis potom vyber programátor v nastavení firmvéru.');
+  } else if (device.programmer.requiresPort && !device.port) {
+    lines.push('', 'Na zápis potom vyber sériový port v nastavení firmvéru.');
+  } else {
+    lines.push('', 'Artefakty sú pripravené; zápis do zariadenia vyžiada samostatné potvrdenie.');
+  }
+  return lines.join('\n');
+}
+
+function renderFirmwareProgramButton(project = activeProject()) {
+  const isFirmware = project?.kind === 'firmware';
+  const device = configuredFirmwareDevice(project);
+  const programmer = device?.programmer;
+  const portReady = !programmer?.requiresPort || Boolean(device?.port);
+  const available = Boolean(isFirmware && programmer?.writeAvailable && portReady);
+  dom.developmentFirmwareProgram.hidden = !isFirmware;
+  dom.developmentFirmwareProgram.disabled = !available;
+  const title = available
+    ? 'Zapísať posledný zostavený firmvér do zariadenia'
+    : !programmer
+      ? 'Najprv vyber programátor v nastavení firmvéru.'
+      : !portReady
+        ? 'Pre vybraný programátor nastav sériový port.'
+        : programmer.message || 'Zápis firmvéru zatiaľ nie je dostupný.';
+  dom.developmentFirmwareProgram.title = title;
+  dom.developmentFirmwareProgram.setAttribute('aria-label', title);
+}
+
+function renderSerialMonitorButton(project = activeProject()) {
+  const isFirmware = project?.kind === 'firmware';
+  const device = configuredFirmwareDevice(project);
+  const available = Boolean(isFirmware && serialMonitor?.available && device?.port);
+  dom.developmentSerialMonitor.hidden = !isFirmware;
+  dom.developmentSerialMonitor.disabled = !available;
+  const title = available
+    ? `Otvoriť sériový monitor (${device.port} · ${device.baudRate} Bd)`
+    : !serialMonitor?.available
+      ? serialMonitor?.message || 'Sériový monitor nie je dostupný.'
+      : 'V nastavení firmvéru vyber sériový port.';
+  dom.developmentSerialMonitor.title = title;
+  dom.developmentSerialMonitor.setAttribute('aria-label', title);
+}
+
+function serialMonitorOutputAtEnd() {
+  const output = dom.developmentSerialMonitorOutput;
+  return output.scrollHeight - output.scrollTop - output.clientHeight < 20;
+}
+
+function updateSerialMonitorSnapshot(snapshot) {
+  if (!snapshot) return;
+  const output = dom.developmentSerialMonitorOutput;
+  const wasAtEnd = serialMonitorOutputAtEnd();
+  if (snapshot.reset) output.textContent = '';
+  if (snapshot.text) {
+    output.textContent += snapshot.text;
+    if (output.textContent.length > 128 * 1024) {
+      output.textContent = output.textContent.slice(-96 * 1024);
+    }
+  }
+  if (wasAtEnd) output.scrollTop = output.scrollHeight;
+  serialMonitorCursor = Math.max(0, Number(snapshot.cursor) || serialMonitorCursor);
+  dom.developmentSerialMonitorPort.textContent = snapshot.port || '';
+  dom.developmentSerialMonitorBaud.textContent = snapshot.baudRate ? `${snapshot.baudRate} Bd` : '';
+  dom.developmentSerialMonitorStatus.textContent = snapshot.message || (snapshot.connected ? 'Pripojené.' : 'Odpojené.');
+  dom.developmentSerialMonitorStatus.dataset.state = snapshot.connected ? 'ready' : 'idle';
+  dom.developmentSerialMonitorSend.disabled = !snapshot.connected;
+  dom.developmentSerialMonitorStop.disabled = !serialMonitorSession;
+}
+
+function scheduleSerialMonitorPoll() {
+  window.clearTimeout(serialMonitorPollTimer);
+  if (!serialMonitorSession?.id) return;
+  serialMonitorPollTimer = window.setTimeout(() => void pollSerialMonitor(), 260);
+}
+
+async function pollSerialMonitor() {
+  const session = serialMonitorSession;
+  if (!session?.id) return;
+  try {
+    const snapshot = await runOperation(() => apiRequest(
+      `/development/projects/${encodeURIComponent(session.projectId)}/serial-monitor/${encodeURIComponent(session.id)}?cursor=${encodeURIComponent(serialMonitorCursor)}`,
+    ));
+    if (serialMonitorSession?.id !== session.id) return;
+    updateSerialMonitorSnapshot(snapshot);
+    if (snapshot.connected) scheduleSerialMonitorPoll();
+  } catch (error) {
+    if (serialMonitorSession?.id !== session.id) return;
+    serialMonitorSession = null;
+    dom.developmentSerialMonitorStatus.textContent = error.message || 'Sériový monitor sa odpojil.';
+    dom.developmentSerialMonitorStatus.dataset.state = 'error';
+    dom.developmentSerialMonitorSend.disabled = true;
+    dom.developmentSerialMonitorStop.disabled = true;
+  }
+}
+
+async function stopSerialMonitor() {
+  window.clearTimeout(serialMonitorPollTimer);
+  serialMonitorPollTimer = 0;
+  const session = serialMonitorSession;
+  serialMonitorSession = null;
+  dom.developmentSerialMonitorSend.disabled = true;
+  dom.developmentSerialMonitorStop.disabled = true;
+  if (!session?.id) return;
+  try {
+    await runOperation(() => apiRequest(
+      `/development/projects/${encodeURIComponent(session.projectId)}/serial-monitor/${encodeURIComponent(session.id)}`,
+      { method: 'DELETE' },
+    ));
+    dom.developmentSerialMonitorStatus.textContent = 'Odpojené.';
+    dom.developmentSerialMonitorStatus.dataset.state = 'idle';
+  } catch (error) {
+    dom.developmentSerialMonitorStatus.textContent = error.message || 'Sériový monitor sa nepodarilo odpojiť.';
+    dom.developmentSerialMonitorStatus.dataset.state = 'error';
+  }
+}
+
+async function openSerialMonitor() {
+  let project = activeProject();
+  if (!project || project.kind !== 'firmware' || !(await saveDevelopmentChanges())) return;
+  project = activeProject();
+  const device = configuredFirmwareDevice(project);
+  if (!project || !device?.port) return;
+  if (serialMonitorSession) await stopSerialMonitor();
+  dom.developmentSerialMonitorOutput.textContent = '';
+  serialMonitorCursor = 0;
+  dom.developmentSerialMonitorPort.textContent = device.port;
+  dom.developmentSerialMonitorBaud.textContent = `${device.baudRate} Bd`;
+  dom.developmentSerialMonitorStatus.textContent = 'Pripájam sériový port...';
+  dom.developmentSerialMonitorStatus.dataset.state = 'pending';
+  dom.developmentSerialMonitorSend.disabled = true;
+  dom.developmentSerialMonitorStop.disabled = true;
+  if (!dom.developmentSerialMonitorDialog.open) dom.developmentSerialMonitorDialog.showModal();
+  try {
+    const snapshot = await runOperation(() => apiRequest(
+      `/development/projects/${encodeURIComponent(project.id)}/serial-monitor`,
+      { method: 'POST', body: { baudRate: device.baudRate } },
+    ));
+    serialMonitorSession = { id: snapshot.sessionId, projectId: project.id };
+    updateSerialMonitorSnapshot(snapshot);
+    if (snapshot.connected) scheduleSerialMonitorPoll();
+    dom.developmentSerialMonitorInput.focus();
+  } catch (error) {
+    dom.developmentSerialMonitorStatus.textContent = error.message || 'Sériový port sa nepodarilo otvoriť.';
+    dom.developmentSerialMonitorStatus.dataset.state = 'error';
+    dom.developmentSerialMonitorSend.disabled = true;
+  } finally {
+    renderEditor();
+  }
+}
+
+async function sendSerialMonitorInput() {
+  const session = serialMonitorSession;
+  const text = dom.developmentSerialMonitorInput.value;
+  if (!session?.id || !text) return;
+  dom.developmentSerialMonitorSend.disabled = true;
+  try {
+    const snapshot = await runOperation(() => apiRequest(
+      `/development/projects/${encodeURIComponent(session.projectId)}/serial-monitor/${encodeURIComponent(session.id)}/send`,
+      { method: 'POST', body: { text, cursor: serialMonitorCursor } },
+    ));
+    if (serialMonitorSession?.id !== session.id) return;
+    dom.developmentSerialMonitorInput.value = '';
+    updateSerialMonitorSnapshot(snapshot);
+  } catch (error) {
+    dom.developmentSerialMonitorStatus.textContent = error.message || 'Dáta sa nepodarilo odoslať.';
+    dom.developmentSerialMonitorStatus.dataset.state = 'error';
+  } finally {
+    if (serialMonitorSession?.id === session.id && dom.developmentSerialMonitorStatus.dataset.state === 'ready') {
+      dom.developmentSerialMonitorSend.disabled = false;
+      dom.developmentSerialMonitorInput.focus();
+    }
+  }
+}
+
+function clearFirmwareProgrammingChallenge() {
+  firmwareProgrammingChallenge = null;
+  dom.developmentFirmwareProgramConfirmation.value = '';
+  dom.developmentFirmwareProgramConfirmation.disabled = false;
+  dom.developmentFirmwareProgramStatus.textContent = '';
+  dom.developmentFirmwareProgramSubmit.disabled = true;
+}
+
+function invalidateFirmwareProgrammingChallenge() {
+  if (!firmwareProgrammingChallenge) return;
+  firmwareProgrammingChallenge = null;
+  dom.developmentFirmwareProgramSubmit.disabled = true;
+  dom.developmentFirmwareProgramStatus.textContent = 'Kód sa zmenil. Zápis priprav znova.';
+}
+
+function syncFirmwareProgrammingConfirmation() {
+  const confirmation = dom.developmentFirmwareProgramConfirmation.value.trim().toUpperCase();
+  dom.developmentFirmwareProgramSubmit.disabled = !firmwareProgrammingChallenge
+    || confirmation !== firmwareProgrammingChallenge.confirmation;
+}
+
+function closeFirmwareProgrammingDialog() {
+  clearFirmwareProgrammingChallenge();
+  if (dom.developmentFirmwareProgramDialog.open) dom.developmentFirmwareProgramDialog.close();
+}
+
+async function openFirmwareProgramming() {
+  let project = activeProject();
+  if (!project || project.kind !== 'firmware') return;
+  if (!(await saveDevelopmentChanges())) return;
+  project = activeProject();
+  if (!project || project.kind !== 'firmware') return;
+  dom.developmentFirmwareProgram.disabled = true;
+  try {
+    const prepared = await runOperation(() => apiRequest(
+      `/development/projects/${encodeURIComponent(project.id)}/firmware-program`,
+      { method: 'POST' },
+    ));
+    firmwareProgrammingChallenge = prepared;
+    dom.developmentFirmwareProgramTarget.textContent = prepared.target || project.firmwareTarget?.label || 'Neznámy cieľ';
+    dom.developmentFirmwareProgrammer.textContent = prepared.programmer || 'Neznámy programátor';
+    dom.developmentFirmwareProgramPort.textContent = prepared.port || 'Bez sériového portu';
+    dom.developmentFirmwareProgramArtifact.textContent = prepared.artifact
+      ? `${prepared.artifact.name} (${firmwareBytes(prepared.artifact.bytes)})`
+      : 'Neznámy artefakt';
+    dom.developmentFirmwareProgramConfirmation.value = '';
+    dom.developmentFirmwareProgramStatus.textContent = `Na potvrdenie napíš ${prepared.confirmation}.`;
+    syncFirmwareProgrammingConfirmation();
+    if (!dom.developmentFirmwareProgramDialog.open) dom.developmentFirmwareProgramDialog.showModal();
+    dom.developmentFirmwareProgramConfirmation.focus();
+  } catch (error) {
+    firmwareProgrammingChallenge = null;
+    setConsoleExpanded(true);
+    setConsole({
+      phase: 'Zápis nepripravený',
+      compile: error.message || 'Firmvér sa nepodarilo pripraviť na zápis.',
+      output: 'Zariadenie nebolo otvorené ani zmenené.',
+    });
+  } finally {
+    renderEditor();
+  }
+}
+
+async function submitFirmwareProgramming(event) {
+  event.preventDefault();
+  const project = activeProject();
+  const prepared = firmwareProgrammingChallenge;
+  if (!project || !prepared || dom.developmentFirmwareProgramSubmit.disabled) return;
+  const confirmation = dom.developmentFirmwareProgramConfirmation.value.trim().toUpperCase();
+  dom.developmentFirmwareProgramSubmit.disabled = true;
+  dom.developmentFirmwareProgramConfirmation.disabled = true;
+  dom.developmentFirmwareProgramStatus.textContent = 'Zapisujem firmvér...';
+  try {
+    const result = await runOperation(() => apiRequest(
+      `/development/projects/${encodeURIComponent(project.id)}/firmware-program/confirm`,
+      { method: 'POST', body: { challenge: prepared.challenge, confirmation } },
+    ));
+    const execution = result.result || {};
+    setConsoleExpanded(true);
+    setConsole({
+      phase: result.programmed ? 'Firmvér zapísaný' : 'Chyba zápisu',
+      compile: result.summary || resultText(execution),
+      compileMeta: formatResultMeta(execution),
+      output: result.programmed
+        ? 'Zápis do zariadenia bol potvrdený nástrojom programátora.'
+        : 'Nástroj programátora firmvér nezapísal.',
+    });
+    clearFirmwareProgrammingChallenge();
+    if (dom.developmentFirmwareProgramDialog.open) dom.developmentFirmwareProgramDialog.close();
+  } catch (error) {
+    firmwareProgrammingChallenge = null;
+    dom.developmentFirmwareProgramConfirmation.disabled = false;
+    dom.developmentFirmwareProgramStatus.textContent = error.message || 'Zápis firmvéru zlyhal.';
+    setConsoleExpanded(true);
+    setConsole({
+      phase: 'Chyba zápisu',
+      compile: error.message || 'Firmvér sa nepodarilo zapísať.',
+      output: 'Skontroluj pripojenie a priprav zápis znova.',
+    });
+  } finally {
+    renderEditor();
+  }
+}
+
+async function buildFirmwareProject(project) {
+  binaryInspection = null;
+  renderBinaryInspectorButton(project);
+  setConsoleExpanded(true);
+  dom.developmentBuild.disabled = true;
+  clearDiagnostics();
+  setConsole({ phase: 'Zostavujem firmvér...', compile: '', output: 'Zariadenie sa pri zostavení neotvára.' });
+  try {
+    const result = await runOperation(() => apiRequest(
+      `/development/projects/${encodeURIComponent(project.id)}/firmware-build`,
+      { method: 'POST', body: { fileId: project.entryFileId } },
+    ));
+    const compile = result.compile || {};
+    const compileText = resultText(compile);
+    readDiagnostics(compileText);
+    setConsole({
+      phase: result.compiled ? 'Firmvér zostavený' : 'Chyba prekladu',
+      compile: compileText,
+      compileMeta: formatResultMeta(compile),
+      output: result.compiled
+        ? firmwareBuildOutput(result, project)
+        : 'Firmvér nebol vytvorený, pretože zostavenie zlyhalo.',
+    });
+  } catch (error) {
+    setConsole({ phase: 'Chyba prekladu', compile: error.message || 'Firmvér sa nepodarilo zostaviť.', output: '' });
+  } finally {
+    renderEditor();
+  }
+}
+
 async function runProject({ execute = true } = {}) {
   const project = activeProject();
   if (!project || !(await saveDevelopmentChanges())) return;
   if (project.kind === 'firmware') {
+    const toolchain = firmwareToolchainStatus(project.firmwareTargetId);
+    const buildStatus = firmwareBuildStatus(project.firmwareTargetId, project.language);
+    if (buildStatus.available) {
+      await buildFirmwareProject(project);
+      return;
+    }
+    const device = configuredFirmwareDevice(project);
     clearDiagnostics();
     setConsole({
-      phase: 'Čaká na toolchain',
-      compile: 'Pre tento firmvérový cieľ ešte nie je pripojený prekladač ani programátor.',
-      output: 'Zatiaľ možno upravovať súbory a nastavovať cieľ projektu.'
+      phase: toolchain.buildAvailable ? 'Čaká na programovanie' : 'Čaká na toolchain',
+      compile: buildStatus.message || toolchain.message,
+      output: toolchain.programmerAvailable
+        ? !device?.programmer
+          ? 'Vyber programátor v nastavení firmvéru. Zápis do zariadenia sa ešte nevykoná.'
+          : device.programmer.requiresPort && !device.port
+            ? 'Pre vybraný programátor ešte nastav sériový port. Zápis do zariadenia sa ešte nevykoná.'
+            : 'Pripojenie je uložené. Zápis do zariadenia pridáme až s výslovným potvrdením.'
+        : 'Zatiaľ možno upravovať súbory a nastavovať cieľ projektu.'
     });
     setConsoleExpanded(true);
     return;
@@ -2436,6 +4089,11 @@ async function runProject({ execute = true } = {}) {
     }));
     const compile = result.compile || {};
     const run = result.run || {};
+    const inspection = result.inspection?.available ? result.inspection : null;
+    binaryInspection = inspection
+      ? { projectId: project.id, buildProfileLabel: project.buildProfileLabel, data: inspection }
+      : null;
+    renderBinaryInspectorButton(project);
     const compileText = resultText(compile);
     readDiagnostics(compileText);
     setConsole({
@@ -2450,6 +4108,8 @@ async function runProject({ execute = true } = {}) {
       outputMeta: result.compiled && execute ? formatResultMeta(run) : ''
     });
   } catch (error) {
+    binaryInspection = null;
+    renderBinaryInspectorButton(project);
     clearDiagnostics();
     setConsole({ phase: 'Chyba', compile: error.message || 'Projekt sa nepodarilo spustiť.', output: '' });
   } finally {
@@ -2486,9 +4146,32 @@ export async function openDevelopmentPanel({ pinned = false } = {}) {
   }
 }
 
+export async function activateDevelopmentProject(
+  projectId,
+  { standardInput: nextStandardInput = '', runArguments: nextRunArguments = '', showTutorialGuide = false } = {}
+) {
+  if (!projectId || !isDevelopmentPanelOpen()) return false;
+  if (!projects.some((project) => project.id === projectId)) {
+    try {
+      await runOperation(loadWorkspace);
+    } catch {
+      return false;
+    }
+  }
+  if (!projects.some((project) => project.id === projectId)) return false;
+  if (projectId !== activeProjectId) await selectProject(projectId);
+  standardInput = String(nextStandardInput || '');
+  runArguments = String(nextRunArguments || '');
+  dom.developmentInput.value = standardInput;
+  dom.developmentRunArguments.value = runArguments;
+  if (showTutorialGuide && projectTutorialLink()) setTutorialGuideOpen(true);
+  return activeProjectId === projectId;
+}
+
 export function closeDevelopmentPanel({ force = false } = {}) {
   if (!force && hasUnsavedDevelopmentChanges()) return false;
   window.clearTimeout(saveTimer);
+  window.clearTimeout(symbolOutlineRefreshTimer);
   if (dom.developmentProjectDialog.open) dom.developmentProjectDialog.close();
   if (dom.developmentProjectImportDialog.open) dom.developmentProjectImportDialog.close();
   if (dom.developmentTestDialog.open) dom.developmentTestDialog.close();
@@ -2497,6 +4180,13 @@ export function closeDevelopmentPanel({ force = false } = {}) {
   if (dom.developmentShortcutsDialog.open) dom.developmentShortcutsDialog.close();
   if (dom.developmentProblemsDialog.open) dom.developmentProblemsDialog.close();
   if (dom.developmentReferencesDialog.open) dom.developmentReferencesDialog.close();
+  if (dom.developmentSymbolRenameDialog.open) dom.developmentSymbolRenameDialog.close();
+  if (dom.developmentBinaryInspectorDialog.open) dom.developmentBinaryInspectorDialog.close();
+  closeFirmwareProgrammingDialog();
+  if (dom.developmentSerialMonitorDialog.open) dom.developmentSerialMonitorDialog.close();
+  void stopSerialMonitor();
+  void closeDebugDialog();
+  setTutorialGuideOpen(false);
   projectDialogProjectId = '';
   if (dom.developmentFileDialog.open) dom.developmentFileDialog.close();
   panelPinned = false;
@@ -2508,9 +4198,14 @@ export function closeDevelopmentPanel({ force = false } = {}) {
 export function initializeDevelopment() {
   setFocusMode(false);
   setConsoleExpanded(false);
+  restoreDevelopmentLayout();
   initializeDevelopmentEditor({
     mount: dom.developmentCodeMount,
     onChange: () => {
+      binaryInspection = null;
+      invalidateFirmwareProgrammingChallenge();
+      renderSymbolRenameButton();
+      renderBinaryInspectorButton();
       if (!dom.developmentFindBar.hidden) updateFindMatches({ preserveMatch: true });
       updateDirtyFileState();
       renderSymbolOutline();
@@ -2528,9 +4223,13 @@ export function initializeDevelopment() {
     onSave: () => void saveDevelopmentChanges(),
     onRun: () => void runProject(),
     onGoToLine: openGoToLine,
-    onNavigateSymbol: (symbol) => void openSymbolDefinition(symbol),
+    onNavigateSymbol: (symbol, position) => void openSymbolDefinition(symbol, position),
     onNavigateBack: () => void openPreviousDefinition(),
-    onFindReferences: (symbol) => openSymbolReferences(symbol),
+    onFindReferences: (symbol, position) => void openSymbolReferences(symbol, position),
+    onRenameSymbol: (symbol, position) => openSymbolRename(symbol, position),
+    onSelectionChange: () => renderSymbolRenameButton(),
+    onFormat: formatActiveFile,
+    onLanguageServiceRequest: requestEditorLanguageService,
   });
   initializePaneResizers();
   initializeDevelopmentTransfer({
@@ -2558,6 +4257,10 @@ export function initializeDevelopment() {
   });
   dom.developmentProjectKind.addEventListener('change', () => syncProjectKindFields());
   dom.developmentFirmwareTargetInput.addEventListener('change', () => syncProjectKindFields());
+  dom.developmentFirmwareProgrammerInput.addEventListener('change', () => renderFirmwareDeviceSettings());
+  dom.developmentFirmwarePortInput.addEventListener('change', () => renderFirmwareDeviceSettings());
+  dom.developmentFirmwareBaudInput.addEventListener('change', () => renderFirmwareDeviceSettings());
+  dom.developmentFirmwareDevicesRefresh.addEventListener('click', () => void refreshFirmwareDevices());
   dom.developmentProjectLanguageInput.addEventListener('change', () => populateProjectTemplates());
   dom.developmentTargetConfigure.addEventListener('click', () => void configureProject());
   dom.developmentDefinitionBack.addEventListener('click', () => void openPreviousDefinition());
@@ -2565,7 +4268,12 @@ export function initializeDevelopment() {
     symbolBrowserExpanded = !symbolBrowserExpanded;
     renderSymbolOutline();
   });
+  dom.developmentSymbolBrowserRefresh.addEventListener('click', () => void refreshSymbolOutline());
   dom.developmentQuickOpen.addEventListener('click', () => openQuickOpen('files'));
+  dom.developmentTutorialGuideToggle.addEventListener('click', () => setTutorialGuideOpen(!tutorialGuideOpen));
+  dom.developmentTutorialGuideOpenSource.addEventListener('click', openTutorialSource);
+  dom.developmentTutorialGuideClose.addEventListener('click', () => setTutorialGuideOpen(false));
+  dom.developmentSymbolRename.addEventListener('click', () => openSymbolRename());
   dom.developmentShortcuts.addEventListener('click', () => {
     if (!dom.developmentShortcutsDialog.open) dom.developmentShortcutsDialog.showModal();
   });
@@ -2574,11 +4282,20 @@ export function initializeDevelopment() {
   dom.developmentShortcutsCancel.addEventListener('click', () => dom.developmentShortcutsDialog.close());
   dom.developmentProblemsCancel.addEventListener('click', () => dom.developmentProblemsDialog.close());
   dom.developmentReferencesCancel.addEventListener('click', () => dom.developmentReferencesDialog.close());
+  dom.developmentSymbolRenameCancel.addEventListener('click', () => dom.developmentSymbolRenameDialog.close());
   installDialogBackdropClose(dom.developmentQuickOpenDialog, () => dom.developmentQuickOpenDialog.close());
   installDialogBackdropClose(dom.developmentGoToLineDialog, () => dom.developmentGoToLineDialog.close());
   installDialogBackdropClose(dom.developmentShortcutsDialog, () => dom.developmentShortcutsDialog.close());
   installDialogBackdropClose(dom.developmentProblemsDialog, () => dom.developmentProblemsDialog.close());
   installDialogBackdropClose(dom.developmentReferencesDialog, () => dom.developmentReferencesDialog.close());
+  installDialogBackdropClose(dom.developmentSymbolRenameDialog, () => dom.developmentSymbolRenameDialog.close());
+  dom.developmentSymbolRenameForm.addEventListener('submit', (event) => void renameProjectSymbol(event));
+  dom.developmentSymbolRenameInput.addEventListener('input', () => {
+    if (renamePreview && renamePreview.newName !== dom.developmentSymbolRenameInput.value.trim()) {
+      dom.developmentSymbolRenameStatus.textContent = '';
+      resetSymbolRenamePreview();
+    }
+  });
   dom.developmentQuickOpenFiles.addEventListener('click', () => setQuickOpenMode('files'));
   dom.developmentQuickOpenSymbols.addEventListener('click', () => setQuickOpenMode('symbols'));
   dom.developmentQuickOpenSnippets.addEventListener('click', () => setQuickOpenMode('snippets'));
@@ -2697,12 +4414,53 @@ export function initializeDevelopment() {
   dom.developmentFolderCreate.addEventListener('click', () => void openFileDialog('folder'));
   dom.developmentEntryFile.addEventListener('click', () => void setActiveFileAsEntry());
   dom.developmentFileRename.addEventListener('click', () => void openFileDialog('rename'));
+  dom.developmentFormat.addEventListener('click', formatActiveFile);
   dom.developmentFileTreeRoot.addEventListener('click', () => {
     selectedFolderId = '';
     renderFileTree();
   });
   dom.developmentFileDelete.addEventListener('click', () => void deleteFile());
   dom.developmentBuild.addEventListener('click', () => void runProject({ execute: false }));
+  dom.developmentSerialMonitor.addEventListener('click', () => void openSerialMonitor());
+  dom.developmentFirmwareProgram.addEventListener('click', () => void openFirmwareProgramming());
+  dom.developmentBinaryInspector.addEventListener('click', openBinaryInspector);
+  dom.developmentBinaryInspectorClose.addEventListener('click', () => dom.developmentBinaryInspectorDialog.close());
+  installDialogBackdropClose(dom.developmentBinaryInspectorDialog, () => dom.developmentBinaryInspectorDialog.close());
+  dom.developmentFirmwareProgramCancel.addEventListener('click', closeFirmwareProgrammingDialog);
+  installDialogBackdropClose(dom.developmentFirmwareProgramDialog, closeFirmwareProgrammingDialog);
+  dom.developmentFirmwareProgramDialog.addEventListener('close', clearFirmwareProgrammingChallenge);
+  dom.developmentFirmwareProgramConfirmation.addEventListener('input', syncFirmwareProgrammingConfirmation);
+  dom.developmentFirmwareProgramForm.addEventListener('submit', (event) => void submitFirmwareProgramming(event));
+  dom.developmentSerialMonitorClose.addEventListener('click', () => dom.developmentSerialMonitorDialog.close());
+  dom.developmentSerialMonitorStop.addEventListener('click', () => void stopSerialMonitor());
+  dom.developmentSerialMonitorClear.addEventListener('click', () => {
+    dom.developmentSerialMonitorOutput.textContent = '';
+  });
+  dom.developmentSerialMonitorCopy.addEventListener('click', () => void copyDevelopmentConsoleText(
+    dom.developmentSerialMonitorOutput.textContent,
+    dom.developmentSerialMonitorCopy,
+    'Sériový výpis'
+  ));
+  dom.developmentSerialMonitorSend.addEventListener('click', () => void sendSerialMonitorInput());
+  dom.developmentSerialMonitorInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      void sendSerialMonitorInput();
+    }
+  });
+  installDialogBackdropClose(dom.developmentSerialMonitorDialog, () => dom.developmentSerialMonitorDialog.close());
+  dom.developmentSerialMonitorDialog.addEventListener('close', () => void stopSerialMonitor());
+  dom.developmentDebug.addEventListener('click', () => void startDebugging());
+  dom.developmentDebugClose.addEventListener('click', () => void closeDebugDialog());
+  dom.developmentDebugStop.addEventListener('click', () => void stopDebugging());
+  dom.developmentDebugStep.addEventListener('click', () => void runDebugCommand('step'));
+  dom.developmentDebugNext.addEventListener('click', () => void runDebugCommand('next'));
+  dom.developmentDebugContinue.addEventListener('click', () => void runDebugCommand('continue'));
+  dom.developmentDebugLocation.addEventListener('click', () => void openDebugLocation(debugSession?.location));
+  dom.developmentDebugDialog.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    void closeDebugDialog();
+  });
   dom.developmentRun.addEventListener('click', () => void runProject());
   dom.developmentTests.addEventListener('click', () => void openDevelopmentTests());
   dom.developmentTestCancel.addEventListener('click', () => void closeDevelopmentTests());
@@ -2714,6 +4472,7 @@ export function initializeDevelopment() {
   dom.developmentTestCreate.addEventListener('click', () => void createDevelopmentTest());
   dom.developmentTestUseOutput.addEventListener('click', useLastRunOutputForTest);
   dom.developmentTestRunAll.addEventListener('click', () => void runAllDevelopmentTests());
+  dom.developmentTestResultOpenLocation.addEventListener('click', () => void openDisplayedTestFailureLocation());
   dom.developmentTestCaseForm.addEventListener('submit', (event) => {
     event.preventDefault();
     void saveDevelopmentTest();

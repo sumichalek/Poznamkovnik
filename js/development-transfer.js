@@ -53,8 +53,12 @@ function projectManifest(project, tests = []) {
       language: String(project?.language || 'c'),
       kind: String(project?.kind || 'program'),
       firmwareTargetId: String(project?.firmwareTargetId || ''),
+      firmwareProgrammerId: String(project?.firmwareProgrammerId || ''),
+      firmwareSerialPort: String(project?.firmwareSerialPort || ''),
+      firmwareSerialBaud: Number(project?.firmwareSerialBaud) || 115200,
       buildProfile: String(project?.buildProfile || 'debug'),
       runArguments: String(project?.runArguments || ''),
+      tutorialLink: project?.tutorialLink || undefined,
       entryPath: entry ? projectPath(project, entry) : '',
       files,
       tests: tests.map((test) => ({

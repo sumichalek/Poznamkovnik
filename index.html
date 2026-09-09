@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sk" data-app-version="0.56.26">
+<html lang="sk" data-app-version="0.56.27">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,8 +8,8 @@
       const savedTheme = localStorage.getItem('knowledge-theme') || 'focus';
       document.documentElement.dataset.theme = savedTheme === 'contrast' ? 'contrast-light' : savedTheme;
     </script>
-  <link rel="stylesheet" href="style.css?v=0.56.26" />
-    <link rel="stylesheet" href="assets/app.css?v=0.56.26" />
+  <link rel="stylesheet" href="style.css?v=0.56.27" />
+    <link rel="stylesheet" href="assets/app.css?v=0.56.27" />
   </head>
   <body>
     <main id="login-screen" class="login-screen" aria-labelledby="login-title">
@@ -1130,6 +1130,7 @@
                 <p id="tutorial-runtime-status" class="tutorial-runtime-status" aria-live="polite"></p>
                 <button id="tutorial-markdown-import" class="panel-icon-button" type="button" aria-label="Importovať Markdown do učebnice" title="Importovať Markdown"><span data-app-icon="upload"></span></button>
                 <button id="tutorial-markdown-export" class="panel-icon-button" type="button" aria-label="Exportovať učebnicu do Markdownu" title="Exportovať učebnicu do Markdownu"><span data-app-icon="download"></span></button>
+                <button id="tutorial-page-progress" class="panel-icon-button tutorial-page-progress-button" type="button" aria-pressed="false" aria-label="Označiť tému ako prejdenú" title="Označiť tému ako prejdenú" hidden><span data-app-icon="check"></span></button>
                 <button id="tutorial-relationships-button" class="panel-icon-button" type="button" aria-label="Zobraziť prepojenia stránky učebnice" title="Prepojenia" hidden><span data-app-icon="link"></span></button>
               </div>
             </header>
@@ -1137,6 +1138,23 @@
             <section id="tutorial-examples-section" class="tutorial-examples-section" hidden>
               <header><h3>Skúšobné príklady</h3></header>
               <div id="tutorial-examples-list" class="tutorial-examples-list"></div>
+            </section>
+            <section id="tutorial-practice-section" class="tutorial-practice-section" hidden>
+              <header>
+                <div>
+                  <h3>Cvičenie</h3>
+                  <p id="tutorial-practice-status" aria-live="polite"></p>
+                </div>
+                <div class="tutorial-practice-actions">
+                  <button id="tutorial-practice-generate" class="panel-icon-button" type="button" aria-label="Pripraviť cvičenie" title="Pripraviť cvičenie"><span data-app-icon="sparkles"></span></button>
+                  <button id="tutorial-practice-open" class="panel-icon-button primary" type="button" aria-label="Otvoriť cvičenie v skúšobni" title="Otvoriť v skúšobni" disabled><span data-app-icon="code"></span></button>
+                </div>
+              </header>
+              <div id="tutorial-practice-content" class="tutorial-practice-content" hidden>
+                <p id="tutorial-practice-description"></p>
+                <ul id="tutorial-practice-hints"></ul>
+                <p class="tutorial-practice-input"><span>Kontrolný vstup</span><code id="tutorial-practice-input"></code></p>
+              </div>
             </section>
             <section class="tutorial-notes-section" aria-labelledby="tutorial-notes-title">
               <header>
@@ -1161,6 +1179,7 @@
               <h2 id="tutorial-playground-title">Skúšobňa C</h2>
             </div>
             <div class="tutorial-playground-actions">
+              <button id="tutorial-playground-open-development" class="panel-icon-button" type="button" aria-label="Otvoriť príklad vo Vývoji" title="Otvoriť vo Vývoji"><span data-app-icon="code"></span></button>
               <button id="tutorial-playground-fullscreen" class="panel-icon-button" type="button" aria-label="Otvoriť skúšobňu na celej ploche" title="Celá plocha"><span data-app-icon="maximize"></span></button>
               <button id="tutorial-playground-close" class="panel-icon-button" type="button" aria-label="Zavrieť skúšobňu" title="Zavrieť skúšobňu"><span data-app-icon="close"></span></button>
             </div>
@@ -1218,7 +1237,10 @@
             <section id="development-symbol-browser" class="development-symbol-browser" aria-labelledby="development-symbol-browser-title" hidden>
               <header>
                 <h3 id="development-symbol-browser-title">Symboly</h3>
-                <button id="development-symbol-browser-toggle" class="panel-icon-button" type="button" aria-expanded="true" aria-label="Zbaliť osnovu symbolov" title="Zbaliť osnovu symbolov"><span data-app-icon="chevron-down"></span></button>
+                <div class="development-symbol-browser-actions">
+                  <button id="development-symbol-browser-refresh" class="panel-icon-button" type="button" aria-label="Spresniť osnovu cez jazykový server" title="Spresniť osnovu cez jazykový server"><span data-app-icon="rotate-ccw"></span></button>
+                  <button id="development-symbol-browser-toggle" class="panel-icon-button" type="button" aria-expanded="true" aria-label="Zbaliť osnovu symbolov" title="Zbaliť osnovu symbolov"><span data-app-icon="chevron-down"></span></button>
+                </div>
               </header>
               <div id="development-symbol-list" class="development-symbol-list" role="navigation" aria-label="Osnova otvoreného súboru"></div>
             </section>
@@ -1243,6 +1265,8 @@
                     <button id="development-target-configure" class="panel-icon-button" type="button" aria-label="Nastaviť cieľ firmvéru" title="Nastaviť cieľ firmvéru" hidden><span data-app-icon="settings"></span></button>
                     <button id="development-definition-back" class="panel-icon-button" type="button" aria-label="Späť na miesto použitia" title="Späť na miesto použitia (Ctrl+Alt+šípka doľava)" hidden disabled><span data-app-icon="arrow-left"></span></button>
                     <button id="development-quick-open" class="panel-icon-button" type="button" aria-label="Rýchlo otvoriť súbor" title="Rýchlo otvoriť súbor alebo symbol (Ctrl+P)"><span data-app-icon="search"></span></button>
+                    <button id="development-tutorial-guide-toggle" class="panel-icon-button" type="button" aria-pressed="false" aria-label="Zobraziť výklad z učebnice" title="Výklad z učebnice" hidden><span data-app-icon="book-open"></span></button>
+                    <button id="development-symbol-rename" class="panel-icon-button" type="button" aria-label="Premenovať symbol" title="Premenovať symbol (F2)"><span data-app-icon="pencil"></span></button>
                     <button id="development-shortcuts" class="panel-icon-button" type="button" aria-label="Skratky Vývoja" title="Skratky Vývoja"><span data-app-icon="keyboard"></span></button>
                     <button id="development-focus-mode" class="panel-icon-button" type="button" aria-pressed="false" aria-label="Otvoriť editor na celej ploche" title="Celá plocha"><span data-app-icon="maximize"></span></button>
                   </div>
@@ -1253,19 +1277,24 @@
                     <button id="development-entry-file" class="panel-icon-button" type="button" aria-pressed="false" aria-label="Nastaviť ako hlavný súbor" title="Nastaviť ako hlavný súbor"><span data-app-icon="target"></span></button>
                     <button id="development-file-rename" class="panel-icon-button" type="button" aria-label="Premenovať otvorený súbor" title="Premenovať otvorený súbor"><span data-app-icon="pencil"></span></button>
                     <button id="development-find-toggle" class="panel-icon-button" type="button" aria-expanded="false" aria-label="Hľadať v súbore" title="Hľadať v súbore (Ctrl+F)"><span data-app-icon="search"></span></button>
+                    <button id="development-format" class="panel-icon-button" type="button" aria-label="Zarovnať odsadenie otvoreného súboru" title="Zarovnať odsadenie (Ctrl+Alt+F)"><span data-app-icon="indent"></span></button>
                     <button id="development-file-delete" class="panel-icon-button danger" type="button" aria-label="Odstrániť otvorený súbor" title="Odstrániť súbor"><span data-app-icon="trash"></span></button>
                   </div>
                   <div class="development-toolbar-group development-toolbar-group-run" role="group" aria-label="Preklad, testy a spustenie">
                     <button id="development-save" class="panel-icon-button" type="button" aria-label="Uložiť súbor" title="Uložiť (Ctrl+S)"><span data-app-icon="save"></span></button>
                     <button id="development-tests" class="panel-icon-button" type="button" aria-label="Testy projektu" title="Testy projektu"><span data-app-icon="list-check"></span></button>
                     <button id="development-build" class="panel-icon-button" type="button" aria-label="Preložiť projekt" title="Preložiť bez spustenia (Ctrl+Shift+Enter)"><span data-app-icon="code"></span></button>
+                    <button id="development-serial-monitor" class="panel-icon-button" type="button" aria-label="Otvoriť sériový monitor" title="Sériový monitor" hidden disabled><span data-app-icon="terminal"></span></button>
+                    <button id="development-firmware-program" class="panel-icon-button" type="button" aria-label="Zapísať firmvér do zariadenia" title="Zapísať firmvér do zariadenia" hidden disabled><span data-app-icon="upload"></span></button>
+                    <button id="development-debug" class="panel-icon-button" type="button" aria-label="Ladiť C alebo C++ projekt" title="Ladiť C alebo C++ projekt" hidden><span data-app-icon="bug"></span></button>
+                    <button id="development-binary-inspector" class="panel-icon-button" type="button" aria-label="Rozbor binárky" title="Rozbor binárky" hidden disabled><span data-app-icon="chip"></span></button>
                     <output id="development-console-status" class="development-run-status" data-state="ready" aria-live="polite" aria-label="Skúšobňa pripravená" title="Skúšobňa pripravená">Pripravená</output>
                     <button id="development-run" class="development-run-button" type="button"><span data-app-icon="play"></span><span>Spustiť</span></button>
                   </div>
                 </div>
               </div>
               <div class="development-editor-grid">
-                <section class="development-code-section">
+                <section id="development-code-section" class="development-code-section">
                   <div id="development-find-bar" class="development-find-bar" hidden>
                     <label class="development-find-field"><span class="visually-hidden">Hľadať</span><input id="development-find-input" type="search" autocomplete="off" spellcheck="false" placeholder="Hľadať v súbore"></label>
                     <button id="development-find-scope" class="panel-icon-button" type="button" aria-pressed="false" aria-label="Hľadať v projekte" title="Hľadať v projekte (Ctrl+Shift+F)"><span data-app-icon="folder"></span></button>
@@ -1281,6 +1310,20 @@
                   <div class="development-code-editor">
                     <div id="development-code-mount"></div>
                   </div>
+                  <div id="development-tutorial-guide-resize" class="development-resize-handle development-resize-handle-vertical development-tutorial-guide-resize" role="separator" aria-label="Zmeniť šírku výkladu" aria-orientation="vertical" tabindex="0" hidden></div>
+                  <aside id="development-tutorial-guide" class="development-tutorial-guide" aria-label="Výklad z učebnice" hidden>
+                    <header>
+                    <div>
+                      <p id="development-tutorial-guide-topic" class="development-tutorial-guide-topic"></p>
+                      <h3 id="development-tutorial-guide-title">Učebnica</h3>
+                    </div>
+                    <span class="development-tutorial-guide-actions">
+                      <button id="development-tutorial-guide-open-source" class="panel-icon-button" type="button" aria-label="Otvoriť príklad v Učebnici" title="Späť do Učebnice"><span data-app-icon="book-open"></span></button>
+                      <button id="development-tutorial-guide-close" class="panel-icon-button" type="button" aria-label="Skryť výklad z učebnice" title="Skryť výklad"><span data-app-icon="close"></span></button>
+                    </span>
+                  </header>
+                    <article id="development-tutorial-guide-content"></article>
+                  </aside>
                 </section>
                 <div id="development-editor-resize" class="development-resize-handle development-resize-handle-horizontal" role="separator" aria-label="Zmeniť výšku konzoly" aria-orientation="horizontal" tabindex="0"></div>
                 <section id="development-console-section" class="development-console-section is-collapsed" aria-label="Konzola">
@@ -1329,6 +1372,16 @@
           <div id="development-firmware-fields" class="development-firmware-fields" hidden>
             <label>Cieľ<select id="development-firmware-target-input" name="firmware-target"></select></label>
           </div>
+          <section id="development-firmware-device-fields" class="development-firmware-device-fields" hidden aria-label="Pripojenie firmvéru">
+            <header>
+              <span>Pripojenie</span>
+              <button id="development-firmware-devices-refresh" class="panel-icon-button" type="button" aria-label="Obnoviť zoznam zariadení" title="Obnoviť zoznam zariadení"><span data-app-icon="rotate-ccw"></span></button>
+            </header>
+            <label>Programátor<select id="development-firmware-programmer-input" name="firmware-programmer"></select></label>
+            <label>Port<select id="development-firmware-port-input" name="firmware-port"></select></label>
+            <label>Rýchlosť<select id="development-firmware-baud-input" name="firmware-baud"></select></label>
+            <output id="development-firmware-device-status" class="form-status" aria-live="polite"></output>
+          </section>
           <p id="development-project-form-status" class="form-status" aria-live="polite"></p>
           <footer><button id="development-project-submit" class="primary-action-button" type="submit"><span data-app-icon="plus"></span><span>Vytvoriť projekt</span></button></footer>
         </form>
@@ -1379,13 +1432,16 @@
             <div><dt><kbd>Ctrl</kbd><kbd>G</kbd></dt><dd>Prejsť na riadok</dd></div>
             <div><dt><kbd>Ctrl</kbd><kbd>H</kbd></dt><dd>Nahradiť v súbore</dd></div>
             <div><dt><kbd>Ctrl</kbd><kbd>S</kbd></dt><dd>Uložiť zmeny</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>F</kbd></dt><dd>Zarovnať odsadenie súboru</dd></div>
             <div><dt><kbd>Ctrl</kbd><kbd>Enter</kbd></dt><dd>Preložiť a spustiť</dd></div>
             <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Enter</kbd></dt><dd>Len preložiť</dd></div>
             <div><dt><kbd>Tab</kbd> / <kbd>Shift</kbd><kbd>Tab</kbd></dt><dd>Odsadiť alebo zrušiť odsadenie riadkov</dd></div>
             <div><dt><kbd>Ctrl</kbd><kbd>/</kbd></dt><dd>Komentár alebo odkomentovanie riadkov</dd></div>
             <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>[</kbd> / <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>]</kbd></dt><dd>Zbaliť alebo rozbaliť blok kódu</dd></div>
             <div><dt><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>&larr;</kbd></dt><dd>Späť z definície</dd></div>
-            <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>F12</kbd></dt><dd>Zobraziť definíciu a použitia symbolu</dd></div>
+            <div><dt><kbd>F12</kbd></dt><dd>Prejsť na definíciu symbolu</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>F12</kbd></dt><dd>Zobraziť použitia symbolu</dd></div>
+            <div><dt><kbd>F2</kbd></dt><dd>Premenovať symbol v projekte</dd></div>
             <div><dt><kbd>Esc</kbd></dt><dd>Zavrieť dopĺňanie alebo vyhľadávanie</dd></div>
           </dl>
         </section>
@@ -1414,6 +1470,122 @@
             <button id="development-references-cancel" class="panel-icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
           </header>
           <div id="development-references-list" class="development-references-list" role="listbox" aria-label="Definícia a použitia symbolu"></div>
+        </section>
+      </dialog>
+
+      <dialog id="development-symbol-rename-dialog" class="app-dialog development-symbol-rename-dialog" aria-labelledby="development-symbol-rename-title">
+        <form id="development-symbol-rename-form" class="development-symbol-rename-form" novalidate>
+          <header>
+            <h2 id="development-symbol-rename-title">Premenovať symbol</h2>
+            <button id="development-symbol-rename-cancel" class="panel-icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+          </header>
+          <label>Nový názov<input id="development-symbol-rename-input" type="text" maxlength="200" autocomplete="off" spellcheck="false" required></label>
+          <p id="development-symbol-rename-status" class="form-status" aria-live="polite"></p>
+          <section id="development-symbol-rename-preview" class="development-symbol-rename-preview" aria-label="Náhľad zmien" hidden>
+            <strong>Náhľad zmien</strong>
+            <div id="development-symbol-rename-preview-list" role="list"></div>
+          </section>
+          <footer><button id="development-symbol-rename-submit" class="primary-action-button" type="submit"><span data-app-icon="pencil"></span><span>Premenovať</span></button></footer>
+        </form>
+      </dialog>
+
+      <dialog id="development-binary-inspector-dialog" class="app-dialog development-binary-inspector-dialog" aria-labelledby="development-binary-inspector-title">
+        <section class="development-binary-inspector">
+          <header>
+            <div>
+              <h2 id="development-binary-inspector-title">Rozbor binárky</h2>
+              <p id="development-binary-inspector-summary"></p>
+            </div>
+            <button id="development-binary-inspector-close" class="panel-icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+          </header>
+          <dl id="development-binary-inspector-memory" class="development-binary-memory" aria-label="Veľkosť binárky"></dl>
+          <div class="development-binary-inspector-grid">
+            <section aria-labelledby="development-binary-sections-title">
+              <header><h3 id="development-binary-sections-title">Sekcie</h3></header>
+              <div id="development-binary-inspector-sections" class="development-binary-list" role="list"></div>
+            </section>
+            <section aria-labelledby="development-binary-symbols-title">
+              <header><h3 id="development-binary-symbols-title">Symboly</h3></header>
+              <div id="development-binary-inspector-symbols" class="development-binary-list" role="list"></div>
+            </section>
+          </div>
+        </section>
+      </dialog>
+
+      <dialog id="development-firmware-program-dialog" class="app-dialog development-firmware-program-dialog" aria-labelledby="development-firmware-program-title">
+        <form id="development-firmware-program-form" class="development-firmware-program-form" novalidate>
+          <header>
+            <div>
+              <h2 id="development-firmware-program-title">Zapísať firmvér</h2>
+              <p>Obsah pamäte vybraného čipu sa nahradí.</p>
+            </div>
+            <button id="development-firmware-program-cancel" class="panel-icon-button" type="button" aria-label="Zavrieť" title="Zavrieť"><span data-app-icon="close"></span></button>
+          </header>
+          <dl class="development-firmware-program-details">
+            <div><dt>Cieľ</dt><dd id="development-firmware-program-target"></dd></div>
+            <div><dt>Programátor</dt><dd id="development-firmware-programmer"></dd></div>
+            <div><dt>Port</dt><dd id="development-firmware-program-port"></dd></div>
+            <div><dt>Artefakt</dt><dd id="development-firmware-program-artifact"></dd></div>
+          </dl>
+          <label>Potvrdenie<input id="development-firmware-program-confirmation" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ZAPISAT" required></label>
+          <p id="development-firmware-program-status" class="form-status" aria-live="polite"></p>
+          <footer>
+            <button id="development-firmware-program-submit" class="primary-action-button" type="submit" disabled><span data-app-icon="upload"></span><span>Zapísať firmvér</span></button>
+          </footer>
+        </form>
+      </dialog>
+
+      <dialog id="development-serial-monitor-dialog" class="app-dialog development-serial-monitor-dialog" aria-labelledby="development-serial-monitor-title">
+        <section class="development-serial-monitor">
+          <header>
+            <div>
+              <h2 id="development-serial-monitor-title">Sériový monitor</h2>
+              <p id="development-serial-monitor-status" class="form-status" aria-live="polite"></p>
+            </div>
+            <button id="development-serial-monitor-close" class="panel-icon-button" type="button" aria-label="Zavrieť sériový monitor" title="Zavrieť"><span data-app-icon="close"></span></button>
+          </header>
+          <div class="development-serial-monitor-meta"><span id="development-serial-monitor-port"></span><span id="development-serial-monitor-baud"></span></div>
+          <pre id="development-serial-monitor-output" aria-live="polite"></pre>
+          <div class="development-serial-monitor-compose">
+            <label class="visually-hidden" for="development-serial-monitor-input">Odoslať do sériového portu</label>
+            <textarea id="development-serial-monitor-input" rows="2" maxlength="8192" spellcheck="false" autocomplete="off" placeholder="Odoslať do zariadenia"></textarea>
+            <button id="development-serial-monitor-send" class="panel-icon-button" type="button" aria-label="Odoslať do zariadenia" title="Odoslať do zariadenia (Ctrl+Enter)" disabled><span data-app-icon="arrow-right"></span></button>
+          </div>
+          <footer>
+            <button id="development-serial-monitor-clear" class="panel-icon-button" type="button" aria-label="Vyčistiť zobrazenie" title="Vyčistiť zobrazenie"><span data-app-icon="eraser"></span></button>
+            <button id="development-serial-monitor-copy" class="panel-icon-button" type="button" aria-label="Kopírovať výpis" title="Kopírovať výpis"><span data-app-icon="duplicate"></span></button>
+            <button id="development-serial-monitor-stop" class="panel-icon-button danger" type="button" aria-label="Odpojiť sériový monitor" title="Odpojiť"><span data-app-icon="stop"></span></button>
+          </footer>
+        </section>
+      </dialog>
+
+      <dialog id="development-debug-dialog" class="app-dialog development-debug-dialog" aria-labelledby="development-debug-title">
+        <section class="development-debug-form">
+          <header>
+            <div>
+              <h2 id="development-debug-title">Ladenie</h2>
+              <p id="development-debug-status" class="form-status" aria-live="polite"></p>
+            </div>
+            <button id="development-debug-close" class="panel-icon-button" type="button" aria-label="Zavrieť ladenie" title="Zavrieť"><span data-app-icon="close"></span></button>
+          </header>
+          <div class="development-debug-controls" role="group" aria-label="Ovládanie ladenia">
+            <button id="development-debug-step" class="panel-icon-button" type="button" aria-label="Vstúpiť do kroku" title="Vstúpiť do kroku" disabled><span data-app-icon="arrow-down"></span></button>
+            <button id="development-debug-next" class="panel-icon-button" type="button" aria-label="Ďalší krok" title="Ďalší krok" disabled><span data-app-icon="arrow-right"></span></button>
+            <button id="development-debug-continue" class="panel-icon-button" type="button" aria-label="Pokračovať" title="Pokračovať" disabled><span data-app-icon="play"></span></button>
+            <button id="development-debug-stop" class="panel-icon-button danger" type="button" aria-label="Ukončiť ladenie" title="Ukončiť ladenie" disabled><span data-app-icon="stop"></span></button>
+          </div>
+          <button id="development-debug-location" class="secondary-action-button development-debug-location" type="button" hidden></button>
+          <div class="development-debug-details">
+            <section aria-labelledby="development-debug-frames-title">
+              <header><h3 id="development-debug-frames-title">Zásobník</h3></header>
+              <div id="development-debug-frames" class="development-debug-list" role="list"></div>
+            </section>
+            <section aria-labelledby="development-debug-variables-title">
+              <header><h3 id="development-debug-variables-title">Premenné</h3></header>
+              <div id="development-debug-variables" class="development-debug-list" role="list"></div>
+            </section>
+          </div>
+          <pre id="development-debug-transcript" class="development-debug-transcript"></pre>
         </section>
       </dialog>
 
@@ -1460,7 +1632,13 @@
               <p id="development-test-status" class="form-status" aria-live="polite"></p>
               <section id="development-test-result" class="development-test-result" hidden aria-live="polite">
                 <strong id="development-test-result-title"></strong>
-                <pre id="development-test-result-details"></pre>
+                <p id="development-test-result-summary" class="development-test-result-summary"></p>
+                <button id="development-test-result-open-location" class="secondary-action-button development-test-result-open-location" type="button" hidden><span data-app-icon="target"></span><span>Prejsť na chybu</span></button>
+                <dl id="development-test-result-comparison" class="development-test-result-comparison"></dl>
+                <details id="development-test-result-details" class="development-test-result-details">
+                  <summary>Celé výstupy</summary>
+                  <pre id="development-test-result-details-text"></pre>
+                </details>
               </section>
               <footer>
                 <button id="development-test-delete" class="panel-icon-button danger" type="button" aria-label="Odstrániť test" title="Odstrániť test"><span data-app-icon="trash"></span></button>
@@ -1819,7 +1997,7 @@
               <div class="settings-account-actions">
                 <button id="logout-button" class="settings-logout-button" type="button">Odhlásiť</button>
               </div>
-              <p id="app-version" class="app-version">Verzia 0.56.26</p>
+              <p id="app-version" class="app-version">Verzia 0.56.27</p>
             </section>
 
             <section id="settings-panel-security" class="settings-section settings-security" role="tabpanel" aria-labelledby="settings-tab-security" data-settings-panel="security" hidden>
@@ -2519,6 +2697,6 @@
         }
       }, true);
     </script>
-  <script type="module" src="assets/app.js?v=0.56.26"></script>
+  <script type="module" src="assets/app.js?v=0.56.27"></script>
   </body>
 </html>

@@ -17,7 +17,47 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .podcast import PodcastFeed
 from .bibliography import detect_identifier
-from .tutorial_content import C_EXAMPLES, C_LANGUAGE, C_PAGES
+from .firmware import firmware_programmer_ids_for_target
+from .serial_monitor import DEFAULT_SERIAL_BAUD_RATE, SERIAL_BAUD_RATES
+from .tutorial_content import (
+    C_CHECKPOINT_IDS,
+    C_EXAMPLES,
+    C_EXERCISE_TOPICS,
+    C_LANGUAGE,
+    C_LEARNING_GOALS,
+    C_PAGES,
+    C_TEACHING_FRAMES,
+    C_VISUALIZATION_IDS,
+    CSHARP_EXAMPLES,
+    CSHARP_LANGUAGE,
+    CSHARP_LEARNING_GOALS,
+    CSHARP_PAGES,
+    CSHARP_VISUALIZATION_IDS,
+    CPP_EXAMPLES,
+    CPP_LANGUAGE,
+    CPP_LEARNING_GOALS,
+    CPP_PAGES,
+    CPP_VISUALIZATION_IDS,
+    JAVASCRIPT_EXAMPLES,
+    JAVASCRIPT_LANGUAGE,
+    JAVASCRIPT_LEARNING_GOALS,
+    JAVASCRIPT_PAGES,
+    JAVASCRIPT_VISUALIZATION_IDS,
+    PYTHON_EXAMPLES,
+    PYTHON_LANGUAGE,
+    PYTHON_LEARNING_GOALS,
+    PYTHON_PAGES,
+    PYTHON_VISUALIZATION_IDS,
+    RUBY_EXAMPLES,
+    RUBY_LANGUAGE,
+    RUBY_LEARNING_GOALS,
+    RUBY_PAGES,
+    RUBY_VISUALIZATION_IDS,
+)
+from .tutorial_checkpoints import evaluate_tutorial_checkpoint, tutorial_checkpoint, tutorial_checkpoint_public
+from .tutorial_curriculum import language_curriculum, missing_firmware_curricula, missing_language_curricula
+from .tutorial_exercises import tutorial_practice
+from .tutorial_visualizations import visualization_models_for_language
 
 
 def now_iso() -> str:
@@ -40,6 +80,8 @@ DEVELOPMENT_LANGUAGES = {
     "cpp": {"label": "C++", "filename": "main.cpp", "source": '#include <iostream>\n\nint main() {\n  std::cout << "Ahoj, svet!\\n";\n  return 0;\n}\n'},
     "python": {"label": "Python", "filename": "main.py", "source": 'print("Ahoj, svet!")\n'},
     "javascript": {"label": "JavaScript", "filename": "main.js", "source": 'console.log("Ahoj, svet!");\n'},
+    "ruby": {"label": "Ruby", "filename": "main.rb", "source": 'puts "Ahoj, svet!"\n'},
+    "perl": {"label": "Perl", "filename": "main.pl", "source": 'use strict;\nuse warnings;\n\nprint "Ahoj, svet!\\n";\n'},
     "php": {"label": "PHP", "filename": "main.php", "source": '<?php\necho "Ahoj, svet!\\n";\n'},
     "csharp": {"label": "C#", "filename": "Program.cs", "source": 'Console.WriteLine("Ahoj, svet!");\n'},
     "asm": {
@@ -75,6 +117,18 @@ DEVELOPMENT_PROJECT_TEMPLATES = {
         "input-output": {
             "label": "Vstup a výstup",
             "source": "const value = require('node:fs').readFileSync(0, 'utf8').trim();\nconsole.log(value);\n",
+        },
+    },
+    "ruby": {
+        "input-output": {
+            "label": "Vstup a výstup",
+            "source": "value = STDIN.read.strip\nputs value\n",
+        },
+    },
+    "perl": {
+        "input-output": {
+            "label": "Vstup a výstup",
+            "source": "use strict;\nuse warnings;\n\nmy $value = <STDIN> // '';\nchomp $value;\nprint \"$value\\n\";\n",
         },
     },
     "php": {
@@ -119,6 +173,7 @@ DEVELOPMENT_BUILD_PROFILES = {
     "debug": "Ladenie",
     "release": "Vydanie",
 }
+DEVELOPMENT_TEST_RUN_STATUSES = {"passed", "output_mismatch", "compile_error", "runtime_error"}
 FIRMWARE_TARGETS = {
     "avr-atmega328p": {
         "label": "ATmega328P",
@@ -185,6 +240,13 @@ FIRMWARE_TARGETS = {
         "languages": ("c", "cpp", "asm"),
     },
 }
+
+_MISSING_LANGUAGE_CURRICULA = missing_language_curricula(set(DEVELOPMENT_LANGUAGES))
+_MISSING_FIRMWARE_CURRICULA = missing_firmware_curricula(set(FIRMWARE_TARGETS))
+if _MISSING_LANGUAGE_CURRICULA or _MISSING_FIRMWARE_CURRICULA:
+    missing = sorted(_MISSING_LANGUAGE_CURRICULA | _MISSING_FIRMWARE_CURRICULA)
+    raise RuntimeError(f"Chýba učebnicové kurikulum pre: {', '.join(missing)}")
+
 DEFAULT_MUSIC_TRACK_MAX_BYTES = 250 * 1024 * 1024
 MIN_MUSIC_TRACK_MAX_BYTES = 1 * 1024 * 1024
 MAX_MUSIC_TRACK_MAX_BYTES = 1024 * 1024 * 1024
@@ -260,7 +322,13 @@ BACKUP_RECORD_LIMITS = {
     "tutorialExamples": 5_000,
     "tutorialNotes": 5_000,
     "tutorialExampleDrafts": 5_000,
+    "tutorialPageProgress": 5_000,
+    "tutorialCheckpointAttempts": 5_000,
 }
+
+TUTORIAL_PROGRESS_STATUSES = {"not_started", "in_progress", "completed"}
+TUTORIAL_CONTENT_BLOCK_TYPES = {"heading", "paragraph", "list", "callout", "code", "visualization", "checkpoint"}
+TUTORIAL_CALLOUT_TONES = {"info", "warning", "tip"}
 
 
 class Database:
@@ -816,6 +884,29 @@ class Database:
                     PRIMARY KEY(user_id, example_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS tutorial_page_progress (
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    page_id TEXT NOT NULL REFERENCES tutorial_pages(id) ON DELETE CASCADE,
+                    status TEXT NOT NULL CHECK(status IN ('in_progress', 'completed')),
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, page_id)
+                );
+                CREATE INDEX IF NOT EXISTS tutorial_page_progress_user_idx
+                    ON tutorial_page_progress(user_id, status, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS tutorial_checkpoint_attempts (
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    page_id TEXT NOT NULL REFERENCES tutorial_pages(id) ON DELETE CASCADE,
+                    checkpoint_id TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_option_id TEXT NOT NULL DEFAULT '',
+                    is_correct INTEGER NOT NULL DEFAULT 0 CHECK(is_correct IN (0, 1)),
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, page_id)
+                );
+                CREATE INDEX IF NOT EXISTS tutorial_checkpoint_attempts_user_idx
+                    ON tutorial_checkpoint_attempts(user_id, updated_at DESC);
+
                 CREATE TABLE IF NOT EXISTS development_projects (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -823,8 +914,14 @@ class Database:
                     language TEXT NOT NULL DEFAULT 'c',
                     project_kind TEXT NOT NULL DEFAULT 'program' CHECK(project_kind IN ('program', 'firmware')),
                     firmware_target_id TEXT NOT NULL DEFAULT '',
+                    firmware_programmer_id TEXT NOT NULL DEFAULT '',
+                    firmware_serial_port TEXT NOT NULL DEFAULT '',
+                    firmware_serial_baud INTEGER NOT NULL DEFAULT 115200,
                     build_profile TEXT NOT NULL DEFAULT 'debug',
                     run_arguments TEXT NOT NULL DEFAULT '',
+                    tutorial_language_id TEXT NOT NULL DEFAULT '',
+                    tutorial_page_id TEXT NOT NULL DEFAULT '',
+                    tutorial_example_id TEXT NOT NULL DEFAULT '',
                     entry_file_id TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -854,6 +951,10 @@ class Database:
                     arguments TEXT NOT NULL DEFAULT '',
                     expected_output TEXT NOT NULL DEFAULT '',
                     position INTEGER NOT NULL DEFAULT 0,
+                    last_status TEXT NOT NULL DEFAULT '',
+                    last_run_at TEXT NOT NULL DEFAULT '',
+                    last_duration_ms INTEGER NOT NULL DEFAULT 0,
+                    last_exit_code INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -946,6 +1047,18 @@ class Database:
                 connection.execute(
                     "ALTER TABLE development_projects ADD COLUMN firmware_target_id TEXT NOT NULL DEFAULT ''"
                 )
+            if "firmware_programmer_id" not in development_project_columns:
+                connection.execute(
+                    "ALTER TABLE development_projects ADD COLUMN firmware_programmer_id TEXT NOT NULL DEFAULT ''"
+                )
+            if "firmware_serial_port" not in development_project_columns:
+                connection.execute(
+                    "ALTER TABLE development_projects ADD COLUMN firmware_serial_port TEXT NOT NULL DEFAULT ''"
+                )
+            if "firmware_serial_baud" not in development_project_columns:
+                connection.execute(
+                    "ALTER TABLE development_projects ADD COLUMN firmware_serial_baud INTEGER NOT NULL DEFAULT 115200"
+                )
             if "build_profile" not in development_project_columns:
                 connection.execute(
                     "ALTER TABLE development_projects ADD COLUMN build_profile TEXT NOT NULL DEFAULT 'debug'"
@@ -953,6 +1066,33 @@ class Database:
             if "run_arguments" not in development_project_columns:
                 connection.execute(
                     "ALTER TABLE development_projects ADD COLUMN run_arguments TEXT NOT NULL DEFAULT ''"
+                )
+            if "tutorial_language_id" not in development_project_columns:
+                connection.execute(
+                    "ALTER TABLE development_projects ADD COLUMN tutorial_language_id TEXT NOT NULL DEFAULT ''"
+                )
+            if "tutorial_page_id" not in development_project_columns:
+                connection.execute(
+                    "ALTER TABLE development_projects ADD COLUMN tutorial_page_id TEXT NOT NULL DEFAULT ''"
+                )
+            if "tutorial_example_id" not in development_project_columns:
+                connection.execute(
+                    "ALTER TABLE development_projects ADD COLUMN tutorial_example_id TEXT NOT NULL DEFAULT ''"
+                )
+            development_test_case_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(development_test_cases)")
+            }
+            if "last_status" not in development_test_case_columns:
+                connection.execute("ALTER TABLE development_test_cases ADD COLUMN last_status TEXT NOT NULL DEFAULT ''")
+            if "last_run_at" not in development_test_case_columns:
+                connection.execute("ALTER TABLE development_test_cases ADD COLUMN last_run_at TEXT NOT NULL DEFAULT ''")
+            if "last_duration_ms" not in development_test_case_columns:
+                connection.execute(
+                    "ALTER TABLE development_test_cases ADD COLUMN last_duration_ms INTEGER NOT NULL DEFAULT 0"
+                )
+            if "last_exit_code" not in development_test_case_columns:
+                connection.execute(
+                    "ALTER TABLE development_test_cases ADD COLUMN last_exit_code INTEGER NOT NULL DEFAULT 0"
                 )
             session_columns = {row["name"] for row in connection.execute("PRAGMA table_info(sessions)")}
             if "last_active_at" not in session_columns:
@@ -2036,9 +2176,50 @@ class Database:
     @staticmethod
     def _development_project_select() -> str:
         return (
-            "id, title, language, project_kind, firmware_target_id, build_profile, run_arguments, "
-            "entry_file_id, created_at, updated_at"
+            "id, title, language, project_kind, firmware_target_id, firmware_programmer_id, firmware_serial_port, firmware_serial_baud, "
+            "build_profile, run_arguments, "
+            "tutorial_language_id, tutorial_page_id, tutorial_example_id, entry_file_id, created_at, updated_at"
         )
+
+    def _firmware_connection_settings(
+        self,
+        data: dict[str, Any],
+        *,
+        project_kind: str,
+        target_id: str,
+        current_programmer_id: str = "",
+        current_serial_port: str = "",
+        current_serial_baud: int = DEFAULT_SERIAL_BAUD_RATE,
+    ) -> tuple[str, str, int]:
+        """Validate configuration that is safe to persist but does not touch a board."""
+
+        if project_kind != "firmware":
+            return "", "", DEFAULT_SERIAL_BAUD_RATE
+        programmer_id = self._clean_text(data.get("firmwareProgrammerId", current_programmer_id), 80)
+        serial_port = self._clean_text(data.get("firmwareSerialPort", current_serial_port), 512)
+        if programmer_id and programmer_id not in firmware_programmer_ids_for_target(target_id):
+            raise ValidationError("Vybraný programátor nepatrí k cieľu firmvéru.")
+        if serial_port and (not serial_port.startswith("/dev/") or any(char in serial_port for char in "\r\n\x00")):
+            raise ValidationError("Sériový port firmvéru musí byť zariadenie v /dev.")
+        try:
+            serial_baud = int(data.get("firmwareSerialBaud", current_serial_baud))
+        except (TypeError, ValueError) as error:
+            raise ValidationError("Prenosová rýchlosť firmvéru nie je platná.") from error
+        if serial_baud not in SERIAL_BAUD_RATES:
+            raise ValidationError("Prenosová rýchlosť firmvéru nie je podporovaná.")
+        return programmer_id, serial_port, serial_baud
+
+    def _development_tutorial_link(self, value: Any) -> tuple[str, str, str]:
+        if value is None:
+            return "", "", ""
+        if not isinstance(value, dict):
+            raise ValidationError("Prepojenie projektu s učebnicou má neplatný tvar.")
+        language_id = self._clean_id(value.get("languageId"))
+        page_id = self._clean_id(value.get("pageId"))
+        example_id = self._clean_id(value.get("exampleId"))
+        if bool(language_id) != bool(page_id):
+            raise ValidationError("Prepojenie projektu s učebnicou potrebuje jazyk aj stránku.")
+        return language_id, page_id, example_id
 
     def development_workspace(self, user_id: str) -> dict[str, Any]:
         with self.connect() as connection:
@@ -2062,6 +2243,30 @@ class Database:
             "projects": projects,
         }
 
+    def development_project_for_tutorial(
+        self, user_id: str, language_id: Any, page_id: Any, example_id: Any
+    ) -> dict[str, Any] | None:
+        language_id, page_id, example_id = self._development_tutorial_link(
+            {"languageId": language_id, "pageId": page_id, "exampleId": example_id}
+        )
+        if not language_id or not page_id or not example_id:
+            return None
+        with self.connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT {self._development_project_select()}
+                FROM development_projects
+                WHERE user_id = ?
+                  AND tutorial_language_id = ?
+                  AND tutorial_page_id = ?
+                  AND tutorial_example_id = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (user_id, language_id, page_id, example_id),
+            ).fetchone()
+            return self._development_project_detail(connection, user_id, row) if row else None
+
     def create_development_project(self, user_id: str, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise ValidationError("Projekt vývoja má neplatný tvar.")
@@ -2077,6 +2282,7 @@ class Database:
         build_profile = self._clean_text(data.get("buildProfile"), 20) or "debug"
         template_id = self._clean_text(data.get("templateId"), 40) or "hello"
         run_arguments = self._clean_text(data.get("runArguments"), 8_192).replace("\x00", "")
+        tutorial_language_id, tutorial_page_id, tutorial_example_id = self._development_tutorial_link(data.get("tutorialLink"))
         if build_profile not in DEVELOPMENT_BUILD_PROFILES:
             raise ValidationError("Neznámy profil zostavenia.")
         target: dict[str, Any] | None = None
@@ -2088,6 +2294,9 @@ class Database:
                 raise ValidationError("Vybraný jazyk tento cieľ firmvéru zatiaľ nepodporuje.")
         else:
             firmware_target_id = ""
+        firmware_programmer_id, firmware_serial_port, firmware_serial_baud = self._firmware_connection_settings(
+            data, project_kind=project_kind, target_id=firmware_target_id
+        )
         project_id = self._clean_id(data.get("id")) or str(uuid.uuid4())
         file_id = str(uuid.uuid4())
         timestamp = now_iso()
@@ -2096,13 +2305,16 @@ class Database:
             if target is not None
             else self._development_project_template_source(language, template_id)
         )
+        if target is None and "entryContent" in data:
+            source = str(data.get("entryContent") or "")[:2_000_000]
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO development_projects(
-                    id, user_id, title, language, project_kind, firmware_target_id, build_profile, run_arguments,
-                    entry_file_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, user_id, title, language, project_kind, firmware_target_id, firmware_programmer_id, firmware_serial_port, firmware_serial_baud,
+                    build_profile, run_arguments,
+                    tutorial_language_id, tutorial_page_id, tutorial_example_id, entry_file_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -2111,8 +2323,14 @@ class Database:
                     language,
                     project_kind,
                     firmware_target_id,
+                    firmware_programmer_id,
+                    firmware_serial_port,
+                    firmware_serial_baud,
                     build_profile,
                     run_arguments,
+                    tutorial_language_id,
+                    tutorial_page_id,
+                    tutorial_example_id,
                     file_id,
                     timestamp,
                     timestamp,
@@ -2147,6 +2365,7 @@ class Database:
         firmware_target_id = self._clean_text(project_data.get("firmwareTargetId"), 80)
         build_profile = self._clean_text(project_data.get("buildProfile"), 20) or "debug"
         run_arguments = self._clean_text(project_data.get("runArguments"), 8_192).replace("\x00", "")
+        tutorial_language_id, tutorial_page_id, tutorial_example_id = self._development_tutorial_link(project_data.get("tutorialLink"))
         if build_profile not in DEVELOPMENT_BUILD_PROFILES:
             raise ValidationError("Import používa neznámy režim buildu.")
         if project_kind == "firmware":
@@ -2155,6 +2374,9 @@ class Database:
                 raise ValidationError("Import používa nepodporovaný cieľ firmvéru alebo jazyk.")
         else:
             firmware_target_id = ""
+        firmware_programmer_id, firmware_serial_port, firmware_serial_baud = self._firmware_connection_settings(
+            project_data, project_kind=project_kind, target_id=firmware_target_id
+        )
 
         raw_tests = project_data.get("tests", [])
         if raw_tests is None:
@@ -2271,9 +2493,10 @@ class Database:
             connection.execute(
                 """
                 INSERT INTO development_projects(
-                    id, user_id, title, language, project_kind, firmware_target_id, build_profile, run_arguments,
-                    entry_file_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, user_id, title, language, project_kind, firmware_target_id, firmware_programmer_id, firmware_serial_port, firmware_serial_baud,
+                    build_profile, run_arguments,
+                    tutorial_language_id, tutorial_page_id, tutorial_example_id, entry_file_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -2282,8 +2505,14 @@ class Database:
                     language,
                     project_kind,
                     firmware_target_id,
+                    firmware_programmer_id,
+                    firmware_serial_port,
+                    firmware_serial_baud,
                     build_profile,
                     run_arguments,
+                    tutorial_language_id,
+                    tutorial_page_id,
+                    tutorial_example_id,
                     entry["id"],
                     timestamp,
                     timestamp,
@@ -2360,6 +2589,14 @@ class Database:
                     raise ValidationError("Vybraný jazyk tento cieľ firmvéru zatiaľ nepodporuje.")
             else:
                 firmware_target_id = ""
+            firmware_programmer_id, firmware_serial_port, firmware_serial_baud = self._firmware_connection_settings(
+                data,
+                project_kind=project_kind,
+                target_id=firmware_target_id,
+                current_programmer_id=str(row["firmware_programmer_id"]),
+                current_serial_port=str(row["firmware_serial_port"]),
+                current_serial_baud=int(row["firmware_serial_baud"]),
+            )
             entry_file_id = str(row["entry_file_id"] or "")
             if "entryFileId" in data:
                 requested_entry_file_id = self._clean_id(data.get("entryFileId"))
@@ -2374,10 +2611,24 @@ class Database:
             connection.execute(
                 """
                 UPDATE development_projects
-                SET title = ?, language = ?, project_kind = ?, firmware_target_id = ?, build_profile = ?, run_arguments = ?, entry_file_id = ?, updated_at = ?
+                SET title = ?, language = ?, project_kind = ?, firmware_target_id = ?, firmware_programmer_id = ?, firmware_serial_port = ?, firmware_serial_baud = ?,
+                    build_profile = ?, run_arguments = ?, entry_file_id = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (title, language, project_kind, firmware_target_id, build_profile, run_arguments, entry_file_id, timestamp, project_id),
+                (
+                    title,
+                    language,
+                    project_kind,
+                    firmware_target_id,
+                    firmware_programmer_id,
+                    firmware_serial_port,
+                    firmware_serial_baud,
+                    build_profile,
+                    run_arguments,
+                    entry_file_id,
+                    timestamp,
+                    project_id,
+                ),
             )
             updated = connection.execute(
                 f"SELECT {self._development_project_select()} FROM development_projects WHERE id = ?",
@@ -2479,6 +2730,273 @@ class Database:
             )
             connection.execute("UPDATE development_projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
             return self._development_detail_by_id(connection, user_id, project_id)
+
+    @staticmethod
+    def _development_code_mask(content: str, language: str) -> str:
+        """Blank comments and strings while preserving offsets for identifier operations."""
+        source = str(content or "")
+        mask = list(source)
+        slash_comments = language in {"c", "cpp", "csharp", "go", "java", "javascript", "php", "rust"}
+        hash_comments = language in {"bash", "perl", "php", "python", "ruby"}
+        semicolon_comments = language == "asm"
+
+        def blank(start: int, end: int) -> None:
+            for position in range(start, min(end, len(mask))):
+                if mask[position] != "\n":
+                    mask[position] = " "
+
+        index = 0
+        while index < len(source):
+            character = source[index]
+            if slash_comments and source.startswith("//", index):
+                end = source.find("\n", index)
+                blank(index, len(source) if end < 0 else end)
+                index = len(source) if end < 0 else end
+                continue
+            if slash_comments and source.startswith("/*", index):
+                closing = source.find("*/", index + 2)
+                end = len(source) if closing < 0 else closing + 2
+                blank(index, end)
+                index = end
+                continue
+            if (hash_comments and character == "#") or (semicolon_comments and character == ";"):
+                end = source.find("\n", index)
+                blank(index, len(source) if end < 0 else end)
+                index = len(source) if end < 0 else end
+                continue
+            if character not in {"'", '"', "`"}:
+                index += 1
+                continue
+
+            delimiter = character
+            triple = delimiter in {"'", '"'} and source.startswith(delimiter * 3, index)
+            start = index
+            index += 3 if triple else 1
+            while index < len(source):
+                if source[index] == "\\":
+                    index += 2
+                    continue
+                if triple and source.startswith(delimiter * 3, index):
+                    index += 3
+                    break
+                if not triple and source[index] == delimiter:
+                    index += 1
+                    break
+                if not triple and source[index] == "\n" and delimiter != "`":
+                    break
+                index += 1
+            blank(start, index)
+        return "".join(mask)
+
+    @classmethod
+    def _rename_development_identifier(cls, content: str, old_name: str, new_name: str, language: str) -> tuple[str, int]:
+        source = str(content or "")
+        mask = cls._development_code_mask(source, language)
+        expression = re.compile(rf"(?<![A-Za-z0-9_$]){re.escape(old_name)}(?![A-Za-z0-9_$])")
+        matches = list(expression.finditer(mask))
+        if not matches:
+            return source, 0
+        parts: list[str] = []
+        offset = 0
+        for match in matches:
+            parts.append(source[offset:match.start()])
+            parts.append(new_name)
+            offset = match.end()
+        parts.append(source[offset:])
+        return "".join(parts), len(matches)
+
+    @staticmethod
+    def _development_symbol_rename_names(data: Any) -> tuple[str, str]:
+        if not isinstance(data, dict):
+            raise ValidationError("Premenovanie symbolu má neplatný tvar.")
+        old_name = Database._clean_text(data.get("oldName"), 200)
+        new_name = Database._clean_text(data.get("newName"), 200)
+        identifier = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*\Z")
+        if not identifier.fullmatch(old_name) or not identifier.fullmatch(new_name):
+            raise ValidationError("Názov symbolu môže obsahovať len písmená, čísla, podčiarkovník a znak $.")
+        if old_name == new_name:
+            raise ValidationError("Nový názov symbolu sa musí líšiť od pôvodného.")
+        return old_name, new_name
+
+    @staticmethod
+    def _development_text_edit_position(content: str, offset: int) -> tuple[int, int]:
+        prefix = content[:offset]
+        return prefix.count("\n") + 1, offset - prefix.rfind("\n")
+
+    def preview_development_symbol_rename(self, user_id: str, project_id: str, data: Any) -> dict[str, Any]:
+        """Return exact local rename edits without changing a project."""
+        old_name, new_name = self._development_symbol_rename_names(data)
+        with self.connect() as connection:
+            project = self._development_project_row(connection, user_id, project_id)
+            rows = connection.execute(
+                """
+                SELECT id, parent_id, kind, title, content, position, created_at, updated_at
+                FROM development_files
+                WHERE project_id = ?
+                ORDER BY parent_id, position, title COLLATE NOCASE
+                """,
+                (project_id,),
+            ).fetchall()
+            paths = self._development_file_paths(rows)
+            language = str(project["language"])
+            expression = re.compile(rf"(?<![A-Za-z0-9_$]){re.escape(old_name)}(?![A-Za-z0-9_$])")
+            workspace_edits: list[dict[str, Any]] = []
+            edit_count = 0
+            files = (row for row in rows if row["kind"] == "file")
+            for row in sorted(files, key=lambda item: paths[str(item["id"])].casefold()):
+                source = str(row["content"])
+                mask = self._development_code_mask(source, language)
+                edits: list[dict[str, Any]] = []
+                for match in expression.finditer(mask):
+                    start_line, start_column = self._development_text_edit_position(source, match.start())
+                    end_line, end_column = self._development_text_edit_position(source, match.end())
+                    edits.append({
+                        "startLine": start_line,
+                        "startColumn": start_column,
+                        "endLine": end_line,
+                        "endColumn": end_column,
+                        "newText": new_name,
+                    })
+                    edit_count += 1
+                    if edit_count > 20_000:
+                        raise ValidationError("Premenovanie by upravilo priveľa miest v projekte.")
+                if edits:
+                    workspace_edits.append({"path": paths[str(row["id"])], "edits": edits})
+            return {"workspaceEdits": workspace_edits, "replacements": edit_count, "files": len(workspace_edits)}
+
+    def rename_development_symbol(self, user_id: str, project_id: str, data: Any) -> dict[str, Any]:
+        old_name, new_name = self._development_symbol_rename_names(data)
+        with self.connect() as connection:
+            project = self._development_project_row(connection, user_id, project_id)
+            rows = connection.execute(
+                "SELECT id, content FROM development_files WHERE project_id = ? AND kind = 'file' ORDER BY position, title COLLATE NOCASE",
+                (project_id,),
+            ).fetchall()
+            replacements = 0
+            changed_files = 0
+            timestamp = now_iso()
+            for row in rows:
+                updated_content, count = self._rename_development_identifier(
+                    str(row["content"]), old_name, new_name, str(project["language"])
+                )
+                if not count:
+                    continue
+                connection.execute(
+                    "UPDATE development_files SET content = ?, updated_at = ? WHERE id = ?",
+                    (updated_content, timestamp, row["id"]),
+                )
+                replacements += count
+                changed_files += 1
+            if replacements:
+                connection.execute("UPDATE development_projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
+            return {
+                "project": self._development_detail_by_id(connection, user_id, project_id),
+                "replacements": replacements,
+                "files": changed_files,
+            }
+
+    @staticmethod
+    def _development_text_edit_offset(content: str, line: Any, column: Any) -> int:
+        try:
+            line_number = int(line)
+            column_number = int(column)
+        except (TypeError, ValueError) as error:
+            raise ValidationError("Pozícia úpravy zdrojového kódu nie je platná.") from error
+        lines = content.split("\n")
+        if line_number < 1 or line_number > len(lines) or column_number < 1 or column_number > len(lines[line_number - 1]) + 1:
+            raise ValidationError("Pozícia úpravy zdrojového kódu je mimo súboru.")
+        return sum(len(item) + 1 for item in lines[: line_number - 1]) + column_number - 1
+
+    def apply_development_text_edits(self, user_id: str, project_id: str, data: Any) -> dict[str, Any]:
+        """Apply exact text edits produced by a language server after user confirmation."""
+        if not isinstance(data, dict) or not isinstance(data.get("workspaceEdits"), list):
+            raise ValidationError("Úpravy jazykového servera majú neplatný tvar.")
+        groups = data["workspaceEdits"]
+        if len(groups) > 500:
+            raise ValidationError("Jazykový server navrhol priveľa súborov na úpravu.")
+        with self.connect() as connection:
+            self._development_project_row(connection, user_id, project_id)
+            rows = connection.execute(
+                """
+                SELECT id, parent_id, kind, title, content, position, created_at, updated_at
+                FROM development_files
+                WHERE project_id = ?
+                ORDER BY parent_id, position, title COLLATE NOCASE
+                """,
+                (project_id,),
+            ).fetchall()
+            paths = self._development_file_paths(rows)
+            files_by_path = {
+                path: row for row in rows if row["kind"] == "file" for path in [paths[str(row["id"])]]
+            }
+            edits_by_path: dict[str, list[dict[str, Any]]] = {}
+            total_edits = 0
+            for group in groups:
+                if not isinstance(group, dict):
+                    raise ValidationError("Úprava jazykového servera má neplatný tvar.")
+                path = str(group.get("path") or "")
+                edits = group.get("edits")
+                if path not in files_by_path or not isinstance(edits, list):
+                    raise ValidationError("Úprava jazykového servera odkazuje na neznámy súbor.")
+                if len(edits) > 5_000:
+                    raise ValidationError("Jazykový server navrhol priveľa úprav súboru.")
+                target = edits_by_path.setdefault(path, [])
+                for edit in edits:
+                    if not isinstance(edit, dict):
+                        raise ValidationError("Úprava jazykového servera má neplatný tvar.")
+                    new_text = str(edit.get("newText") or "")
+                    if len(new_text.encode("utf-8", errors="replace")) > 2_000_000:
+                        raise ValidationError("Úprava jazykového servera je príliš veľká.")
+                    target.append({
+                        "startLine": edit.get("startLine"),
+                        "startColumn": edit.get("startColumn"),
+                        "endLine": edit.get("endLine"),
+                        "endColumn": edit.get("endColumn"),
+                        "newText": new_text,
+                    })
+                    total_edits += 1
+            if not total_edits:
+                raise ValidationError("Jazykový server nenavrhol žiadnu úpravu.")
+            if total_edits > 20_000:
+                raise ValidationError("Jazykový server navrhol priveľa úprav.")
+
+            changed_files = 0
+            timestamp = now_iso()
+            for path, edits in edits_by_path.items():
+                row = files_by_path[path]
+                source = str(row["content"])
+                prepared: list[tuple[int, int, str]] = []
+                for edit in edits:
+                    start = self._development_text_edit_offset(source, edit["startLine"], edit["startColumn"])
+                    end = self._development_text_edit_offset(source, edit["endLine"], edit["endColumn"])
+                    if end < start:
+                        raise ValidationError("Jazykový server navrhol úpravu s obráteným rozsahom.")
+                    prepared.append((start, end, edit["newText"]))
+                prepared.sort(key=lambda item: (item[0], item[1]), reverse=True)
+                previous_start = len(source) + 1
+                updated = source
+                for start, end, new_text in prepared:
+                    if end > previous_start:
+                        raise ValidationError("Jazykový server navrhol prekrývajúce sa úpravy.")
+                    updated = f"{updated[:start]}{new_text}{updated[end:]}"
+                    previous_start = start
+                if len(updated.encode("utf-8", errors="replace")) > 2_000_000:
+                    raise ValidationError("Výsledný zdrojový súbor je príliš veľký.")
+                if updated == source:
+                    continue
+                connection.execute(
+                    "UPDATE development_files SET content = ?, updated_at = ? WHERE id = ?",
+                    (updated, timestamp, row["id"]),
+                )
+                changed_files += 1
+            if not changed_files:
+                raise ValidationError("Jazykový server nenavrhol žiadnu zmenu obsahu.")
+            connection.execute("UPDATE development_projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
+            return {
+                "project": self._development_detail_by_id(connection, user_id, project_id),
+                "replacements": total_edits,
+                "files": changed_files,
+            }
 
     def move_development_file(self, user_id: str, project_id: str, file_id: str, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
@@ -2636,6 +3154,9 @@ class Database:
                 "language": str(project["language"]),
                 "projectKind": str(project["project_kind"]),
                 "firmwareTargetId": str(project["firmware_target_id"]),
+                "firmwareProgrammerId": str(project["firmware_programmer_id"] or ""),
+                "firmwareSerialPort": str(project["firmware_serial_port"] or ""),
+                "firmwareSerialBaud": int(project["firmware_serial_baud"] or DEFAULT_SERIAL_BAUD_RATE),
                 "buildProfile": str(project["build_profile"]),
                 "fileId": str(row["id"]),
                 "filename": paths[str(row["id"])],
@@ -2649,7 +3170,7 @@ class Database:
 
     @staticmethod
     def _development_test_case_data(row: sqlite3.Row) -> dict[str, Any]:
-        return {
+        result = {
             "id": str(row["id"]),
             "title": str(row["title"]),
             "stdin": str(row["stdin"]),
@@ -2659,6 +3180,15 @@ class Database:
             "createdAt": str(row["created_at"]),
             "updatedAt": str(row["updated_at"]),
         }
+        last_status = str(row["last_status"] or "")
+        if last_status:
+            result["lastResult"] = {
+                "status": last_status,
+                "runAt": str(row["last_run_at"]),
+                "durationMs": int(row["last_duration_ms"]),
+                "exitCode": int(row["last_exit_code"]),
+            }
+        return result
 
     @staticmethod
     def _development_test_text(value: Any, maximum: int, label: str) -> str:
@@ -2672,7 +3202,8 @@ class Database:
             self._development_project_row(connection, user_id, project_id)
             rows = connection.execute(
                 """
-                SELECT id, title, stdin, arguments, expected_output, position, created_at, updated_at
+                SELECT id, title, stdin, arguments, expected_output, position,
+                       last_status, last_run_at, last_duration_ms, last_exit_code, created_at, updated_at
                 FROM development_test_cases
                 WHERE project_id = ?
                 ORDER BY position, created_at, title COLLATE NOCASE
@@ -2722,7 +3253,8 @@ class Database:
             connection.execute("UPDATE development_projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
             row = connection.execute(
                 """
-                SELECT id, title, stdin, arguments, expected_output, position, created_at, updated_at
+                SELECT id, title, stdin, arguments, expected_output, position,
+                       last_status, last_run_at, last_duration_ms, last_exit_code, created_at, updated_at
                 FROM development_test_cases WHERE id = ?
                 """,
                 (test_id,),
@@ -2743,19 +3275,41 @@ class Database:
             expected_output = self._development_test_text(
                 data.get("expectedOutput", row["expected_output"]), 128 * 1024, "Očakávaný výstup"
             )
+            result_is_current = (
+                stdin == str(row["stdin"])
+                and arguments == str(row["arguments"])
+                and expected_output == str(row["expected_output"])
+            )
+            last_status = str(row["last_status"]) if result_is_current else ""
+            last_run_at = str(row["last_run_at"]) if result_is_current else ""
+            last_duration_ms = int(row["last_duration_ms"]) if result_is_current else 0
+            last_exit_code = int(row["last_exit_code"]) if result_is_current else 0
             timestamp = now_iso()
             connection.execute(
                 """
                 UPDATE development_test_cases
-                SET title = ?, stdin = ?, arguments = ?, expected_output = ?, updated_at = ?
+                SET title = ?, stdin = ?, arguments = ?, expected_output = ?,
+                    last_status = ?, last_run_at = ?, last_duration_ms = ?, last_exit_code = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (title, stdin, arguments, expected_output, timestamp, test_id),
+                (
+                    title,
+                    stdin,
+                    arguments,
+                    expected_output,
+                    last_status,
+                    last_run_at,
+                    last_duration_ms,
+                    last_exit_code,
+                    timestamp,
+                    test_id,
+                ),
             )
             connection.execute("UPDATE development_projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
             updated = connection.execute(
                 """
-                SELECT id, title, stdin, arguments, expected_output, position, created_at, updated_at
+                SELECT id, title, stdin, arguments, expected_output, position,
+                       last_status, last_run_at, last_duration_ms, last_exit_code, created_at, updated_at
                 FROM development_test_cases WHERE id = ?
                 """,
                 (test_id,),
@@ -2771,13 +3325,55 @@ class Database:
                 "UPDATE development_projects SET updated_at = ? WHERE id = ?", (now_iso(), project_id)
             )
 
+    def record_development_test_result(
+        self, user_id: str, project_id: str, test_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        status = str(data.get("status") or "")
+        if status not in DEVELOPMENT_TEST_RUN_STATUSES:
+            raise ValidationError("Výsledok testu má neplatný stav.")
+        try:
+            duration_ms = int(data.get("durationMs") or 0)
+        except (TypeError, ValueError):
+            duration_ms = 0
+        try:
+            exit_code = int(data.get("exitCode") or 0)
+        except (TypeError, ValueError):
+            exit_code = 0
+        with self.connect() as connection:
+            self._development_test_case_row(connection, user_id, project_id, test_id)
+            connection.execute(
+                """
+                UPDATE development_test_cases
+                SET last_status = ?, last_run_at = ?, last_duration_ms = ?, last_exit_code = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    now_iso(),
+                    max(0, min(duration_ms, 3_600_000)),
+                    max(-1_000_000, min(exit_code, 1_000_000)),
+                    test_id,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT id, title, stdin, arguments, expected_output, position,
+                       last_status, last_run_at, last_duration_ms, last_exit_code, created_at, updated_at
+                FROM development_test_cases WHERE id = ?
+                """,
+                (test_id,),
+            ).fetchone()
+            assert row is not None
+            return self._development_test_case_data(row)
+
     def _development_test_case_row(
         self, connection: sqlite3.Connection, user_id: str, project_id: str, test_id: str
     ) -> sqlite3.Row:
         self._development_project_row(connection, user_id, project_id)
         row = connection.execute(
             """
-            SELECT id, title, stdin, arguments, expected_output, position, created_at, updated_at
+            SELECT id, title, stdin, arguments, expected_output, position,
+                   last_status, last_run_at, last_duration_ms, last_exit_code, created_at, updated_at
             FROM development_test_cases
             WHERE id = ? AND project_id = ?
             """,
@@ -2833,12 +3429,18 @@ class Database:
         ).fetchall()
         firmware_target_id = str(project["firmware_target_id"] or "")
         firmware_target = FIRMWARE_TARGETS.get(firmware_target_id)
+        tutorial_language_id = str(project["tutorial_language_id"] or "")
+        tutorial_page_id = str(project["tutorial_page_id"] or "")
+        tutorial_example_id = str(project["tutorial_example_id"] or "")
         return {
             "id": project["id"],
             "title": project["title"],
             "language": project["language"],
             "kind": project["project_kind"],
             "firmwareTargetId": firmware_target_id,
+            "firmwareProgrammerId": str(project["firmware_programmer_id"] or ""),
+            "firmwareSerialPort": str(project["firmware_serial_port"] or ""),
+            "firmwareSerialBaud": int(project["firmware_serial_baud"] or DEFAULT_SERIAL_BAUD_RATE),
             "firmwareTarget": (
                 {
                     "id": firmware_target_id,
@@ -2855,6 +3457,15 @@ class Database:
             "buildProfile": project["build_profile"],
             "buildProfileLabel": DEVELOPMENT_BUILD_PROFILES.get(str(project["build_profile"]), "Ladenie"),
             "runArguments": project["run_arguments"],
+            "tutorialLink": (
+                {
+                    "languageId": tutorial_language_id,
+                    "pageId": tutorial_page_id,
+                    "exampleId": tutorial_example_id,
+                }
+                if tutorial_language_id and tutorial_page_id
+                else None
+            ),
             "entryFileId": project["entry_file_id"],
             "createdAt": project["created_at"],
             "updatedAt": project["updated_at"],
@@ -2885,17 +3496,24 @@ class Database:
                 """,
                 (user_id,),
             ).fetchall()
-        return [
-            {
-                "id": row["id"],
-                "code": row["code"],
-                "title": row["title"],
-                "summary": row["summary"],
-                "createdAt": row["created_at"],
-                "updatedAt": row["updated_at"],
-            }
-            for row in rows
-        ]
+        languages = []
+        for row in rows:
+            curriculum = language_curriculum(str(row["code"]))
+            languages.append(
+                {
+                    "id": row["id"],
+                    "code": row["code"],
+                    "title": row["title"],
+                    "summary": row["summary"],
+                    "curriculum": {
+                        "profile": curriculum["profile"],
+                        "moduleCount": len(curriculum["modules"]),
+                    },
+                    "createdAt": row["created_at"],
+                    "updatedAt": row["updated_at"],
+                }
+            )
+        return languages
 
     def tutorial_language_detail(self, user_id: str, language_id: str) -> dict[str, Any]:
         self._ensure_builtin_c_tutorial(user_id)
@@ -2912,21 +3530,29 @@ class Database:
             page_rows = connection.execute(
                 """
                 SELECT p.id, p.parent_id, p.origin, p.kind, p.title, p.summary, p.content_json, p.position,
-                       p.created_at, p.updated_at, n.content AS note_content, n.updated_at AS note_updated_at
+                       p.created_at, p.updated_at, n.content AS note_content, n.updated_at AS note_updated_at,
+                       progress.status AS progress_status, progress.updated_at AS progress_updated_at,
+                       checkpoint.checkpoint_id AS checkpoint_id, checkpoint.attempt_count AS checkpoint_attempt_count,
+                       checkpoint.last_option_id AS checkpoint_last_option_id, checkpoint.is_correct AS checkpoint_is_correct,
+                       checkpoint.updated_at AS checkpoint_updated_at
                 FROM tutorial_pages p
                 LEFT JOIN tutorial_notes n ON n.page_id = p.id AND n.user_id = ?
+                LEFT JOIN tutorial_page_progress progress ON progress.page_id = p.id AND progress.user_id = ?
+                LEFT JOIN tutorial_checkpoint_attempts checkpoint ON checkpoint.page_id = p.id AND checkpoint.user_id = ?
                 WHERE p.language_id = ?
                 ORDER BY p.position, p.title COLLATE NOCASE
                 """,
-                (user_id, language_id),
+                (user_id, user_id, user_id, language_id),
             ).fetchall()
             example_rows = connection.execute(
                 """
                 SELECT e.id, e.page_id, e.title, e.description, e.source, e.stdin, e.standard, e.position,
+                       language.code AS language_code,
                        e.created_at, e.updated_at, d.source AS draft_source, d.stdin AS draft_stdin,
                        d.updated_at AS draft_updated_at
                 FROM tutorial_examples e
                 JOIN tutorial_pages p ON p.id = e.page_id
+                JOIN tutorial_languages language ON language.id = p.language_id
                 LEFT JOIN tutorial_example_drafts d ON d.example_id = e.id AND d.user_id = ?
                 WHERE p.language_id = ?
                 ORDER BY e.position, e.title COLLATE NOCASE
@@ -2942,6 +3568,17 @@ class Database:
                 content = {}
             if not isinstance(content, dict):
                 content = {}
+            checkpoint_id = self._clean_text(content.get("checkpointId"), 120)
+            checkpoint = tutorial_checkpoint_public(tutorial_checkpoint(str(language["code"]), checkpoint_id))
+            if checkpoint:
+                checkpoint.update(
+                    {
+                        "attemptCount": int(row["checkpoint_attempt_count"] or 0),
+                        "lastOptionId": row["checkpoint_last_option_id"] or "",
+                        "isCorrect": bool(row["checkpoint_is_correct"]),
+                        "updatedAt": row["checkpoint_updated_at"] or "",
+                    }
+                )
             pages.append(
                 {
                     "id": row["id"],
@@ -2954,6 +3591,9 @@ class Database:
                     "position": row["position"],
                     "note": row["note_content"] or "",
                     "noteUpdatedAt": row["note_updated_at"] or "",
+                    "progressStatus": row["progress_status"] or "not_started",
+                    "progressUpdatedAt": row["progress_updated_at"] or "",
+                    "checkpoint": checkpoint,
                     "createdAt": row["created_at"],
                     "updatedAt": row["updated_at"],
                 }
@@ -2966,6 +3606,7 @@ class Database:
                 "description": row["description"],
                 "source": row["source"],
                 "stdin": row["stdin"],
+                "language": row["language_code"],
                 "draftSource": row["draft_source"] if row["draft_source"] is not None else row["source"],
                 "draftStdin": row["draft_stdin"] if row["draft_stdin"] is not None else row["stdin"],
                 "draftUpdatedAt": row["draft_updated_at"] or "",
@@ -2976,6 +3617,9 @@ class Database:
             }
             for row in example_rows
         ]
+        study_pages = [page for page in pages if page["kind"] == "lesson"]
+        curriculum = language_curriculum(str(language["code"]))
+        curriculum["visualizationModels"] = visualization_models_for_language(str(language["code"]))
         return {
             "language": {
                 "id": language["id"],
@@ -2985,13 +3629,38 @@ class Database:
                 "createdAt": language["created_at"],
                 "updatedAt": language["updated_at"],
             },
+            "curriculum": curriculum,
             "pages": pages,
             "examples": examples,
+            "progress": {
+                "completed": sum(page["progressStatus"] == "completed" for page in study_pages),
+                "total": len(study_pages),
+            },
         }
 
     def _tutorial_content(self, value: Any, fallback_lead: str) -> dict[str, Any]:
         raw_content = value if isinstance(value, dict) else {}
         lead = self._clean_text(raw_content.get("lead", fallback_lead), 10_000)
+        raw_goals = raw_content.get("goals", [])
+        goals = (
+            [self._clean_text(item, 500) for item in raw_goals[:24] if self._clean_text(item, 500)]
+            if isinstance(raw_goals, list)
+            else []
+        )
+        raw_pedagogy = raw_content.get("pedagogy", {})
+        raw_pedagogy = raw_pedagogy if isinstance(raw_pedagogy, dict) else {}
+        raw_prior_knowledge = raw_pedagogy.get("priorKnowledge", [])
+        prior_knowledge = (
+            [self._clean_text(item, 500) for item in raw_prior_knowledge[:12] if self._clean_text(item, 500)]
+            if isinstance(raw_prior_knowledge, (list, tuple))
+            else []
+        )
+        pedagogy = {
+            "context": self._clean_text(raw_pedagogy.get("context"), 2_000),
+            "priorKnowledge": prior_knowledge,
+            "keyIdea": self._clean_text(raw_pedagogy.get("keyIdea"), 2_000),
+            "transfer": self._clean_text(raw_pedagogy.get("transfer"), 2_000),
+        }
         raw_sections = raw_content.get("sections", [])
         sections = []
         if isinstance(raw_sections, list):
@@ -3010,7 +3679,109 @@ class Database:
                 }
                 if section["title"] or section["paragraphs"] or section["bullets"] or section["callout"]:
                     sections.append(section)
-        return {"lead": lead, "sections": sections}
+        blocks = []
+        raw_blocks = raw_content.get("blocks", [])
+        if isinstance(raw_blocks, list):
+            for raw_block in raw_blocks[:240]:
+                if not isinstance(raw_block, dict):
+                    continue
+                block_type = self._clean_text(raw_block.get("type"), 32)
+                if block_type not in TUTORIAL_CONTENT_BLOCK_TYPES:
+                    continue
+                if block_type in {"heading", "paragraph"}:
+                    text = self._clean_text(raw_block.get("text"), 10_000)
+                    if text:
+                        blocks.append({"type": block_type, "text": text})
+                elif block_type == "list":
+                    raw_items = raw_block.get("items", [])
+                    items = (
+                        [self._clean_text(item, 2_000) for item in raw_items[:120] if self._clean_text(item, 2_000)]
+                        if isinstance(raw_items, list)
+                        else []
+                    )
+                    if items:
+                        blocks.append({"type": "list", "items": items})
+                elif block_type == "callout":
+                    text = self._clean_text(raw_block.get("text"), 10_000)
+                    tone = self._clean_text(raw_block.get("tone"), 24)
+                    if text:
+                        blocks.append({"type": "callout", "text": text, "tone": tone if tone in TUTORIAL_CALLOUT_TONES else "info"})
+                elif block_type == "code":
+                    source = self._clean_text(raw_block.get("source"), 100_000)
+                    if source:
+                        blocks.append(
+                            {
+                                "type": "code",
+                                "source": source,
+                                "language": self._clean_text(raw_block.get("language"), 48),
+                                "title": self._clean_text(raw_block.get("title"), 200),
+                            }
+                        )
+                elif block_type == "visualization":
+                    visualization_id = self._clean_text(raw_block.get("visualizationId"), 120)
+                    if visualization_id:
+                        blocks.append(
+                            {
+                                "type": "visualization",
+                                "visualizationId": visualization_id,
+                                "title": self._clean_text(raw_block.get("title"), 200),
+                                "summary": self._clean_text(raw_block.get("summary"), 2_000),
+                            }
+                        )
+                elif block_type == "checkpoint":
+                    prompt = self._clean_text(raw_block.get("prompt"), 2_000)
+                    if prompt:
+                        blocks.append({"type": "checkpoint", "prompt": prompt})
+        if not blocks:
+            for section in sections:
+                if section["title"]:
+                    blocks.append({"type": "heading", "text": section["title"]})
+                blocks.extend({"type": "paragraph", "text": paragraph} for paragraph in section["paragraphs"])
+                if section["bullets"]:
+                    blocks.append({"type": "list", "items": section["bullets"]})
+                if section["callout"]:
+                    blocks.append({"type": "callout", "text": section["callout"], "tone": "info"})
+        if not sections and blocks:
+            # Staršie otvorené klienty poznajú iba sections. Zachovaj im celý
+            # slovný výklad, aj keď novší klient použije bohatšie blocks.
+            current_section: dict[str, Any] | None = None
+
+            def append_section() -> dict[str, Any]:
+                nonlocal current_section
+                if current_section is None:
+                    current_section = {"title": "", "paragraphs": [], "bullets": [], "callout": ""}
+                    sections.append(current_section)
+                return current_section
+
+            for block in blocks:
+                block_type = block["type"]
+                if block_type == "heading":
+                    current_section = {"title": block["text"], "paragraphs": [], "bullets": [], "callout": ""}
+                    sections.append(current_section)
+                elif block_type == "paragraph":
+                    append_section()["paragraphs"].append(block["text"])
+                elif block_type == "list":
+                    append_section()["bullets"].extend(block["items"])
+                elif block_type == "callout":
+                    append_section()["callout"] = block["text"]
+        raw_visualization_ids = raw_content.get("visualizationIds", [])
+        visualization_ids = (
+            [self._clean_text(item, 120) for item in raw_visualization_ids[:24] if self._clean_text(item, 120)]
+            if isinstance(raw_visualization_ids, list)
+            else []
+        )
+        exercise_topic = self._clean_text(raw_content.get("exerciseTopic"), 80)
+        checkpoint_id = self._clean_text(raw_content.get("checkpointId"), 120)
+        return {
+            "lead": lead,
+            "goals": goals,
+            "pedagogy": pedagogy,
+            "sections": sections,
+            "blocks": blocks,
+            "exerciseTopic": exercise_topic,
+            "visualizationIds": visualization_ids,
+            "checkpointId": checkpoint_id,
+        }
 
     def create_tutorial_page(self, user_id: str, language_id: str, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
@@ -3196,6 +3967,31 @@ class Database:
             )
         return {"pageId": page_id, "content": content, "updatedAt": now}
 
+    def save_tutorial_page_progress(self, user_id: str, page_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Stav témy učebnice má neplatný tvar.")
+        status = self._clean_text(data.get("status"), 32)
+        if status not in TUTORIAL_PROGRESS_STATUSES:
+            raise ValidationError("Neznámy stav témy učebnice.")
+        now = now_iso()
+        with self.connect() as connection:
+            self._tutorial_page(connection, user_id, page_id)
+            if status == "not_started":
+                connection.execute(
+                    "DELETE FROM tutorial_page_progress WHERE user_id = ? AND page_id = ?",
+                    (user_id, page_id),
+                )
+                return {"pageId": page_id, "status": status, "updatedAt": ""}
+            connection.execute(
+                """
+                INSERT INTO tutorial_page_progress(user_id, page_id, status, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, page_id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at
+                """,
+                (user_id, page_id, status, now),
+            )
+        return {"pageId": page_id, "status": status, "updatedAt": now}
+
     def save_tutorial_example_draft(self, user_id: str, example_id: str, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise ValidationError("Úprava príkladu má neplatný tvar.")
@@ -3221,17 +4017,175 @@ class Database:
         return {
             "id": row["id"],
             "title": row["title"],
+            "language": row["language_code"],
             "source": row["source"],
             "stdin": row["stdin"],
             "standard": row["standard"],
         }
 
+    def tutorial_page_practice(self, user_id: str, page_id: str, variant: Any = 0) -> dict[str, Any]:
+        with self.connect() as connection:
+            page = connection.execute(
+                """
+                SELECT p.content_json, language.code
+                FROM tutorial_pages p
+                JOIN tutorial_languages language ON language.id = p.language_id
+                WHERE p.id = ? AND language.user_id = ?
+                """,
+                (page_id, user_id),
+            ).fetchone()
+        if not page:
+            raise KeyError("Téma učebnice neexistuje.")
+        try:
+            content = json.loads(page["content_json"])
+        except json.JSONDecodeError:
+            content = {}
+        topic = self._clean_text(content.get("exerciseTopic") if isinstance(content, dict) else "", 80)
+        exercise = tutorial_practice(str(page["code"]), topic, variant)
+        if not exercise:
+            raise ValidationError("Pre túto tému zatiaľ nie je pripravené cvičenie.")
+        return {"pageId": page_id, **exercise}
+
+    def answer_tutorial_checkpoint(self, user_id: str, page_id: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Odpoveď na kontrolnú otázku má neplatný tvar.")
+        option_id = self._clean_text(data.get("optionId"), 80)
+        with self.connect() as connection:
+            page = connection.execute(
+                """
+                SELECT p.content_json, language.code
+                FROM tutorial_pages p
+                JOIN tutorial_languages language ON language.id = p.language_id
+                WHERE p.id = ? AND language.user_id = ?
+                """,
+                (page_id, user_id),
+            ).fetchone()
+            if not page:
+                raise KeyError("Téma učebnice neexistuje.")
+            try:
+                content = json.loads(page["content_json"])
+            except json.JSONDecodeError:
+                content = {}
+            checkpoint_id = self._clean_text(content.get("checkpointId") if isinstance(content, dict) else "", 120)
+            checkpoint = tutorial_checkpoint(str(page["code"]), checkpoint_id)
+            if not checkpoint:
+                raise ValidationError("Pre túto tému zatiaľ nie je pripravená kontrolná otázka.")
+            try:
+                evaluation = evaluate_tutorial_checkpoint(checkpoint, option_id)
+            except ValueError as error:
+                raise ValidationError(str(error)) from error
+            now = now_iso()
+            connection.execute(
+                """
+                INSERT INTO tutorial_checkpoint_attempts(
+                    user_id, page_id, checkpoint_id, attempt_count, last_option_id, is_correct, updated_at
+                ) VALUES (?, ?, ?, 1, ?, ?, ?)
+                ON CONFLICT(user_id, page_id) DO UPDATE SET
+                    checkpoint_id = excluded.checkpoint_id,
+                    attempt_count = tutorial_checkpoint_attempts.attempt_count + 1,
+                    last_option_id = excluded.last_option_id,
+                    is_correct = excluded.is_correct,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, page_id, checkpoint_id, option_id, int(evaluation["isCorrect"]), now),
+            )
+            attempt = connection.execute(
+                """
+                SELECT attempt_count, last_option_id, is_correct, updated_at
+                FROM tutorial_checkpoint_attempts
+                WHERE user_id = ? AND page_id = ?
+                """,
+                (user_id, page_id),
+            ).fetchone()
+        return {
+            "pageId": page_id,
+            **evaluation,
+            "attemptCount": int(attempt["attempt_count"]),
+            "lastOptionId": attempt["last_option_id"],
+            "updatedAt": attempt["updated_at"],
+        }
+
     def _ensure_builtin_c_tutorial(self, user_id: str) -> None:
-        default_language_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"poznamkovnik:tutorial:{user_id}:{C_LANGUAGE['code']}"))
+        self._ensure_builtin_tutorial(
+            user_id,
+            C_LANGUAGE,
+            C_PAGES,
+            C_LEARNING_GOALS,
+            C_EXERCISE_TOPICS,
+            C_VISUALIZATION_IDS,
+            C_CHECKPOINT_IDS,
+            C_EXAMPLES,
+            C_TEACHING_FRAMES,
+        )
+        self._ensure_builtin_tutorial(
+            user_id,
+            CPP_LANGUAGE,
+            CPP_PAGES,
+            CPP_LEARNING_GOALS,
+            {},
+            CPP_VISUALIZATION_IDS,
+            {},
+            CPP_EXAMPLES,
+        )
+        self._ensure_builtin_tutorial(
+            user_id,
+            CSHARP_LANGUAGE,
+            CSHARP_PAGES,
+            CSHARP_LEARNING_GOALS,
+            {},
+            CSHARP_VISUALIZATION_IDS,
+            {},
+            CSHARP_EXAMPLES,
+        )
+        self._ensure_builtin_tutorial(
+            user_id,
+            PYTHON_LANGUAGE,
+            PYTHON_PAGES,
+            PYTHON_LEARNING_GOALS,
+            {},
+            PYTHON_VISUALIZATION_IDS,
+            {},
+            PYTHON_EXAMPLES,
+        )
+        self._ensure_builtin_tutorial(
+            user_id,
+            RUBY_LANGUAGE,
+            RUBY_PAGES,
+            RUBY_LEARNING_GOALS,
+            {},
+            RUBY_VISUALIZATION_IDS,
+            {},
+            RUBY_EXAMPLES,
+        )
+        self._ensure_builtin_tutorial(
+            user_id,
+            JAVASCRIPT_LANGUAGE,
+            JAVASCRIPT_PAGES,
+            JAVASCRIPT_LEARNING_GOALS,
+            {},
+            JAVASCRIPT_VISUALIZATION_IDS,
+            {},
+            JAVASCRIPT_EXAMPLES,
+        )
+
+    def _ensure_builtin_tutorial(
+        self,
+        user_id: str,
+        language: dict[str, str],
+        pages: list[dict[str, Any]],
+        learning_goals: dict[str, tuple[str, ...]],
+        exercise_topics: dict[str, str],
+        visualization_ids: dict[str, tuple[str, ...]],
+        checkpoint_ids: dict[str, str],
+        examples: list[dict[str, Any]],
+        teaching_frames: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        teaching_frames = teaching_frames or {}
+        default_language_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"poznamkovnik:tutorial:{user_id}:{language['code']}"))
         with self.connect() as connection:
             existing = connection.execute(
                 "SELECT id FROM tutorial_languages WHERE user_id = ? AND code = ?",
-                (user_id, C_LANGUAGE["code"]),
+                (user_id, language["code"]),
             ).fetchone()
             language_id = str(existing["id"]) if existing else default_language_id
             now = now_iso()
@@ -3243,12 +4197,12 @@ class Database:
                     WHERE id = ? AND (title IS NOT ? OR summary IS NOT ?)
                     """,
                     (
-                        C_LANGUAGE["title"],
-                        C_LANGUAGE["summary"],
+                        language["title"],
+                        language["summary"],
                         now,
                         language_id,
-                        C_LANGUAGE["title"],
-                        C_LANGUAGE["summary"],
+                        language["title"],
+                        language["summary"],
                     ),
                 )
             else:
@@ -3257,12 +4211,25 @@ class Database:
                     INSERT INTO tutorial_languages(id, user_id, code, title, summary, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (language_id, user_id, C_LANGUAGE["code"], C_LANGUAGE["title"], C_LANGUAGE["summary"], now, now),
+                    (language_id, user_id, language["code"], language["title"], language["summary"], now, now),
                 )
             page_ids = {
                 page["key"]: str(uuid.uuid5(uuid.UUID(language_id), f"page:{page['key']}"))
-                for page in C_PAGES
+                for page in pages
             }
+            pending_pages = list(pages)
+            ordered_pages = []
+            inserted_page_keys: set[str] = set()
+            while pending_pages:
+                ready_pages = [
+                    page for page in pending_pages
+                    if not page["parent_key"] or page["parent_key"] in inserted_page_keys
+                ]
+                if not ready_pages:
+                    raise RuntimeError(f"Vstavané stránky {language['title']} obsahujú neplatnú alebo cyklickú nadradenú kapitolu.")
+                ordered_pages.extend(ready_pages)
+                inserted_page_keys.update(page["key"] for page in ready_pages)
+                pending_pages = [page for page in pending_pages if page not in ready_pages]
             connection.executemany(
                 """
                 INSERT INTO tutorial_pages(
@@ -3295,12 +4262,26 @@ class Database:
                         page["kind"],
                         page["title"],
                         page["summary"],
-                        json.dumps(page["content"], ensure_ascii=False, separators=(",", ":")),
+                        json.dumps(
+                            self._tutorial_content(
+                                {
+                                    **page["content"],
+                                    "goals": list(learning_goals.get(page["key"], ())),
+                                    "exerciseTopic": exercise_topics.get(page["key"], ""),
+                                    "visualizationIds": list(visualization_ids.get(page["key"], ())),
+                                    "checkpointId": checkpoint_ids.get(page["key"], ""),
+                                    "pedagogy": page["content"].get("pedagogy", teaching_frames.get(page["key"], {})),
+                                },
+                                page["summary"],
+                            ),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
                         int(page["position"]),
                         now,
                         now,
                     )
-                    for page in C_PAGES
+                    for page in ordered_pages
                 ],
             )
             connection.executemany(
@@ -3338,7 +4319,7 @@ class Database:
                         now,
                         now,
                     )
-                    for example in C_EXAMPLES
+                    for example in examples
                 ],
             )
 
@@ -3360,7 +4341,7 @@ class Database:
     def _tutorial_example(connection: sqlite3.Connection, user_id: str, example_id: str) -> sqlite3.Row:
         row = connection.execute(
             """
-            SELECT e.* FROM tutorial_examples e
+            SELECT e.*, language.code AS language_code FROM tutorial_examples e
             JOIN tutorial_pages p ON p.id = e.page_id
             JOIN tutorial_languages language ON language.id = p.language_id
             WHERE e.id = ? AND language.user_id = ?
@@ -3613,6 +4594,27 @@ class Database:
                     """,
                     (user_id, user_id),
                 ),
+                "tutorialPageProgress": rows(
+                    """
+                    SELECT progress.page_id, progress.status, progress.updated_at
+                    FROM tutorial_page_progress progress
+                    JOIN tutorial_pages page ON page.id = progress.page_id
+                    JOIN tutorial_languages language ON language.id = page.language_id
+                    WHERE progress.user_id = ? AND language.user_id = ? ORDER BY progress.updated_at
+                    """,
+                    (user_id, user_id),
+                ),
+                "tutorialCheckpointAttempts": rows(
+                    """
+                    SELECT attempt.page_id, attempt.checkpoint_id, attempt.attempt_count, attempt.last_option_id,
+                           attempt.is_correct, attempt.updated_at
+                    FROM tutorial_checkpoint_attempts attempt
+                    JOIN tutorial_pages page ON page.id = attempt.page_id
+                    JOIN tutorial_languages language ON language.id = page.language_id
+                    WHERE attempt.user_id = ? AND language.user_id = ? ORDER BY attempt.updated_at
+                    """,
+                    (user_id, user_id),
+                ),
                 "tutorialExampleDrafts": rows(
                     """
                     SELECT d.example_id, d.source, d.stdin, d.updated_at
@@ -3639,6 +4641,8 @@ class Database:
             "tutorialExamples",
             "tutorialNotes",
             "tutorialExampleDrafts",
+            "tutorialPageProgress",
+            "tutorialCheckpointAttempts",
             "semanticLinks",
             "musicTracks",
             "musicPlaylists",
@@ -4315,6 +5319,45 @@ class Database:
         ]
         if len({row["page_id"] for row in tutorial_notes}) != len(tutorial_notes):
             raise ValidationError("Záloha obsahuje duplicitné poznámky učebnice.")
+        tutorial_page_progress = []
+        for row in records["tutorialPageProgress"]:
+            page_id = self._clean_id(row.get("page_id"))
+            status = self._backup_text(row, "status", 32)
+            if page_id not in tutorial_page_ids or status not in {"in_progress", "completed"}:
+                continue
+            tutorial_page_progress.append(
+                {
+                    "page_id": page_id,
+                    "status": status,
+                    "updated_at": self._timestamp(row.get("updated_at")),
+                }
+            )
+        if len({row["page_id"] for row in tutorial_page_progress}) != len(tutorial_page_progress):
+            raise ValidationError("Záloha obsahuje duplicitný postup učebnice.")
+        tutorial_checkpoint_attempts = []
+        for row in records["tutorialCheckpointAttempts"]:
+            page_id = self._clean_id(row.get("page_id"))
+            checkpoint_id = self._backup_text(row, "checkpoint_id", 120)
+            option_id = self._backup_text(row, "last_option_id", 80)
+            try:
+                attempt_count = int(row.get("attempt_count", 0))
+            except (TypeError, ValueError):
+                attempt_count = 0
+            is_correct = 1 if row.get("is_correct") in {1, True, "1"} else 0
+            if page_id not in tutorial_page_ids or not checkpoint_id or not option_id or attempt_count < 1:
+                continue
+            tutorial_checkpoint_attempts.append(
+                {
+                    "page_id": page_id,
+                    "checkpoint_id": checkpoint_id,
+                    "attempt_count": min(attempt_count, 1_000_000),
+                    "last_option_id": option_id,
+                    "is_correct": is_correct,
+                    "updated_at": self._timestamp(row.get("updated_at")),
+                }
+            )
+        if len({row["page_id"] for row in tutorial_checkpoint_attempts}) != len(tutorial_checkpoint_attempts):
+            raise ValidationError("Záloha obsahuje duplicitné odpovede na kontrolné otázky.")
         tutorial_drafts = [
             {
                 "example_id": self._backup_id(row, "example_id"),
@@ -4794,6 +5837,20 @@ class Database:
             connection.executemany(
                 "INSERT INTO tutorial_notes(user_id, page_id, content, updated_at) VALUES (:user_id, :page_id, :content, :updated_at)",
                 [{**row, "user_id": user_id} for row in tutorial_notes],
+            )
+            connection.executemany(
+                "INSERT INTO tutorial_page_progress(user_id, page_id, status, updated_at) VALUES (:user_id, :page_id, :status, :updated_at)",
+                [{**row, "user_id": user_id} for row in tutorial_page_progress],
+            )
+            connection.executemany(
+                """
+                INSERT INTO tutorial_checkpoint_attempts(
+                    user_id, page_id, checkpoint_id, attempt_count, last_option_id, is_correct, updated_at
+                ) VALUES (
+                    :user_id, :page_id, :checkpoint_id, :attempt_count, :last_option_id, :is_correct, :updated_at
+                )
+                """,
+                [{**row, "user_id": user_id} for row in tutorial_checkpoint_attempts],
             )
             connection.executemany(
                 "INSERT INTO tutorial_example_drafts(user_id, example_id, source, stdin, updated_at) VALUES (:user_id, :example_id, :source, :stdin, :updated_at)",

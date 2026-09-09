@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
+from backend.api import _development_test_result_data
 from backend.auth import AuthService
 from backend.code_runner import DevelopmentCodeRunner
 from backend.database import Database, ValidationError
@@ -50,6 +52,263 @@ class DevelopmentWorkspaceTestCase(unittest.TestCase):
         self.assertEqual(len(project["files"]), 1)
         with self.assertRaises(ValidationError):
             self.database.delete_development_file(self.user["id"], "project-c", project["entryFileId"])
+
+    def test_project_can_start_with_supplied_entry_content(self) -> None:
+        source = '#include <stdio.h>\n\nint main(void) {\n  puts("Z učebnice");\n}\n'
+        tutorial_link = {
+            "languageId": "tutorial-c",
+            "pageId": "tutorial-c-start",
+            "exampleId": "tutorial-c-hello",
+        }
+        project = self.database.create_development_project(
+            self.user["id"],
+            {
+                "id": "tutorial-example",
+                "title": "Príklad: Pozdrav",
+                "language": "c",
+                "entryContent": source,
+                "tutorialLink": tutorial_link,
+            },
+        )
+
+        self.assertEqual(project["files"][0]["content"], source)
+        self.assertEqual(project["tutorialLink"], tutorial_link)
+        entry = self.database.development_entry_file(self.user["id"], project["id"])
+        self.assertEqual(entry["source"], source)
+
+    def test_tutorial_example_reuses_its_linked_development_project(self) -> None:
+        tutorial_link = {
+            "languageId": "tutorial-c",
+            "pageId": "tutorial-c-start",
+            "exampleId": "tutorial-c-hello",
+        }
+        project = self.database.create_development_project(
+            self.user["id"],
+            {
+                "id": "linked-example",
+                "title": "Príklad: Pozdrav",
+                "language": "c",
+                "entryContent": "int main(void) { return 0; }\n",
+                "tutorialLink": tutorial_link,
+            },
+        )
+        updated = self.database.update_development_file(
+            self.user["id"],
+            project["id"],
+            project["entryFileId"],
+            {"content": "int main(void) { return 7; }\n"},
+        )
+
+        reused = self.database.development_project_for_tutorial(
+            self.user["id"],
+            tutorial_link["languageId"],
+            tutorial_link["pageId"],
+            tutorial_link["exampleId"],
+        )
+
+        self.assertIsNotNone(reused)
+        assert reused is not None
+        self.assertEqual(reused["id"], project["id"])
+        self.assertEqual(reused["files"][0]["content"], updated["files"][0]["content"])
+        self.assertIsNone(
+            self.database.development_project_for_tutorial(
+                self.user["id"], "tutorial-c", "tutorial-c-start", "missing-example"
+            )
+        )
+
+    def test_project_symbol_rename_changes_code_but_not_comments_or_strings(self) -> None:
+        project = self.database.create_development_project(
+            self.user["id"],
+            {
+                "id": "rename-symbol",
+                "title": "Premenovanie",
+                "language": "c",
+                "entryContent": (
+                    '#include <stdio.h>\n\nint value = 1; // value v komentári\n'
+                    'int main(void) {\n  printf("value v texte: %d\\n", value);\n  return value;\n}\n'
+                ),
+            },
+        )
+        project = self.database.create_development_file(
+            self.user["id"], project["id"], {"id": "rename-header", "title": "pomoc.h", "content": "int value;\n"}
+        )
+
+        result = self.database.rename_development_symbol(
+            self.user["id"], project["id"], {"oldName": "value", "newName": "number"}
+        )
+
+        self.assertEqual(result["replacements"], 4)
+        files = {item["title"]: item["content"] for item in result["project"]["files"]}
+        self.assertIn("int number = 1; // value v komentári", files["main.c"])
+        self.assertIn('"value v texte: %d\\n", number', files["main.c"])
+        self.assertIn("return number;", files["main.c"])
+        self.assertEqual(files["pomoc.h"], "int number;")
+
+    def test_project_symbol_rename_skips_python_comments_and_triple_strings(self) -> None:
+        project = self.database.create_development_project(
+            self.user["id"],
+            {
+                "id": "rename-python-symbol",
+                "title": "Premenovanie Python",
+                "language": "python",
+                "entryContent": 'value = 1\n# value v komentári\ntext = """value v texte"""\nprint(value)\n',
+            },
+        )
+
+        result = self.database.rename_development_symbol(
+            self.user["id"], project["id"], {"oldName": "value", "newName": "number"}
+        )
+
+        self.assertEqual(result["replacements"], 2)
+        source = result["project"]["files"][0]["content"]
+        self.assertIn("number = 1", source)
+        self.assertIn("# value v komentári", source)
+        self.assertIn('"""value v texte"""', source)
+        self.assertIn("print(number)", source)
+
+    def test_symbol_rename_preview_is_non_mutating_and_can_be_confirmed(self) -> None:
+        project = self.database.create_development_project(
+            self.user["id"],
+            {
+                "id": "rename-preview",
+                "title": "Náhľad premenovania",
+                "language": "c",
+                "entryContent": "int value = 1; // value v komentári\nint main(void) { return value; }\n",
+            },
+        )
+        project = self.database.create_development_file(
+            self.user["id"], project["id"], {"id": "preview-header", "title": "value.h", "content": "extern int value;\n"}
+        )
+
+        preview = self.database.preview_development_symbol_rename(
+            self.user["id"], project["id"], {"oldName": "value", "newName": "number"}
+        )
+
+        self.assertEqual(preview["replacements"], 3)
+        self.assertEqual(preview["files"], 2)
+        self.assertEqual(
+            self.database.development_entry_file(self.user["id"], project["id"])["source"],
+            "int value = 1; // value v komentári\nint main(void) { return value; }\n",
+        )
+
+        selected_edit = {**preview["workspaceEdits"][0]["edits"][0], "newText": "custom_value"}
+        result = self.database.apply_development_text_edits(
+            self.user["id"], project["id"], {"workspaceEdits": [{"path": "main.c", "edits": [selected_edit]}]}
+        )
+
+        self.assertEqual(result["replacements"], 1)
+        files = {item["title"]: item["content"] for item in result["project"]["files"]}
+        self.assertIn("int custom_value = 1; // value v komentári", files["main.c"])
+        self.assertIn("return value;", files["main.c"])
+        self.assertEqual(files["value.h"], "extern int value;")
+
+    def test_confirmed_language_service_edits_apply_exact_ranges_only(self) -> None:
+        project = self.database.create_development_project(
+            self.user["id"],
+            {
+                "id": "lsp-edits",
+                "title": "Sémantické premenovanie",
+                "language": "c",
+                "entryContent": "int greet(void) { return 1; }\nint main(void) { return greet(); }\n",
+            },
+        )
+        project = self.database.create_development_file(
+            self.user["id"], project["id"], {"id": "lsp-header", "title": "greet.h", "content": "int greet(void);\n"}
+        )
+
+        result = self.database.apply_development_text_edits(
+            self.user["id"],
+            project["id"],
+            {
+                "workspaceEdits": [
+                    {
+                        "path": "main.c",
+                        "edits": [
+                            {"startLine": 1, "startColumn": 5, "endLine": 1, "endColumn": 10, "newText": "welcome"},
+                            {"startLine": 2, "startColumn": 25, "endLine": 2, "endColumn": 30, "newText": "welcome"},
+                        ],
+                    },
+                    {
+                        "path": "greet.h",
+                        "edits": [
+                            {"startLine": 1, "startColumn": 5, "endLine": 1, "endColumn": 10, "newText": "welcome"},
+                        ],
+                    },
+                ]
+            },
+        )
+        self.assertEqual(result["replacements"], 3)
+        self.assertEqual(result["files"], 2)
+        files = {item["title"]: item["content"] for item in result["project"]["files"]}
+        self.assertEqual(files["main.c"], "int welcome(void) { return 1; }\nint main(void) { return welcome(); }\n")
+        self.assertEqual(files["greet.h"], "int welcome(void);")
+
+    def test_language_service_edits_reject_overlapping_ranges(self) -> None:
+        project = self.database.create_development_project(
+            self.user["id"], {"id": "lsp-overlap", "title": "Prekrývanie", "language": "c", "entryContent": "int value;\n"}
+        )
+        with self.assertRaises(ValidationError):
+            self.database.apply_development_text_edits(
+                self.user["id"],
+                project["id"],
+                {
+                    "workspaceEdits": [{
+                        "path": "main.c",
+                        "edits": [
+                            {"startLine": 1, "startColumn": 5, "endLine": 1, "endColumn": 10, "newText": "number"},
+                            {"startLine": 1, "startColumn": 7, "endLine": 1, "endColumn": 10, "newText": "n"},
+                        ],
+                    }]
+                },
+            )
+
+    def test_existing_test_case_table_gets_last_result_columns(self) -> None:
+        legacy_path = self.root / "legacy-development.sqlite3"
+        with sqlite3.connect(legacy_path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE development_test_cases (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    stdin TEXT NOT NULL DEFAULT '',
+                    arguments TEXT NOT NULL DEFAULT '',
+                    expected_output TEXT NOT NULL DEFAULT '',
+                    position INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+        Database(legacy_path).initialize()
+        with sqlite3.connect(legacy_path) as connection:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(development_test_cases)")}
+        self.assertTrue({"last_status", "last_run_at", "last_duration_ms", "last_exit_code"}.issubset(columns))
+
+    def test_existing_project_table_gets_tutorial_link_columns(self) -> None:
+        legacy_path = self.root / "legacy-development-project.sqlite3"
+        with sqlite3.connect(legacy_path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE development_projects (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    language TEXT NOT NULL DEFAULT 'c',
+                    project_kind TEXT NOT NULL DEFAULT 'program',
+                    firmware_target_id TEXT NOT NULL DEFAULT '',
+                    build_profile TEXT NOT NULL DEFAULT 'debug',
+                    run_arguments TEXT NOT NULL DEFAULT '',
+                    entry_file_id TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+        Database(legacy_path).initialize()
+        with sqlite3.connect(legacy_path) as connection:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(development_projects)")}
+        self.assertTrue({"tutorial_language_id", "tutorial_page_id", "tutorial_example_id", "firmware_serial_baud"}.issubset(columns))
 
     def test_project_template_is_applied_only_when_creating_a_project(self) -> None:
         project = self.database.create_development_project(
@@ -119,8 +378,37 @@ class DevelopmentWorkspaceTestCase(unittest.TestCase):
         self.assertEqual(updated["title"], "Pozdrav upravený")
         self.assertEqual(updated["stdin"], "Čau\n")
         self.assertEqual(updated["expectedOutput"], "Ahoj, Ján!\n")
+        recorded = self.database.record_development_test_result(
+            self.user["id"], project["id"], "hello-test", {"status": "output_mismatch", "durationMs": 42, "exitCode": 0}
+        )
+        self.assertEqual(recorded["lastResult"]["status"], "output_mismatch")
+        self.assertEqual(recorded["lastResult"]["durationMs"], 42)
+        persisted = self.database.list_development_test_cases(self.user["id"], project["id"])
+        self.assertEqual(persisted[0]["lastResult"]["exitCode"], 0)
         self.database.delete_development_test_case(self.user["id"], project["id"], "hello-test")
         self.assertEqual(self.database.list_development_test_cases(self.user["id"], project["id"]), [])
+
+    def test_test_run_result_metadata_distinguishes_build_runtime_and_output_failures(self) -> None:
+        test_case = {"expectedOutput": "Ahoj\n"}
+        passed = _development_test_result_data(
+            test_case,
+            {
+                "compiled": True,
+                "compile": {"durationMs": 3},
+                "run": {"stdout": "Ahoj\n", "stderr": "", "exitCode": 0, "durationMs": 4},
+            },
+        )
+        self.assertEqual(passed, {"status": "passed", "durationMs": 7, "exitCode": 0})
+        mismatch = _development_test_result_data(
+            test_case,
+            {"compiled": True, "compile": {}, "run": {"stdout": "Čau\n", "stderr": "", "exitCode": 0}},
+        )
+        self.assertEqual(mismatch["status"], "output_mismatch")
+        compile_error = _development_test_result_data(
+            test_case,
+            {"compiled": False, "compile": {"durationMs": 5}, "run": None},
+        )
+        self.assertEqual(compile_error["status"], "compile_error")
 
     def test_c_project_runner_includes_project_headers(self) -> None:
         runner = DevelopmentCodeRunner()
@@ -197,6 +485,24 @@ class DevelopmentWorkspaceTestCase(unittest.TestCase):
         self.assertTrue(result["compiled"])
         self.assertEqual(result["run"]["stdout"], "13\n")
 
+    def test_cpp_runner_compiles_a_standard_library_raii_example(self) -> None:
+        runner = DevelopmentCodeRunner()
+        if not runner.status()["languages"]["cpp"]["available"]:
+            self.skipTest("Bezpečná skúšobňa C++ nie je v tomto prostredí dostupná.")
+        source = (
+            "#include <iostream>\n"
+            "#include <memory>\n\n"
+            "int main() {\n"
+            "  auto value = std::make_unique<int>(42);\n"
+            "  std::cout << *value << \"\\n\";\n"
+            "}\n"
+        )
+
+        result = runner.run("cpp", source, "")
+
+        self.assertTrue(result["compiled"])
+        self.assertEqual(result["run"]["stdout"], "42\n")
+
     def test_c_project_can_be_compiled_without_running(self) -> None:
         runner = DevelopmentCodeRunner()
         if not runner.status()["languages"]["c"]["available"]:
@@ -205,6 +511,22 @@ class DevelopmentWorkspaceTestCase(unittest.TestCase):
         self.assertTrue(result["compiled"])
         self.assertIsNone(result["run"])
 
+    def test_ruby_runner_checks_and_executes_a_program(self) -> None:
+        runner = DevelopmentCodeRunner()
+        if not runner.status()["languages"]["ruby"]["available"]:
+            self.skipTest("Bezpečná skúšobňa Ruby nie je v tomto prostredí dostupná.")
+        result = runner.run("ruby", 'puts "Ahoj z Ruby"\n', "")
+        self.assertTrue(result["compiled"])
+        self.assertEqual(result["run"]["stdout"], "Ahoj z Ruby\n")
+
+    def test_perl_runner_checks_and_executes_a_program(self) -> None:
+        runner = DevelopmentCodeRunner()
+        if not runner.status()["languages"]["perl"]["available"]:
+            self.skipTest("Bezpečná skúšobňa Perlu nie je v tomto prostredí dostupná.")
+        result = runner.run("perl", 'print "Ahoj z Perlu\\n";\n', "")
+        self.assertTrue(result["compiled"])
+        self.assertEqual(result["run"]["stdout"], "Ahoj z Perlu\n")
+
     def test_c_project_can_be_built_with_release_profile(self) -> None:
         runner = DevelopmentCodeRunner()
         if not runner.status()["languages"]["c"]["available"]:
@@ -212,6 +534,24 @@ class DevelopmentWorkspaceTestCase(unittest.TestCase):
         result = runner.run("c", "int main(void) { return 0; }\n", "", execute=False, build_profile="release")
         self.assertTrue(result["compiled"])
         self.assertEqual(result["buildProfile"], "release")
+
+    def test_native_build_provides_binary_inspection(self) -> None:
+        runner = DevelopmentCodeRunner()
+        if not runner.status()["languages"]["c"]["available"]:
+            self.skipTest("Bezpečná skúšobňa C nie je v tomto prostredí dostupná.")
+        if not runner.status()["binaryInspection"]["available"]:
+            self.skipTest("Nástroje na rozbor binárky nie sú v tomto prostredí dostupné.")
+        result = runner.run(
+            "c",
+            "int helper(void) { return 7; }\nint main(void) { return helper() == 7 ? 0 : 1; }\n",
+            "",
+            execute=False,
+        )
+        self.assertTrue(result["compiled"])
+        inspection = result["inspection"]
+        self.assertTrue(inspection["available"])
+        self.assertGreater(inspection["memory"]["total"], 0)
+        self.assertTrue(any(symbol["name"] == "main" for symbol in inspection["symbols"]))
 
     def test_c_debug_profile_reports_undefined_behavior(self) -> None:
         runner = DevelopmentCodeRunner()
@@ -335,6 +675,8 @@ int main(int argc, char **argv) {
                 "cpp",
                 "python",
                 "javascript",
+                "ruby",
+                "perl",
                 "php",
                 "csharp",
                 "asm",
@@ -360,17 +702,39 @@ int main(int argc, char **argv) {
                 "kind": "firmware",
                 "language": "c",
                 "firmwareTargetId": "avr-atmega328p",
+                "firmwareProgrammerId": "avr-arduino",
+                "firmwareSerialPort": "/dev/ttyUSB0",
                 "buildProfile": "debug",
             },
         )
         self.assertEqual(project["kind"], "firmware")
         self.assertEqual(project["firmwareTarget"]["label"], "ATmega328P")
+        self.assertEqual(project["firmwareProgrammerId"], "avr-arduino")
+        self.assertEqual(project["firmwareSerialPort"], "/dev/ttyUSB0")
+        self.assertEqual(project["firmwareSerialBaud"], 115200)
         self.assertEqual(project["buildProfile"], "debug")
         self.assertIn("ATmega328P", project["files"][0]["content"])
 
         entry = self.database.development_entry_file(self.user["id"], project["id"])
         self.assertEqual(entry["projectKind"], "firmware")
         self.assertEqual(entry["firmwareTargetId"], "avr-atmega328p")
+        self.assertEqual(entry["firmwareProgrammerId"], "avr-arduino")
+        self.assertEqual(entry["firmwareSerialPort"], "/dev/ttyUSB0")
+        self.assertEqual(entry["firmwareSerialBaud"], 115200)
+
+        project = self.database.update_development_project(
+            self.user["id"],
+            project["id"],
+            {
+                "firmwareTargetId": "stm32f103",
+                "firmwareProgrammerId": "stm32-uart",
+                "firmwareSerialPort": "/dev/ttyACM0",
+                "firmwareSerialBaud": 57600,
+            },
+        )
+        self.assertEqual(project["firmwareProgrammerId"], "stm32-uart")
+        self.assertEqual(project["firmwareSerialPort"], "/dev/ttyACM0")
+        self.assertEqual(project["firmwareSerialBaud"], 57600)
 
         with self.assertRaises(ValidationError):
             self.database.create_development_project(
@@ -392,6 +756,9 @@ int main(int argc, char **argv) {
                     "language": "c",
                     "kind": "firmware",
                     "firmwareTargetId": "avr-atmega328p",
+                    "firmwareProgrammerId": "avr-arduino",
+                    "firmwareSerialPort": "/dev/ttyUSB0",
+                    "firmwareSerialBaud": 230400,
                     "buildProfile": "release",
                     "entryPath": "src/main.c",
                     "files": [
@@ -406,6 +773,9 @@ int main(int argc, char **argv) {
         self.assertEqual(imported["title"], "Prenesené meranie")
         self.assertEqual(imported["kind"], "firmware")
         self.assertEqual(imported["firmwareTarget"]["label"], "ATmega328P")
+        self.assertEqual(imported["firmwareProgrammerId"], "avr-arduino")
+        self.assertEqual(imported["firmwareSerialPort"], "/dev/ttyUSB0")
+        self.assertEqual(imported["firmwareSerialBaud"], 230400)
         self.assertEqual(imported["buildProfile"], "release")
         self.assertEqual(len(imported["files"]), 4)
 
@@ -420,6 +790,11 @@ int main(int argc, char **argv) {
                 "project": {
                     "title": "Prenesené testy",
                     "language": "python",
+                    "tutorialLink": {
+                        "languageId": "tutorial-python",
+                        "pageId": "tutorial-python-start",
+                        "exampleId": "tutorial-python-hello",
+                    },
                     "entryPath": "main.py",
                     "files": [{"path": "main.py", "kind": "file", "content": "print('Ahoj')\n"}],
                     "tests": [
@@ -440,6 +815,14 @@ int main(int argc, char **argv) {
         self.assertEqual(tests[0]["stdin"], "vstup\n")
         self.assertEqual(tests[0]["arguments"], '--meno "Ján Novák"')
         self.assertEqual(tests[0]["expectedOutput"], "Ahoj\n")
+        self.assertEqual(
+            imported["tutorialLink"],
+            {
+                "languageId": "tutorial-python",
+                "pageId": "tutorial-python-start",
+                "exampleId": "tutorial-python-hello",
+            },
+        )
 
     def test_bash_and_assembler_projects_run_in_the_sandbox(self) -> None:
         runner = DevelopmentCodeRunner()

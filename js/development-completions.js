@@ -87,6 +87,20 @@ const COMPLETIONS = {
     snippet('for', 'for (const ${1:item} of ${2:items}) {\n\t${}\n}', 'cyklus'),
     snippet('async', 'async function ${1:name}(${2:args}) {\n\t${}\n}', 'asynchrónna funkcia'),
   ],
+  ruby: [
+    ...['BEGIN', 'END', 'alias', 'and', 'begin', 'break', 'case', 'class', 'def', 'defined?', 'do', 'else', 'elsif', 'end', 'ensure', 'false', 'for', 'if', 'in', 'module', 'next', 'nil', 'not', 'or', 'redo', 'rescue', 'retry', 'return', 'self', 'super', 'then', 'true', 'unless', 'until', 'when', 'while', 'yield'].map(keyword),
+    ...['puts', 'print', 'gets', 'chomp', 'length', 'each', 'map', 'select', 'require'].map(builtin),
+    snippet('def', 'def ${1:name}(${2:args})\n\t${}\nend', 'funkcia'),
+    snippet('if', 'if ${1:condition}\n\t${}\nend', 'podmienka'),
+    snippet('each', '${1:items}.each do |${2:item}|\n\t${}\nend', 'cyklus'),
+  ],
+  perl: [
+    ...['BEGIN', 'END', 'else', 'elsif', 'for', 'foreach', 'if', 'last', 'my', 'next', 'our', 'package', 'redo', 'return', 'state', 'sub', 'unless', 'until', 'use', 'while'].map(keyword),
+    ...['print', 'say', 'chomp', 'length', 'keys', 'values', 'map', 'grep', 'scalar'].map(builtin),
+    snippet('sub', 'sub ${1:name} {\n\t${}\n}', 'funkcia'),
+    snippet('if', 'if (${1:condition}) {\n\t${}\n}', 'podmienka'),
+    snippet('foreach', 'foreach my $${1:item} (@${2:items}) {\n\t${}\n}', 'cyklus'),
+  ],
   php: [
     ...COMMON,
     ...['class', 'const', 'declare', 'echo', 'elseif', 'endforeach', 'extends', 'function', 'implements', 'include', 'namespace', 'new', 'private', 'protected', 'public', 'require', 'static', 'throw', 'try', 'catch', 'use'].map(keyword),
@@ -147,47 +161,224 @@ function blankMatch(value) {
   return value.replace(/[^\n]/g, ' ');
 }
 
-function sourceForSymbolScan(content) {
-  return String(content || '')
+function sourceForSymbolScan(content, languageId = '') {
+  const source = String(content || '')
     // Remove string literals first so an URL such as "https://..." is not mistaken for a comment.
     .replace(/'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`/g, blankMatch)
     .replace(/\/\*[\s\S]*?\*\//g, blankMatch)
     .replace(/\/\/[^\n]*/g, '')
     // An #include adds no callable symbol. Keep #define so its macro name stays available.
     .replace(/^\s*#\s*(?!define\b).*$/gm, '');
+  return ['python', 'ruby', 'perl', 'php', 'bash'].includes(languageId)
+    ? source.replace(/#[^\n]*/g, blankMatch)
+    : source;
 }
 
-function addSymbol(symbols, label, type, detail, boost) {
-  if (!label || PREPROCESSOR_WORDS.has(label)) return;
+function addSymbol(symbols, label, type, detail, boost, reserved) {
+  const name = String(label || '').trim();
+  if (!name || PREPROCESSOR_WORDS.has(name) || reserved.has(name)) return null;
   const existing = symbols.get(label);
-  if (existing && existing.boost >= boost) return;
-  symbols.set(label, { label, type, detail, boost });
+  if (existing && existing.boost >= boost) return existing;
+  const symbol = { label: name, type, detail, boost };
+  symbols.set(name, symbol);
+  return symbol;
+}
+
+function addMatches(source, expression, callback) {
+  for (const match of source.matchAll(expression)) callback(match);
+}
+
+function parameterNames(parameters, languageId) {
+  return String(parameters || '')
+    .split(',')
+    .map((parameter) => {
+      const raw = parameter.trim().replace(/^\.\.\./, '');
+      if (!raw || raw === 'void') return '';
+      if (['python', 'ruby', 'javascript', 'typescript', 'php', 'bash', 'rust', 'go'].includes(languageId)) {
+        const match = raw.replace(/^[$@%]/, '').match(/[A-Za-z_][A-Za-z0-9_]*/);
+        return match ? `${raw.match(/^[$@%]/)?.[0] || ''}${match[0]}` : '';
+      }
+      const names = raw.replace(/=[\s\S]*$/, '').match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
+      return names.at(-1) || '';
+    })
+    .filter(Boolean);
+}
+
+function functionTemplate(name, parameters, languageId) {
+  const fields = parameterNames(parameters, languageId)
+    .map((parameter, index) => `\${${index + 1}:${parameter}}`)
+    .join(', ');
+  return `${name}(${fields || '${}'})`;
+}
+
+function addFunction(symbols, name, parameters, detail, boost, reserved, languageId) {
+  const signature = `${name}(${String(parameters || '').trim()})`;
+  const symbol = addSymbol(symbols, name, 'function', `${signature} · ${detail}`, boost + 12, reserved);
+  if (symbol?.type === 'function') symbol.template = functionTemplate(name, parameters, languageId);
+  parameterNames(parameters, languageId).forEach((parameter) => {
+    addSymbol(symbols, parameter, 'variable', detail, boost + 18, reserved);
+  });
+}
+
+function addCommonDeclarations(symbols, source, detail, boost, reserved) {
+  addMatches(source, /^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b/gm, (match) => {
+    addSymbol(symbols, match[1], 'variable', detail, boost + 14, reserved);
+  });
+  addMatches(source, /^\s*(?:export\s+)?(?:abstract\s+)?(?:class|interface|trait|struct|enum|union)\s+([A-Za-z_][A-Za-z0-9_]*)\b/gm, (match) => {
+    addSymbol(symbols, match[1], 'class', detail, boost + 12, reserved);
+  });
+  addMatches(source, /^\s*(?:typedef\s+[^;\n]*\s|using\s+|type\s+)([A-Za-z_][A-Za-z0-9_]*)\b/gm, (match) => {
+    addSymbol(symbols, match[1], 'type', detail, boost + 12, reserved);
+  });
+}
+
+function addCStyleDeclarations(symbols, source, detail, boost, reserved, languageId) {
+  addCommonDeclarations(symbols, source, detail, boost, reserved);
+  addMatches(
+    source,
+    /^\s*(?:(?:export|public|private|protected|internal|static|inline|extern|virtual|constexpr|const|async|unsafe|final|override|unsigned|signed|long|short|volatile)\s+|[A-Za-z_][A-Za-z0-9_:<>]*\s+|[*&]\s*)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^()\n]*)\)\s*(?:const\s*)?(?:\{|;|=>)/gm,
+    (match) => addFunction(symbols, match[1], match[2], detail, boost, reserved, languageId)
+  );
+  addMatches(
+    source,
+    /^\s*(?:(?:const|static|extern|volatile|unsigned|signed|long|short|auto|final|readonly|public|private|protected|internal)\s+)*(?:[A-Za-z_][A-Za-z0-9_:<>]*(?:\s*<[^;=(){}]+>)?)\s+[*&\s]*([A-Za-z_][A-Za-z0-9_]*)\s*(?=[=;,\[])/gm,
+    (match) => addSymbol(symbols, match[1], 'variable', detail, boost + 8, reserved)
+  );
+}
+
+function addJavaScriptDeclarations(symbols, source, detail, boost, reserved) {
+  addCommonDeclarations(symbols, source, detail, boost, reserved);
+  addMatches(source, /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)/gm, (match) => {
+    addFunction(symbols, match[1], match[2], detail, boost, reserved, 'javascript');
+  });
+  addMatches(source, /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:\(([^)]*)\)|([A-Za-z_$][A-Za-z0-9_$]*))\s*=>/gm, (match) => {
+    addFunction(symbols, match[1], match[2] || match[3], detail, boost, reserved, 'javascript');
+  });
+  addMatches(source, /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/gm, (match) => {
+    addSymbol(symbols, match[1], 'variable', detail, boost + 8, reserved);
+  });
+  addMatches(source, /^\s*import\s+(?:\*\s+as\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s+from\b/gm, (match) => {
+    addSymbol(symbols, match[1], 'variable', detail, boost + 8, reserved);
+  });
+}
+
+function addPythonDeclarations(symbols, source, detail, boost, reserved) {
+  addCommonDeclarations(symbols, source, detail, boost, reserved);
+  addMatches(source, /^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*:/gm, (match) => {
+    addFunction(symbols, match[1], match[2], detail, boost, reserved, 'python');
+  });
+  addMatches(source, /^\s*(?:from\s+[A-Za-z_.][A-Za-z0-9_.]*\s+import\s+|import\s+)([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?/gm, (match) => {
+    addSymbol(symbols, match[2] || match[1], 'variable', detail, boost + 8, reserved);
+  });
+  addMatches(source, /^\s*(?:for\s+|with\s+[^\n]*\s+as\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|in\b)/gm, (match) => {
+    addSymbol(symbols, match[1], 'variable', detail, boost + 8, reserved);
+  });
+}
+
+function addRubyDeclarations(symbols, source, detail, boost, reserved) {
+  addCommonDeclarations(symbols, source, detail, boost, reserved);
+  addMatches(source, /^\s*def\s+([A-Za-z_][A-Za-z0-9_!?=]*)\s*(?:\(([^)]*)\)|\s+([^\n]+))?/gm, (match) => {
+    addFunction(symbols, match[1], match[2] || match[3], detail, boost, reserved, 'ruby');
+  });
+  addMatches(source, /^\s*([a-z_][A-Za-z0-9_]*)\s*=/gm, (match) => {
+    addSymbol(symbols, match[1], 'variable', detail, boost + 8, reserved);
+  });
+}
+
+function addPerlDeclarations(symbols, source, detail, boost, reserved) {
+  addCommonDeclarations(symbols, source, detail, boost, reserved);
+  addMatches(source, /^\s*sub\s+([A-Za-z_][A-Za-z0-9_]*)\b/gm, (match) => {
+    addFunction(symbols, match[1], '', detail, boost, reserved, 'perl');
+  });
+  addMatches(source, /\b(?:my|our|state)\s+([$@%][A-Za-z_][A-Za-z0-9_]*)/g, (match) => {
+    addSymbol(symbols, match[1], 'variable', detail, boost + 10, reserved);
+  });
+}
+
+function addPhpDeclarations(symbols, source, detail, boost, reserved) {
+  addCommonDeclarations(symbols, source, detail, boost, reserved);
+  addMatches(source, /\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)/g, (match) => {
+    addFunction(symbols, match[1], match[2], detail, boost, reserved, 'php');
+  });
+  addMatches(source, /\$[A-Za-z_][A-Za-z0-9_]*/g, (match) => {
+    addSymbol(symbols, match[0], 'variable', detail, boost + 8, reserved);
+  });
+}
+
+function addRustDeclarations(symbols, source, detail, boost, reserved) {
+  addCommonDeclarations(symbols, source, detail, boost, reserved);
+  addMatches(source, /^\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*\(([^)]*)\)/gm, (match) => {
+    addFunction(symbols, match[1], match[2], detail, boost, reserved, 'rust');
+  });
+  addMatches(source, /\b(?:let\s+(?:mut\s+)?|const\s+|static\s+)([A-Za-z_][A-Za-z0-9_]*)\b/g, (match) => {
+    addSymbol(symbols, match[1], 'variable', detail, boost + 8, reserved);
+  });
+}
+
+function addGoDeclarations(symbols, source, detail, boost, reserved) {
+  addCommonDeclarations(symbols, source, detail, boost, reserved);
+  addMatches(source, /^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)/gm, (match) => {
+    addFunction(symbols, match[1], match[2], detail, boost, reserved, 'go');
+  });
+  addMatches(source, /^\s*(?:var|const)\s+([A-Za-z_][A-Za-z0-9_]*)\b/gm, (match) => {
+    addSymbol(symbols, match[1], 'variable', detail, boost + 8, reserved);
+  });
+  addMatches(source, /\b([A-Za-z_][A-Za-z0-9_]*)\s*:=/g, (match) => {
+    addSymbol(symbols, match[1], 'variable', detail, boost + 8, reserved);
+  });
+}
+
+function addBashDeclarations(symbols, source, detail, boost, reserved) {
+  addMatches(source, /^\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\s*\))?\s*\{/gm, (match) => {
+    addFunction(symbols, match[1], '', detail, boost, reserved, 'bash');
+  });
+  addMatches(source, /^\s*(?:local\s+|export\s+)?([A-Za-z_][A-Za-z0-9_]*)=/gm, (match) => {
+    addSymbol(symbols, match[1], 'variable', detail, boost + 8, reserved);
+  });
+}
+
+function addAssemblerDeclarations(symbols, source, detail, boost, reserved) {
+  addMatches(source, /^\s*([A-Za-z_.$][A-Za-z0-9_.$]*)\s*:/gm, (match) => {
+    addSymbol(symbols, match[1], 'function', `${match[1]}: · ${detail}`, boost + 12, reserved);
+  });
+}
+
+function addDeclarations(symbols, source, languageId, detail, boost, reserved) {
+  if (['c', 'cpp', 'csharp', 'java'].includes(languageId)) {
+    addCStyleDeclarations(symbols, source, detail, boost, reserved, languageId);
+    return;
+  }
+  if (['javascript', 'typescript'].includes(languageId)) {
+    addJavaScriptDeclarations(symbols, source, detail, boost, reserved);
+    return;
+  }
+  if (languageId === 'python') return addPythonDeclarations(symbols, source, detail, boost, reserved);
+  if (languageId === 'ruby') return addRubyDeclarations(symbols, source, detail, boost, reserved);
+  if (languageId === 'perl') return addPerlDeclarations(symbols, source, detail, boost, reserved);
+  if (languageId === 'php') return addPhpDeclarations(symbols, source, detail, boost, reserved);
+  if (languageId === 'rust') return addRustDeclarations(symbols, source, detail, boost, reserved);
+  if (languageId === 'go') return addGoDeclarations(symbols, source, detail, boost, reserved);
+  if (languageId === 'bash') return addBashDeclarations(symbols, source, detail, boost, reserved);
+  if (languageId === 'asm') addAssemblerDeclarations(symbols, source, detail, boost, reserved);
 }
 
 function readProjectSymbols(files, languageId) {
   const symbols = new Map();
-  const knownWords = new Set(completionEntries(languageId).map((entry) => entry.label.replace(/^\$/, '')));
+  const reserved = new Set(completionEntries(languageId).map((entry) => entry.label.replace(/^\$/, '')));
+  const activePaths = new Set(
+    files.filter((file) => file?.current).map((file) => String(file?.path || file?.title || ''))
+  );
   files.forEach((file) => {
-    const content = sourceForSymbolScan(file?.content);
-    const location = file?.current ? 'v otvorenom súbore' : file?.title ? `v ${file.title}` : 'v projekte';
-    const boost = file?.current ? 120 : 90;
-    const names = content.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) || [];
-    names.forEach((name) => {
-      if (!knownWords.has(name)) addSymbol(symbols, name, 'variable', location, boost);
-    });
-    for (const match of content.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
-      if (!knownWords.has(match[1])) addSymbol(symbols, match[1], 'function', location, boost);
-    }
-    for (const match of content.matchAll(/\b(?:class|struct|enum|interface|trait|type)\s+([A-Za-z_][A-Za-z0-9_]*)/g)) {
-      addSymbol(symbols, match[1], 'class', location, boost);
-    }
-    if (languageId === 'php') {
-      for (const match of content.matchAll(/\$[A-Za-z_][A-Za-z0-9_]*/g)) {
-        addSymbol(symbols, match[0], 'variable', location, boost);
-      }
-    }
+    const path = String(file?.path || file?.title || '');
+    if (!file?.current && activePaths.has(path)) return;
+    const source = sourceForSymbolScan(file?.content, languageId);
+    const detail = file?.current ? 'v otvorenom súbore' : file?.title ? `v ${file.title}` : 'v projekte';
+    const boost = file?.current ? 180 : 100;
+    addDeclarations(symbols, source, languageId, detail, boost, reserved);
   });
-  return [...symbols.values()].slice(0, MAX_PROJECT_SYMBOLS);
+  return [...symbols.values()]
+    .sort((left, right) => right.boost - left.boost || left.label.localeCompare(right.label, 'sk'))
+    .slice(0, MAX_PROJECT_SYMBOLS);
 }
 
 export function projectCompletionEntries(languageId, files) {

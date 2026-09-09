@@ -67,6 +67,7 @@ import {
   hasUnsavedDevelopmentChanges,
   isDevelopmentPanelOpen,
   isDevelopmentPanelPinned,
+  activateDevelopmentProject,
   openDevelopmentPanel,
   saveDevelopmentChanges,
   waitForDevelopmentOperations
@@ -676,19 +677,8 @@ export function initializeTopSections() {
   dom.tasksButton.addEventListener('click', () => void switchTopSection('tasks'));
   dom.calendarButton.addEventListener('click', () => void switchTopSection('calendar'));
 
-  sectionNames.forEach((section) => {
-    const button = sectionButton(section);
-    button.addEventListener('pointerenter', () => requestTemporarySection(section));
-    button.addEventListener('pointerleave', () => scheduleSectionClose(section));
-    button.addEventListener('focus', () => requestTemporarySection(section));
-    button.addEventListener('blur', () => scheduleSectionClose(section));
-    sectionRoots(section).forEach((root) => {
-      root.addEventListener('pointerenter', () => keepSectionOpen(section));
-      root.addEventListener('pointerleave', () => scheduleSectionClose(section));
-      root.addEventListener('focusin', () => keepSectionOpen(section));
-      root.addEventListener('focusout', () => scheduleSectionClose(section));
-    });
-  });
+  // Pracovné plochy zostávajú otvorené, kým ich používateľ vedome nezatvorí.
+  // Prechod kurzorom cez hornú lištu ich preto neotvára ani nezatvára.
 
   dom.temporarySectionBackdrop.addEventListener('pointerdown', (event) => {
     event.preventDefault();
@@ -703,6 +693,31 @@ export function initializeTopSections() {
     resolvePendingDecision('stay');
   });
   installDialogBackdropClose(dom.sectionSwitchDialog, () => resolvePendingDecision('stay'));
+  window.addEventListener('development-project-created', (event) => {
+    const projectId = String(event.detail?.projectId || '');
+    const standardInput = String(event.detail?.standardInput || '');
+    const showTutorialGuide = Boolean(event.detail?.showTutorialGuide);
+    const resolve = event.detail?.resolve;
+    if (!projectId) {
+      if (typeof resolve === 'function') resolve(false);
+      return;
+    }
+    void (async () => {
+      const opened = await switchTopSection('development');
+      const activated = opened && await activateDevelopmentProject(projectId, { standardInput, showTutorialGuide });
+      if (typeof resolve === 'function') resolve(Boolean(activated));
+    })();
+  });
+  window.addEventListener('development-tutorial-open', (event) => {
+    const languageId = String(event.detail?.languageId || '');
+    const pageId = String(event.detail?.pageId || '');
+    const exampleId = String(event.detail?.exampleId || '');
+    if (!languageId || !pageId) return;
+    void (async () => {
+      const opened = await switchTopSection('tutorial');
+      if (opened) await openTutorialPanel({ pinned: true, languageId, pageId, exampleId });
+    })();
+  });
   window.addEventListener('workspace-activate', (event) => {
     promoteTopSectionToWorkspace(event.detail?.section || '');
   });

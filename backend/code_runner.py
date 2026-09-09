@@ -21,6 +21,9 @@ MAX_INPUT_BYTES = 64 * 1024
 MAX_ARGUMENT_BYTES = 8 * 1024
 MAX_ARGUMENT_COUNT = 32
 MAX_OUTPUT_BYTES = 64 * 1024
+# Modern C++ headers can make the compiler create an object or a temporary file
+# larger than the program-output cap. The compiled program still keeps that cap.
+COMPILE_FILE_LIMIT_BYTES = 8 * 1024 * 1024
 COMPILE_TIMEOUT_SECONDS = 4.0
 RUN_TIMEOUT_SECONDS = 2.0
 MEMORY_LIMIT_BYTES = 128 * 1024 * 1024
@@ -31,6 +34,7 @@ COMPILED_LANGUAGE_MEMORY_LIMIT_BYTES = 1024 * 1024 * 1024
 JAVA_MAX_HEAP_MB = 96
 JAVA_MAX_METASPACE_MB = 96
 MAX_PROCESS_COUNT = 16
+MAX_BINARY_INSPECTION_SYMBOLS = 80
 
 
 class CodeRunnerError(ValueError):
@@ -123,6 +127,7 @@ class CCodeRunner:
         timeout: float,
         stdin_path: Path | None = None,
         memory_limit: int = MEMORY_LIMIT_BYTES,
+        file_limit: int = MAX_OUTPUT_BYTES,
         environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         sandbox_command = self._sandbox_command(workspace, command, environment=environment)
@@ -137,7 +142,7 @@ class CCodeRunner:
                     stderr=subprocess.PIPE,
                     cwd=workspace,
                     start_new_session=True,
-                    preexec_fn=lambda: self._limit_process(memory_limit),
+                    preexec_fn=lambda: self._limit_process(memory_limit, file_limit),
                 )
             except OSError as error:
                 raise CodeRunnerError("Bezpečný sandbox sa nepodarilo spustiť.") from error
@@ -222,10 +227,10 @@ class CCodeRunner:
         return text
 
     @staticmethod
-    def _limit_process(memory_limit: int = MEMORY_LIMIT_BYTES) -> None:
+    def _limit_process(memory_limit: int = MEMORY_LIMIT_BYTES, file_limit: int = MAX_OUTPUT_BYTES) -> None:
         resource.setrlimit(resource.RLIMIT_CPU, (3, 3))
         resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
-        resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES))
+        resource.setrlimit(resource.RLIMIT_FSIZE, (file_limit, file_limit))
         resource.setrlimit(resource.RLIMIT_NOFILE, (32, 32))
 
     @staticmethod
@@ -291,6 +296,8 @@ class DevelopmentCodeRunner(CCodeRunner):
         "cpp": {"label": "C++", "tool": "g++", "filename": "main.cpp", "compile": True},
         "python": {"label": "Python", "tool": "python3", "filename": "main.py", "compile": False},
         "javascript": {"label": "JavaScript", "tool": "node", "filename": "main.js", "compile": False},
+        "ruby": {"label": "Ruby", "tool": "ruby", "filename": "main.rb", "compile": False},
+        "perl": {"label": "Perl", "tool": "perl", "filename": "main.pl", "compile": False},
         "php": {"label": "PHP", "tool": "php", "filename": "main.php", "compile": False},
         "csharp": {"label": "C#", "tool": "dotnet", "filename": "Program.cs", "compile": True},
         "asm": {
@@ -326,6 +333,10 @@ class DevelopmentCodeRunner(CCodeRunner):
             for language, definition in self.LANGUAGE_DEFINITIONS.items()
         }
         self.dotnet_target_framework = self._dotnet_target_framework()
+        self.binary_inspection_tools = {
+            "size": shutil.which("size"),
+            "nm": shutil.which("nm"),
+        }
 
     def status(self) -> dict[str, Any]:
         sandbox = super().status()
@@ -346,7 +357,22 @@ class DevelopmentCodeRunner(CCodeRunner):
             else:
                 message = f"Skúšobňa {definition['label']} je pripravená."
             languages[language] = {"available": available, "message": message}
-        return {**sandbox, "languages": languages}
+        missing_inspection_tools = [name for name, path in self.binary_inspection_tools.items() if not path]
+        inspection_available = bool(sandbox["available"] and not missing_inspection_tools)
+        inspection_message = (
+            "Rozbor binárky je pripravený."
+            if inspection_available
+            else (
+                f"Chýba nástroj: {', '.join(missing_inspection_tools)}."
+                if missing_inspection_tools
+                else str(sandbox["message"])
+            )
+        )
+        return {
+            **sandbox,
+            "languages": languages,
+            "binaryInspection": {"available": inspection_available, "message": inspection_message},
+        }
 
     def run(
         self,
@@ -446,6 +472,7 @@ class DevelopmentCodeRunner(CCodeRunner):
                     ],
                     workspace,
                     timeout=COMPILE_TIMEOUT_SECONDS,
+                    file_limit=COMPILE_FILE_LIMIT_BYTES,
                 )
                 if compile_result["timedOut"] or compile_result["outputLimited"] or compile_result["exitCode"] != 0:
                     return {"compiled": False, "compile": compile_result, "run": None}
@@ -473,6 +500,26 @@ class DevelopmentCodeRunner(CCodeRunner):
                 run_command = [tool, f"--max-old-space-size={NODE_MAX_OLD_SPACE_MB}", entry_path]
                 run_memory_limit = NODE_MEMORY_LIMIT_BYTES
                 compile_result = {**compile_result, "stdout": compile_result["stdout"] or "Kontrola syntaxe JavaScriptu prebehla úspešne."}
+            elif language_id == "ruby":
+                compile_result = self._execute(
+                    [tool, "-c", entry_path],
+                    workspace,
+                    timeout=COMPILE_TIMEOUT_SECONDS,
+                )
+                if compile_result["timedOut"] or compile_result["outputLimited"] or compile_result["exitCode"] != 0:
+                    return {"compiled": False, "compile": compile_result, "run": None}
+                run_command = [tool, entry_path]
+                compile_result = {**compile_result, "stdout": compile_result["stdout"] or "Kontrola syntaxe Ruby prebehla úspešne."}
+            elif language_id == "perl":
+                compile_result = self._execute(
+                    [tool, "-c", entry_path],
+                    workspace,
+                    timeout=COMPILE_TIMEOUT_SECONDS,
+                )
+                if compile_result["timedOut"] or compile_result["outputLimited"] or compile_result["exitCode"] != 0:
+                    return {"compiled": False, "compile": compile_result, "run": None}
+                run_command = [tool, entry_path]
+                compile_result = {**compile_result, "stdout": compile_result["stdout"] or "Kontrola syntaxe Perlu prebehla úspešne."}
             elif language_id == "php":
                 compile_result = self._execute(
                     [tool, "-l", entry_path],
@@ -659,8 +706,15 @@ class DevelopmentCodeRunner(CCodeRunner):
             else:
                 raise CodeRunnerError("Tento jazyk ešte nemá bezpečný profil spúšťania.")
 
+            inspection = self._native_binary_inspection(workspace) if language_id in {"c", "cpp", "asm"} else None
             if not execute:
-                return {"compiled": True, "compile": compile_result, "run": None, "buildProfile": profile}
+                return {
+                    "compiled": True,
+                    "compile": compile_result,
+                    "run": None,
+                    "buildProfile": profile,
+                    "inspection": inspection,
+                }
             run_result = self._execute(
                 [*run_command, *command_arguments],
                 workspace,
@@ -668,7 +722,112 @@ class DevelopmentCodeRunner(CCodeRunner):
                 stdin_path=input_path,
                 memory_limit=run_memory_limit,
             )
-            return {"compiled": True, "compile": compile_result, "run": run_result, "buildProfile": profile}
+            return {
+                "compiled": True,
+                "compile": compile_result,
+                "run": run_result,
+                "buildProfile": profile,
+                "inspection": inspection,
+            }
+
+    def _native_binary_inspection(self, workspace: Path) -> dict[str, Any]:
+        size_tool = self.binary_inspection_tools.get("size")
+        nm_tool = self.binary_inspection_tools.get("nm")
+        if not size_tool or not nm_tool:
+            missing = ", ".join(name for name, path in self.binary_inspection_tools.items() if not path)
+            return {"available": False, "message": f"Chýba nástroj na rozbor binárky: {missing}."}
+
+        memory_result = self._execute(
+            [str(size_tool), "--format=Berkeley", "--radix=10", "/work/program"],
+            workspace,
+            timeout=1.5,
+        )
+        section_result = self._execute(
+            [str(size_tool), "--format=SysV", "--radix=10", "/work/program"],
+            workspace,
+            timeout=1.5,
+        )
+        symbol_result = self._execute(
+            [str(nm_tool), "--defined-only", "--demangle", "--size-sort", "-S", "/work/program"],
+            workspace,
+            timeout=1.5,
+        )
+        failures = [
+            result
+            for result in (memory_result, section_result, symbol_result)
+            if result["timedOut"] or result["outputLimited"] or result["exitCode"] != 0
+        ]
+        if failures:
+            detail = "\n".join(
+                str(result.get("stderr") or result.get("stdout") or "").strip() for result in failures
+            ).strip()
+            return {
+                "available": False,
+                "message": detail[:500] or "Rozbor binárky sa nepodarilo dokončiť.",
+            }
+
+        memory = self._parse_binary_memory(str(memory_result.get("stdout") or ""))
+        sections = self._parse_binary_sections(str(section_result.get("stdout") or ""))
+        symbols = self._parse_binary_symbols(str(symbol_result.get("stdout") or ""))
+        return {
+            "available": True,
+            "memory": memory,
+            "sections": sections,
+            "symbols": symbols,
+        }
+
+    @staticmethod
+    def _parse_binary_memory(output: str) -> dict[str, int]:
+        lines = [line.split() for line in output.splitlines() if line.strip()]
+        for fields in lines:
+            if len(fields) < 6 or fields[0].lower() == "text":
+                continue
+            try:
+                text_size, data_size, bss_size, total = (int(fields[index], 10) for index in range(4))
+            except ValueError:
+                continue
+            return {"text": text_size, "data": data_size, "bss": bss_size, "total": total}
+        return {"text": 0, "data": 0, "bss": 0, "total": 0}
+
+    @staticmethod
+    def _parse_binary_sections(output: str) -> list[dict[str, int | str]]:
+        sections: list[dict[str, int | str]] = []
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) < 3 or fields[0].lower() in {"section", "total"}:
+                continue
+            try:
+                size = int(fields[1], 10)
+                address = int(fields[2], 10)
+            except ValueError:
+                continue
+            sections.append({"name": fields[0], "size": size, "address": address})
+        return sorted(sections, key=lambda section: int(section["size"]), reverse=True)[:80]
+
+    @staticmethod
+    def _parse_binary_symbols(output: str) -> list[dict[str, int | str]]:
+        symbols: list[dict[str, int | str]] = []
+        expression = re.compile(r"^([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+([A-Za-z?])\s+(.+)$")
+        for line in output.splitlines():
+            match = expression.match(line.strip())
+            if not match:
+                continue
+            try:
+                address = int(match.group(1), 16)
+                size = int(match.group(2), 16)
+            except ValueError:
+                continue
+            if not size:
+                continue
+            symbols.append(
+                {
+                    "address": address,
+                    "size": size,
+                    "type": match.group(3),
+                    "name": match.group(4),
+                }
+            )
+        return sorted(symbols, key=lambda symbol: int(symbol["size"]), reverse=True)[:MAX_BINARY_INSPECTION_SYMBOLS]
 
     def _command_arguments(self, arguments: Any) -> list[str]:
         raw_arguments = self._limited_text(arguments, MAX_ARGUMENT_BYTES, "Parametre spúšťania sú príliš dlhé.")
