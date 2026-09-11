@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from backend.firmware_builder import FirmwareBuildRunner
+from backend.firmware_builder import FirmwareBuildRunner, FIRMWARE_MEMORY_LIMIT_BYTES, MAX_FIRMWARE_ARTIFACT_BYTES
 
 
 class SimulatedAvrBuilder(FirmwareBuildRunner):
@@ -14,6 +14,7 @@ class SimulatedAvrBuilder(FirmwareBuildRunner):
         tools = {"avr-gcc", "avr-g++", "avr-objcopy", "avr-size"}
         super().__init__(artifact_root, which=lambda name: f"/tools/{name}" if name in tools else None)
         self.commands: list[list[str]] = []
+        self.execution_limits: list[dict[str, Any]] = []
 
     def status(self) -> dict[str, Any]:
         return {
@@ -30,6 +31,7 @@ class SimulatedAvrBuilder(FirmwareBuildRunner):
 
     def _execute(self, command: list[str], workspace: Path, **_kwargs: Any) -> dict[str, Any]:
         self.commands.append(command)
+        self.execution_limits.append(_kwargs)
         if "--format=SysV" in command:
             return self._result(
                 "section                    size      addr\n.text                        120         0\n.data                         12   8388864\n.bss                          24   8388876\n"
@@ -80,6 +82,9 @@ class FirmwareBuildRunnerTestCase(unittest.TestCase):
         self.assertEqual(result["memory"]["ram"]["used"], 36)
         self.assertIn("-mmcu=atmega328p", builder.commands[0])
         self.assertTrue(any(command[0].endswith("objcopy") for command in builder.commands))
+        for limits in builder.execution_limits:
+            self.assertEqual(limits["memory_limit"], FIRMWARE_MEMORY_LIMIT_BYTES)
+            self.assertEqual(limits["file_limit"], MAX_FIRMWARE_ARTIFACT_BYTES)
         stored = list((self.root / "artifacts").glob("*/firmware.hex"))
         self.assertEqual(len(stored), 1)
 

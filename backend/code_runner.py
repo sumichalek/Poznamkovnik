@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import resource
 import re
 import selectors
 import shlex
@@ -42,10 +41,14 @@ class CodeRunnerError(ValueError):
 
 
 class CCodeRunner:
+    CPU_LIMIT_SECONDS = 3
+    OPEN_FILE_LIMIT = 32
+
     def __init__(self) -> None:
         self.gcc_path = shutil.which("gcc")
         self.bwrap_path = shutil.which("bwrap")
         self.unshare_path = shutil.which("unshare")
+        self.prlimit_path = shutil.which("prlimit")
         self._runtime_status: dict[str, Any] | None = None
 
     def status(self) -> dict[str, Any]:
@@ -101,6 +104,8 @@ class CCodeRunner:
             return {"available": False, "message": "Bezpečná skúšobňa vyžaduje Bubblewrap (bwrap)."}
         if not self.unshare_path:
             return {"available": False, "message": "Bezpečná skúšobňa vyžaduje nástroj unshare z util-linux."}
+        if not self.prlimit_path:
+            return {"available": False, "message": "Bezpečná skúšobňa vyžaduje nástroj prlimit z util-linux."}
         try:
             with tempfile.TemporaryDirectory(prefix="poznamkovnik-c-check-") as temporary:
                 result = self._execute(["/usr/bin/true"], Path(temporary), timeout=2.0)
@@ -130,7 +135,9 @@ class CCodeRunner:
         file_limit: int = MAX_OUTPUT_BYTES,
         environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        sandbox_command = self._sandbox_command(workspace, command, environment=environment)
+        sandbox_command = self._sandbox_command(
+            workspace, command, environment=environment, memory_limit=memory_limit, file_limit=file_limit
+        )
         started = time.monotonic()
         stdin_handle = stdin_path.open("rb") if stdin_path else subprocess.DEVNULL
         try:
@@ -142,9 +149,8 @@ class CCodeRunner:
                     stderr=subprocess.PIPE,
                     cwd=workspace,
                     start_new_session=True,
-                    preexec_fn=lambda: self._limit_process(memory_limit, file_limit),
                 )
-            except OSError as error:
+            except (OSError, subprocess.SubprocessError) as error:
                 raise CodeRunnerError("Bezpečný sandbox sa nepodarilo spustiť.") from error
             stdout, stderr, timed_out, output_limited = self._collect_output(process, timeout)
         finally:
@@ -166,12 +172,23 @@ class CCodeRunner:
         command: list[str],
         *,
         environment: dict[str, str] | None = None,
+        memory_limit: int = MEMORY_LIMIT_BYTES,
+        file_limit: int = MAX_OUTPUT_BYTES,
     ) -> list[str]:
         if not self.bwrap_path:
             raise CodeRunnerError("Bezpečný sandbox nie je dostupný.")
         if not self.unshare_path:
             raise CodeRunnerError("Bezpečný sieťový sandbox nie je dostupný.")
+        if not self.prlimit_path:
+            raise CodeRunnerError("Nástroj prlimit na bezpečné obmedzenie procesov nie je dostupný.")
+        # Apply limits in an executable, not a Python preexec_fn in the threaded server.
         arguments = [
+            self.prlimit_path,
+            f"--cpu={self.CPU_LIMIT_SECONDS}",
+            f"--as={memory_limit}",
+            f"--fsize={file_limit}",
+            f"--nofile={self.OPEN_FILE_LIMIT}",
+            "--",
             self.unshare_path,
             "--user",
             "--map-root-user",
@@ -211,7 +228,8 @@ class CCodeRunner:
                 "--chdir",
                 "/work",
                 "--",
-                "/usr/bin/prlimit",
+                # Limit the mapped user, not the host user's entire process count.
+                self.prlimit_path,
                 f"--nproc={MAX_PROCESS_COUNT}",
                 "--",
                 *command,
@@ -225,13 +243,6 @@ class CCodeRunner:
         if len(text.encode("utf-8")) > maximum:
             raise CodeRunnerError(message)
         return text
-
-    @staticmethod
-    def _limit_process(memory_limit: int = MEMORY_LIMIT_BYTES, file_limit: int = MAX_OUTPUT_BYTES) -> None:
-        resource.setrlimit(resource.RLIMIT_CPU, (3, 3))
-        resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
-        resource.setrlimit(resource.RLIMIT_FSIZE, (file_limit, file_limit))
-        resource.setrlimit(resource.RLIMIT_NOFILE, (32, 32))
 
     @staticmethod
     def _collect_output(process: subprocess.Popen[bytes], timeout: float) -> tuple[bytes, bytes, bool, bool]:

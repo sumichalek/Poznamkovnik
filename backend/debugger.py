@@ -253,15 +253,14 @@ class DevelopmentDebugger(DevelopmentCodeRunner):
         ]
         try:
             process = subprocess.Popen(
-                self._sandbox_command(workspace, command),
+                self._sandbox_command(workspace, command, memory_limit=COMPILED_LANGUAGE_MEMORY_LIMIT_BYTES),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=workspace,
                 start_new_session=True,
-                preexec_fn=lambda: self._limit_process(COMPILED_LANGUAGE_MEMORY_LIMIT_BYTES),
             )
-        except OSError as error:
+        except (OSError, subprocess.SubprocessError, CodeRunnerError) as error:
             raise DebuggerError("Bezpečný debugger sa nepodarilo spustiť.") from error
         if process.stdin is None or process.stdout is None:
             self._terminate(process)

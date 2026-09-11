@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import resource
 import shutil
 import tempfile
 import threading
@@ -16,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .code_runner import CodeRunnerError, DevelopmentCodeRunner, MAX_PROCESS_COUNT
+from .code_runner import CodeRunnerError, DevelopmentCodeRunner
 
 
 FIRMWARE_BUILD_TIMEOUT_SECONDS = 12.0
@@ -113,6 +112,9 @@ void Default_Handler(void) {
 
 class FirmwareBuildRunner(DevelopmentCodeRunner):
     """Builds firmware without running its output or accessing a device."""
+
+    CPU_LIMIT_SECONDS = 10
+    OPEN_FILE_LIMIT = 48
 
     def __init__(self, artifact_root: Path, *, which: Callable[[str], str | None] = shutil.which) -> None:
         super().__init__()
@@ -238,6 +240,7 @@ class FirmwareBuildRunner(DevelopmentCodeRunner):
                 workspace,
                 timeout=FIRMWARE_BUILD_TIMEOUT_SECONDS,
                 memory_limit=FIRMWARE_MEMORY_LIMIT_BYTES,
+                file_limit=MAX_FIRMWARE_ARTIFACT_BYTES,
             )
             results.append(result)
             if self._failed(result):
@@ -261,7 +264,13 @@ class FirmwareBuildRunner(DevelopmentCodeRunner):
                 "-o",
                 "/work/firmware.elf",
             ]
-        return self._execute(command, workspace, timeout=FIRMWARE_BUILD_TIMEOUT_SECONDS, memory_limit=FIRMWARE_MEMORY_LIMIT_BYTES)
+        return self._execute(
+            command,
+            workspace,
+            timeout=FIRMWARE_BUILD_TIMEOUT_SECONDS,
+            memory_limit=FIRMWARE_MEMORY_LIMIT_BYTES,
+            file_limit=MAX_FIRMWARE_ARTIFACT_BYTES,
+        )
 
     def _create_output_artifacts(
         self, target: dict[str, Any], workspace: Path, results: list[dict[str, Any]]
@@ -273,7 +282,13 @@ class FirmwareBuildRunner(DevelopmentCodeRunner):
         else:
             commands.append([objcopy, "-O", "binary", "/work/firmware.elf", "/work/firmware.bin"])
         for command in commands:
-            result = self._execute(command, workspace, timeout=FIRMWARE_BUILD_TIMEOUT_SECONDS, memory_limit=FIRMWARE_MEMORY_LIMIT_BYTES)
+            result = self._execute(
+                command,
+                workspace,
+                timeout=FIRMWARE_BUILD_TIMEOUT_SECONDS,
+                memory_limit=FIRMWARE_MEMORY_LIMIT_BYTES,
+                file_limit=MAX_FIRMWARE_ARTIFACT_BYTES,
+            )
             results.append(result)
             if self._failed(result):
                 return []
@@ -291,6 +306,7 @@ class FirmwareBuildRunner(DevelopmentCodeRunner):
             workspace,
             timeout=FIRMWARE_BUILD_TIMEOUT_SECONDS,
             memory_limit=FIRMWARE_MEMORY_LIMIT_BYTES,
+            file_limit=MAX_FIRMWARE_ARTIFACT_BYTES,
         )
 
     def _store_artifacts(
@@ -537,11 +553,3 @@ class FirmwareBuildRunner(DevelopmentCodeRunner):
     @staticmethod
     def _memory_value(used: int, capacity: int) -> dict[str, int | float]:
         return {"used": used, "capacity": capacity, "percent": round(used * 100 / capacity, 1) if capacity else 0}
-
-    @staticmethod
-    def _limit_process(memory_limit: int = FIRMWARE_MEMORY_LIMIT_BYTES) -> None:
-        resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
-        resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
-        resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_FIRMWARE_ARTIFACT_BYTES, MAX_FIRMWARE_ARTIFACT_BYTES))
-        resource.setrlimit(resource.RLIMIT_NOFILE, (48, 48))
-        resource.setrlimit(resource.RLIMIT_NPROC, (MAX_PROCESS_COUNT, MAX_PROCESS_COUNT))
