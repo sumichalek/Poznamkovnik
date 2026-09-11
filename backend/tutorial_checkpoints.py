@@ -266,6 +266,30 @@ TUTORIAL_CHECKPOINTS: dict[str, tuple[dict[str, Any], ...]] = {
             "incorrectFeedback": "qsort potrebuje konzistentné záporné, nulové alebo kladné porovnanie. Konkrétna veľkosť výsledku nerozhoduje, ale znamienkové pretečenie by porušilo pravidlá C.",
         },
         {
+            "id": "c-condition-predicate",
+            "prompt": "Čo urobí konzument po úspešnom návrate z cnd_wait?",
+            "options": (
+                ("a", "Bez ďalšej kontroly odoberie položku; prebudenie zaručuje jej prítomnosť."),
+                ("b", "Znova pod mutexom overí predikát v slučke a pokračuje iba pri splnenom stave."),
+                ("c", "Ručne znova zamkne ten istý nerekurzívny mutex, lebo cnd_wait ho nikdy nezamyká."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Úspešný návrat obnoví držanie mutexu, ale samotné prebudenie nie je zárukou predikátu.",
+            "incorrectFeedback": "Predčasné prebudenie alebo iný konzument môžu nechať predikát nesplnený. Kontrola patrí do while pod tým istým mutexom.",
+        },
+        {
+            "id": "c-queue-close-drain",
+            "prompt": "Ako sa uzavrie fronta s dočítaním už prijatých položiek?",
+            "options": (
+                ("a", "Vymaže count a zobudí jediného konzumenta, ostatní skončia sami."),
+                ("b", "Pod mutexom nastaví closed a zobudí obe skupiny cez broadcast; pop dočíta položky, push ďalšie odmietne."),
+                ("c", "Najprv pripojí čakajúce vlákna cez join a až potom im nastaví príznak ukončenia."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Uzavretie mení oba predikáty; koniec čítania znamená closed spolu s count == 0.",
+            "incorrectFeedback": "Čakať môže konzument aj producent. Pred join musia dostať možnosť skončiť; prijaté položky sa pri bežnom uzavretí nezahadzujú.",
+        },
+        {
             "id": "c-thread-join-lifetime",
             "prompt": "Kedy smie main použiť vypočítané maximum z požičaného MaximumJob?",
             "options": (

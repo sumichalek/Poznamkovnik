@@ -1591,3 +1591,279 @@ int main(void)
     return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 """
+
+SYNC_CHECK = r"""#if defined(__STDC_NO_THREADS__) && __STDC_NO_THREADS__
+#error "This example requires C threads"
+#endif
+#include <threads.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+/* These standalone demos cannot recover safely from a failed synchronization. */
+static void check_sync(int status, const char *message)
+{
+    if (status != thrd_success) {
+        fputs(message, stderr);
+        (void) fflush(stderr);
+        _Exit(EXIT_FAILURE);
+    }
+}
+"""
+
+GATE_SUPPORT = SYNC_CHECK + r"""
+#include <stdbool.h>
+typedef struct { mtx_t mutex; cnd_t changed; bool ready; int value; } Gate;
+
+static int gate_init(Gate *gate)
+{
+    gate->ready = false;
+    gate->value = 0;
+    if (mtx_init(&gate->mutex, mtx_plain) != thrd_success) { return 0; }
+    if (cnd_init(&gate->changed) != thrd_success) {
+        mtx_destroy(&gate->mutex);
+        return 0;
+    }
+    return 1;
+}
+
+static void gate_destroy(Gate *gate)
+{
+    cnd_destroy(&gate->changed);
+    mtx_destroy(&gate->mutex);
+}
+
+/* One publication, while gate is alive; ready is never reset. */
+static void gate_open(Gate *gate, int value)
+{
+    check_sync(mtx_lock(&gate->mutex), "Cannot lock gate.\n");
+    gate->value = value;
+    gate->ready = true;
+    check_sync(cnd_broadcast(&gate->changed), "Cannot broadcast gate.\n");
+    check_sync(mtx_unlock(&gate->mutex), "Cannot unlock gate.\n");
+}
+"""
+
+GATE_WAIT = r"""
+static int await_gate(Gate *gate)
+{
+    check_sync(mtx_lock(&gate->mutex), "Cannot lock gate.\n");
+    while (!gate->ready) {
+        check_sync(cnd_wait(&gate->changed, &gate->mutex), "Cannot wait on gate.\n");
+    }
+    int value = gate->value;
+    check_sync(mtx_unlock(&gate->mutex), "Cannot unlock gate.\n");
+    return value;
+}
+"""
+
+GATE_MAIN = r"""
+typedef struct { Gate *gate; int result; } GateJob;
+static int gate_worker(void *context)
+{
+    GateJob *job = context;
+    job->result = await_gate(job->gate);
+    return EXIT_SUCCESS;
+}
+
+int main(void)
+{
+    Gate gate;
+    if (!gate_init(&gate)) { return EXIT_FAILURE; }
+    GateJob job = {&gate, 77};
+    thrd_t thread;
+    if (thrd_create(&thread, gate_worker, &job) != thrd_success) {
+        gate_destroy(&gate);
+        return EXIT_FAILURE;
+    }
+    gate_open(&gate, 42);
+    int result = EXIT_FAILURE;
+    join_or_exit(thread, &result);
+    gate_destroy(&gate);
+    if (result != EXIT_SUCCESS) { return EXIT_FAILURE; }
+    if (printf("received=%d\n", job.result) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+CONDITION_GATE = THREAD_JOIN + GATE_SUPPORT + GATE_WAIT + GATE_MAIN
+
+QUEUE_SUPPORT = SYNC_CHECK + r"""
+#include <stdbool.h>
+#include <stddef.h>
+
+enum { QUEUE_CAPACITY = 3 };
+typedef struct {
+    mtx_t mutex;
+    cnd_t not_empty, not_full;
+    int items[QUEUE_CAPACITY];
+    size_t head, count;
+    bool closed;
+} Queue;
+
+static int queue_init(Queue *queue)
+{
+    queue->head = 0;
+    queue->count = 0;
+    queue->closed = false;
+    if (mtx_init(&queue->mutex, mtx_plain) != thrd_success) { return 0; }
+    if (cnd_init(&queue->not_empty) != thrd_success) {
+        mtx_destroy(&queue->mutex);
+        return 0;
+    }
+    if (cnd_init(&queue->not_full) != thrd_success) {
+        cnd_destroy(&queue->not_empty);
+        mtx_destroy(&queue->mutex);
+        return 0;
+    }
+    return 1;
+}
+
+/* Only after every user has finished, including every successful thread join. */
+static void queue_destroy(Queue *queue)
+{
+    cnd_destroy(&queue->not_full);
+    cnd_destroy(&queue->not_empty);
+    mtx_destroy(&queue->mutex);
+}
+"""
+
+QUEUE_CLOSE = r"""
+static void queue_close(Queue *queue)
+{
+    check_sync(mtx_lock(&queue->mutex), "Cannot lock queue.\n");
+    queue->closed = true;
+    check_sync(cnd_broadcast(&queue->not_empty), "Cannot wake consumers.\n");
+    check_sync(cnd_broadcast(&queue->not_full), "Cannot wake producers.\n");
+    check_sync(mtx_unlock(&queue->mutex), "Cannot unlock queue.\n");
+}
+"""
+
+QUEUE_OPERATIONS = r"""
+/* Non-NULL, initialized, live queue. Returns 0 only when closed. */
+static int queue_push(Queue *queue, int value)
+{
+    check_sync(mtx_lock(&queue->mutex), "Cannot lock queue.\n");
+    while (queue->count == QUEUE_CAPACITY && !queue->closed) {
+        check_sync(cnd_wait(&queue->not_full, &queue->mutex), "Cannot wait for space.\n");
+    }
+    if (queue->closed) {
+        check_sync(mtx_unlock(&queue->mutex), "Cannot unlock queue.\n");
+        return 0;
+    }
+    size_t tail = (queue->head + queue->count) % QUEUE_CAPACITY;
+    queue->items[tail] = value;
+    ++queue->count;
+    check_sync(cnd_signal(&queue->not_empty), "Cannot signal item.\n");
+    check_sync(mtx_unlock(&queue->mutex), "Cannot unlock queue.\n");
+    return 1;
+}
+
+/* Separate writable result. Closed and empty returns 0 without changing it. */
+static int queue_pop(Queue *queue, int *result)
+{
+    check_sync(mtx_lock(&queue->mutex), "Cannot lock queue.\n");
+    while (queue->count == 0 && !queue->closed) {
+        check_sync(cnd_wait(&queue->not_empty, &queue->mutex), "Cannot wait for item.\n");
+    }
+    if (queue->count == 0) {
+        check_sync(mtx_unlock(&queue->mutex), "Cannot unlock queue.\n");
+        return 0;
+    }
+    *result = queue->items[queue->head];
+    queue->head = (queue->head + 1) % QUEUE_CAPACITY;
+    --queue->count;
+    check_sync(cnd_signal(&queue->not_full), "Cannot signal space.\n");
+    check_sync(mtx_unlock(&queue->mutex), "Cannot unlock queue.\n");
+    return 1;
+}
+"""
+
+BOUNDED_QUEUE = QUEUE_SUPPORT + QUEUE_CLOSE + QUEUE_OPERATIONS
+
+QUEUE_DRAIN_MAIN = r"""
+int main(void)
+{
+    Queue queue;
+    if (!queue_init(&queue)) { return EXIT_FAILURE; }
+    (void) queue_push(&queue, 10);
+    (void) queue_push(&queue, -2);
+    queue_close(&queue);
+    queue_close(&queue);
+    int rejected = !queue_push(&queue, 99);
+    int values[] = {77, 77, 77};
+    int first = queue_pop(&queue, &values[0]);
+    int second = queue_pop(&queue, &values[1]);
+    int end = queue_pop(&queue, &values[2]);
+    queue_destroy(&queue);
+    if (printf("rejected=%d first=%d:%d second=%d:%d end=%d:%d\n",
+               rejected, first, values[0], second, values[1], end, values[2]) < 0) {
+        return EXIT_FAILURE;
+    }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+QUEUE_DRAIN = BOUNDED_QUEUE + QUEUE_DRAIN_MAIN
+
+QUEUE_WORKERS = r"""
+#include <limits.h>
+typedef struct { Queue *queue; unsigned int count, total; } ConsumerJob;
+
+static int produce(void *context)
+{
+    Queue *queue = context;
+    for (int value = 1; value <= 12; ++value) {
+        if (!queue_push(queue, value)) { return EXIT_FAILURE; }
+    }
+    queue_close(queue);
+    return EXIT_SUCCESS;
+}
+
+static int consume(void *context)
+{
+    ConsumerJob *job = context;
+    int value;
+    while (queue_pop(job->queue, &value)) {
+        if (value < 0 || job->count == UINT_MAX ||
+            (unsigned int) value > UINT_MAX - job->total) {
+            /* A worker error must wake its peer before anybody joins it. */
+            queue_close(job->queue);
+            return EXIT_FAILURE;
+        }
+        ++job->count;
+        job->total += (unsigned int) value;
+    }
+    return EXIT_SUCCESS;
+}
+
+int main(void)
+{
+    Queue queue;
+    if (!queue_init(&queue)) { return EXIT_FAILURE; }
+    ConsumerJob job = {&queue, 0, 0};
+    thrd_t threads[2];
+    size_t started = 0;
+    int result = EXIT_SUCCESS;
+    if (thrd_create(&threads[0], consume, &job) == thrd_success) {
+        ++started;
+        if (thrd_create(&threads[1], produce, &queue) == thrd_success) {
+            ++started;
+        } else { result = EXIT_FAILURE; }
+    } else { result = EXIT_FAILURE; }
+    if (result != EXIT_SUCCESS) {
+        fputs("Cannot create thread.\n", stderr);
+        queue_close(&queue);
+    }
+    for (size_t i = 0; i < started; ++i) {
+        int worker_result = EXIT_FAILURE;
+        join_or_exit(threads[i], &worker_result);
+        if (worker_result != EXIT_SUCCESS) { result = EXIT_FAILURE; }
+    }
+    queue_destroy(&queue);
+    if (result != EXIT_SUCCESS) { return result; }
+    if (printf("count=%u total=%u\n", job.count, job.total) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+PRODUCER_CONSUMER = THREAD_JOIN + BOUNDED_QUEUE + QUEUE_WORKERS

@@ -11,7 +11,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from backend.tutorial_c_examples import ATOMIC_SUPPORT, COUNT_POSITIVE, LINE_READER, THREAD_JOIN, WALK_VALUES
+from backend.tutorial_c_examples import (
+    ATOMIC_SUPPORT, COUNT_POSITIVE, GATE_MAIN, GATE_SUPPORT, LINE_READER,
+    QUEUE_DRAIN_MAIN, QUEUE_OPERATIONS, QUEUE_SUPPORT, THREAD_JOIN, WALK_VALUES,
+)
 
 
 MAX_PRACTICE_VARIANT = 10_000
@@ -607,6 +610,46 @@ int main(void)
             "hints": (
                 "Všetky tri kontroly patria pred prvý zápis. Nepretypúvaj hodnotu na úzky typ ešte pred kontrolou rozsahu.",
                 "Horný oktet získaš posunom o 8 doprava, dolný maskou 255. Indexy určuje formát, nie poradie bajtov procesora.",
+            ),
+        }
+    if topic == "conditions":
+        value = _pick((42, -7, 0, 123), variant)
+        return {
+            "title": "Počkaj na splnený predikát",
+            "description": "Doplň await_gate pre živú inicializovanú bránu. Zamkni mutex, vo while (!gate->ready) volaj cnd_wait s tým istým mutexom, potom načítaj value, odomkni a vráť hodnotu. Každý návrat synchronizačnej operácie kontroluj cez pripravený check_sync. Ostatné funkcie nemeň. Štartovacia funkcia bezpečne vracia nesprávnu hodnotu 77. Porovnanie výpisu neoverí všetky prebudenia; while je súčasťou požadovaného protokolu aj vtedy, keď by if náhodou prešlo.",
+            "starterSource": THREAD_JOIN + GATE_SUPPORT + r"""
+static int await_gate(Gate *gate)
+{
+    /* Replace this placeholder with a predicate loop under the mutex. */
+    (void) gate;
+    return 77;
+}
+""" + GATE_MAIN.replace("gate_open(&gate, 42)", f"gate_open(&gate, {value})"),
+            "stdin": "",
+            "expectedOutput": f"received={value}\n",
+            "hints": (
+                "cnd_wait odomkne a pri úspešnom návrate znova zamkne mutex. Nevkladaj vlastné odomknutie pred čakanie.",
+                "Hodnotu skopíruj do lokálnej premennej ešte pod mutexom. Až potom odomkni a vráť ju.",
+            ),
+        }
+    if topic == "queues":
+        value = _pick((10, -9, 0, 123), variant)
+        return {
+            "title": "Uzavri frontu a zobuď obe skupiny",
+            "description": "Doplň queue_close: zamkni mutex, nastav closed=true, zavolaj cnd_broadcast na not_empty aj not_full a odomkni. Všetky návraty skontroluj cez check_sync. Nemeň count, head ani items; opakované uzavretie má zachovať dáta. Fronta je živá a inicializovaná. Pripravený main a ostatné operácie nemeň. Štartovací kód ukončí proces chybou, aby neostal čakať na otvorenej prázdnej fronte. Jednovláknový výpis testuje dočítanie, nie doručenie prebudení; obidva broadcast sú povinnou časťou riešenia.",
+            "starterSource": QUEUE_SUPPORT + r"""
+static void queue_close(Queue *queue)
+{
+    /* Replace this placeholder with close and both broadcasts under the mutex. */
+    (void) queue;
+    _Exit(EXIT_FAILURE);
+}
+""" + QUEUE_OPERATIONS + QUEUE_DRAIN_MAIN.replace("queue_push(&queue, 10)", f"queue_push(&queue, {value})"),
+            "stdin": "",
+            "expectedOutput": f"rejected=1 first=1:{value} second=1:-2 end=0:77\n",
+            "hints": (
+                "Čakať môže producent na plnej aj konzument na prázdnej fronte. Pre uzavretie treba zobudiť všetkých z oboch skupín.",
+                "Uzavretie nie je vyprázdnenie: existujúce položky a indexy nechaj bez zmeny. Join sem nepatrí.",
             ),
         }
     if topic == "threads":

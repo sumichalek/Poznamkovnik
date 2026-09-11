@@ -14,6 +14,7 @@ from backend.tutorial_c_examples import (
     CLASSIFY_BYTES,
     COMPARE_STRINGS,
     CONDITIONAL_BUILD,
+    CONDITION_GATE,
     CONST_VIEWS,
     CONVERT_SIZES,
     COPY_TEXT_DEMO,
@@ -35,6 +36,8 @@ from backend.tutorial_c_examples import (
     MUTEX_WORKERS,
     PARSE_NUMBER,
     PARSE_POSITIVE,
+    PRODUCER_CONSUMER,
+    QUEUE_DRAIN,
     READ_LINES,
     RESTRICT_COPY,
     SAFE_INDEX,
@@ -1048,6 +1051,80 @@ C_PAGES = [
         },
     },
     {
+        "key": "conditions", "parent_key": "tooling", "kind": "lesson", "position": 148,
+        "title": "Podmienkové premenné a čakanie na stav",
+        "summary": "Predikát pod mutexom, cnd_wait v slučke a publikácia bez aktívneho čakania.",
+        "content": {
+            "lead": "Pracovník často nemá čo robiť, kým iné vlákno nezmení spoločný stav. Podmienková premenná mu umožní čakať bez opakovaného skúšania príznaku; samotnú pravdu o dostupnosti dát však stále uchováva stav chránený mutexom.",
+            "blocks": [
+                {"type": "heading", "text": "Čakáš na predikát, nie na zapamätaný signál"},
+                {"type": "paragraph", "text": "Predikát je výraz opisujúci potrebný stav, napríklad ready alebo count > 0. Všetky jeho súbežné čítania a zmeny patria pod rovnaký mutex. cnd_t neuchováva počet minulých upozornení: signal ani broadcast bez čakajúcich vlákien nevytvoria zásobu budúcich povolení."},
+                {"type": "code", "language": "c", "title": "Jadro protokolu, pri vstupe už držíš mutex", "source": "while (!gate->ready) {\n    check_sync(cnd_wait(&gate->changed, &gate->mutex),\n               \"Cannot wait on gate.\\n\");\n}\n/* Mutex is held again; ready must be checked before reading value. */\nint value = gate->value;"},
+                {"type": "paragraph", "text": "cnd_wait potrebuje mutex zamknutý volajúcim vláknom. Atomicky ho odomkne a začne čakať; pri úspešnom návrate ho znova drží. Neodomykaj ho ručne medzi kontrolou a čakaním, pretože práve v tej medzere by sa mohol zmeniť stav a prebehnúť prebudenie."},
+                {"type": "paragraph", "text": "Použi while, nie if. Návrat môže nastať z nešpecifikovaného dôvodu bez splnenia predikátu; navyše iný konzument môže pred opätovným získaním mutexu spotrebovať dostupnú položku. Úspešné čakanie preto povoľuje ďalšiu kontrolu, nie automaticky použitie dát. Možnosť takéhoto prebudenia explicitne rieši oprava WG14 DR 480 pre C17."},
+                {"type": "heading", "text": "Jednorazová brána s výsledkom"},
+                {"type": "code", "language": "c", "title": "Pracovník počká na publikáciu 42", "source": CONDITION_GATE},
+                {"type": "paragraph", "text": "Gate aj GateJob ostávajú na mieste a živé do úspešného join. ready a value sa publikujú spolu pod mutexom. Pracovník uloží výsledok do vlastného poľa job.result, ktoré main číta až po join. Výstup received=42 je rovnaký, či pracovník skutočne čakal, alebo main stihol bránu otvoriť skôr."},
+                {"type": "code", "language": "c", "title": "Aj publikácia pred vytvorením pracovníka je platná", "source": "/* After successful gate_init, before thrd_create: */\ngate_open(&gate, 42);\n/* Start the worker, then join it; do not call gate_open a second time. */"},
+                {"type": "paragraph", "text": "Pri skoršom otvorení sa prebudenie nemusí nikomu doručiť, ale ready zostane true. Neskorší pracovník pod mutexom uvidí platný stav a vôbec nevstúpi do cnd_wait. Predpokladom tejto brány je jedna publikácia a žiadny reset; zmena na opakované otváranie potrebuje nový protokol."},
+                {"type": "heading", "text": "Signal, broadcast a životnosť"},
+                {"type": "list", "items": [
+                    "cnd_signal odblokuje jedno práve čakajúce vlákno. Hodí sa napríklad po vložení jednej položky do fronty s rovnocennými konzumentmi.",
+                    "cnd_broadcast odblokuje všetkých práve čakajúcich. Otvorenie tejto brány sprístupní nemenný výsledok všetkým, preto používa broadcast.",
+                    "V ukážkach meníme predikát a oznamujeme zmenu ešte pod mutexom. Prebudené vlákno potom čaká na jeho získanie a znovu kontroluje stav.",
+                    "Poradie, v ktorom pracovníci získajú mutex, nie je zárukou férovosti. Prebudenie nie je potvrdenie dokončenia ani náhrada join.",
+                    "Pred cnd_destroy a mtx_destroy musia skončiť všetci používatelia. Synchronizačné objekty nekopíruj cez priradenie struct ani memcpy."
+                ]},
+                {"type": "heading", "text": "Chyba synchronizácie nie je bežný prázdny stav"},
+                {"type": "paragraph", "text": "Neúspešná inicializácia podmienky zruší iba už inicializovaný mutex. Ak nevznikne pracovník, main zruší obidva vytvorené objekty. Chyba lock, wait, broadcast alebo unlock je v tomto samostatnom programe fatálna: check_sync vypíše správu, spláchne stderr a ukončí celý proces cez _Exit. Pri chybe join platí rovnaká politika z predchádzajúcej lekcie."},
+                {"type": "callout", "tone": "warning", "text": "Pri zlyhaní synchronizácie nepredstieraj úspešné vlastníctvo mutexu ani bezpečné bežné upratanie. Návrat jediného pracovníka môže nechať druhého čakať navždy. _Exit je tu výslovná politika malého programu, nie univerzálne rozhranie knižnice pre obnovu po chybe."},
+                {"type": "paragraph", "text": "Príklady vyžadujú dostupnú threads.h v režime C17; pri samostatnom GCC zostavení používaj -pthread pri preklade aj linkovaní podľa cieľa. thrd_sleep, volatile ani opakované thrd_yield tento protokol nenahrádzajú. Časovo obmedzené čakanie cez cnd_timedwait je samostatná téma, nie súčasť tejto brány."},
+                {"type": "heading", "text": "Over aj nevýhodné poradie"},
+                {"type": "paragraph", "text": "Testuj publikáciu pred čakaním aj pracovníka už čakajúceho podmienku. Riadený test môže vrátiť úspech z čakania bez zmeny predikátu a overiť opakované čakanie. Samotný správny výpis pri náhodnom rozvrhu neodhalí všetky stratené prebudenia; UBSan tiež nie je detektor dátových pretekov."},
+            ],
+        },
+    },
+    {
+        "key": "queues", "parent_key": "tooling", "kind": "lesson", "position": 149,
+        "title": "Ohraničená fronta producent/konzument",
+        "summary": "Kruhový buffer, dva predikáty, uzavretie s dočítaním a dokončenie pracovníkov.",
+        "content": {
+            "lead": "Producent vytvára položky, konzument ich spracúva. Malá fronta medzi nimi obmedzí spotrebu pamäte: plná pozastaví producenta, prázdna konzumenta. Obe čakania musia poznať aj pravidlo ukončenia.",
+            "blocks": [
+                {"type": "heading", "text": "Kontrakt a invarianty fronty"},
+                {"type": "list", "items": [
+                    "Queue uchováva hodnoty int v poradí FIFO. Má pevnú kapacitu 3, head v rozsahu 0 až 2 a count od 0 do 3. Všetky polia počas zdieľania chráni queue.mutex.",
+                    "Ďalší zápis patrí na (head + count) % QUEUE_CAPACITY. Pri tejto pevnej kapacite je súčet najviac 5; pri všeobecnej obrovskej kapacite treba samostatne riešiť pretečenie indexu.",
+                    "queue_push vracia 1 po vložení, 0 pri uzavretej fronte. queue_pop vracia 1 s položkou, 0 iba pri uzavretej a prázdnej fronte; pri 0 výstupný objekt nemení.",
+                    "Ukazovatele musia smerovať na živé inicializované objekty. Výstup queue_pop je samostatný zapisovateľný int, nie pole vo fronte ani objekt súbežne používaný iným vláknom. NULL tu nie je podporovaný vstup.",
+                    "queue_close je idempotentné. Už prijaté položky sa dočítajú, nové sa odmietnu. Samotná nula či záporné int sú bežné dáta, nie značky konca."
+                ]},
+                {"type": "code", "language": "c", "title": "Dve podmienky čakania pod tým istým mutexom", "source": "/* Producer waits while full AND still open. */\nwhile (queue->count == QUEUE_CAPACITY && !queue->closed) {\n    check_sync(cnd_wait(&queue->not_full, &queue->mutex),\n               \"Cannot wait for space.\\n\");\n}\n/* Consumer waits while empty AND still open. */\nwhile (queue->count == 0 && !queue->closed) {\n    check_sync(cnd_wait(&queue->not_empty, &queue->mutex),\n               \"Cannot wait for item.\\n\");\n}"},
+                {"type": "paragraph", "text": "not_empty oznamuje možnosť odoberať, not_full možnosť vkladať. Po vložení sa signalizuje not_empty, po odobratí not_full. Dve oddelené podmienky bránia tomu, aby jedno upozornenie na novú položku zobudilo iba ďalšieho producenta čakajúceho na miesto."},
+                {"type": "heading", "text": "Uzavretie nie je zahodenie prijatých dát"},
+                {"type": "code", "language": "c", "title": "Úplná fronta a deterministické dočítanie po uzavretí", "source": QUEUE_DRAIN},
+                {"type": "paragraph", "text": "Prvý program zámerne používa frontu v jednom vlákne. Vloží iba dve položky, takže nikdy nečaká na plnej fronte; pred čítaním ju uzavrie, takže posledné čítanie nečaká na prázdnej. Výsledok je rejected=1 first=1:10 second=1:-2 end=0:77. Ukazuje kontrakt stavov, nie dôkaz súbežného prebúdzania."},
+                {"type": "paragraph", "text": "Uzavretie nastaví closed pod mutexom a vykoná broadcast pre obidve skupiny. Nestačí iba signal: pri viacerých čakajúcich by mohli ostatní zostať zablokovaní. Nestačí ani len prebudiť konzumentov; producent môže práve čakať na plnej fronte."},
+                {"type": "callout", "tone": "warning", "text": "Konzument po prebudení nekončí iba preto, že closed je true. Najprv rozhoduje count: uložené položky ešte odoberie. Producent naopak nesmie vložiť ďalšiu ani vtedy, keď má uzavretá fronta voľné miesto."},
+                {"type": "heading", "text": "Dve skutočné vlákna a obmedzená kapacita"},
+                {"type": "code", "language": "c", "title": "Dvanásť položiek cez frontu s kapacitou tri", "source": PRODUCER_CONSUMER},
+                {"type": "paragraph", "text": "Producent posiela 1 až 12 a po poslednom vložení frontu uzavrie. Konzument ju vyprázdni a skončí. Iba konzument mení svoje count a total; main ich číta po oboch join a vypíše count=12 total=78. Kapacita ani výpis nezávisia od rýchlosti pracovníkov. Producent môže čakať na miesto, konzument na položku; nepoužívajú aktívne skúšanie ani spánky."},
+                {"type": "heading", "text": "Čiastočný štart a chyba pracovníka"},
+                {"type": "list", "items": [
+                    "Inicializácia tvorí mutex, not_empty a not_full. Pri chybe sa rušia iba predchádzajúce úspešne vytvorené objekty v opačnom poradí; neúspešne inicializovaný objekt sa neničí.",
+                    "Main vytvára najprv konzumenta. Ak druhé vytvorenie zlyhá, uzavrie frontu pred join. Konzument tak skončí aj bez producenta. Ak zlyhá prvé, nepripája neexistujúce vlákno.",
+                    "Konzument kontroluje rozsah počtu a súčtu; zápornú položku tento konkrétny výpočet odmietne, hoci fronta ju podporuje. Pred neúspešným návratom uzavrie frontu, aby producent nezostal čakať na miesto.",
+                    "Odmietnutý queue_push už znamená uzavretú frontu. Producent môže vrátiť chybu bez ďalšieho uzatvárania; konzument má k dispozícii rovnaký ukončovací predikát.",
+                    "Main pripojí každé úspešne vytvorené vlákno aj po chybe iného pracovníka. Nikdy nevolá join so zamknutým mutexom fronty. Až potom ničí podmienky a mutex."
+                ]},
+                {"type": "paragraph", "text": "Chyby synchronizačných operácií používajú fatálnu politiku check_sync z predchádzajúcej lekcie; nevydávajú sa za koniec dát. Pri bežnej chybe výpočtu sa môže fronta zavrieť bez dočítania všetkých položiek, ale celý program oznámi neúspech. Čiastočný počet a súčet nevypisuje ako úspešný výsledok."},
+                {"type": "paragraph", "text": "Ukážka vlastní presne jedného producenta a jedného konzumenta. Pri viacerých producentoch nesmie prvý dokončený automaticky zavrieť frontu všetkým ostatným: uzavretie musí vlastniť koordinátor alebo chránený počet zostávajúcich producentov. Nepridávaj také vlákna bez zmeny pravidla dokončenia."},
+                {"type": "heading", "text": "Testy stavov, čakania a upratania"},
+                {"type": "paragraph", "text": "Over FIFO cez opakované pretočenie indexov, plnú aj prázdnu frontu, dočítanie po uzavretí a zachovanie výstupu pri konci. Riadené testy musia dostať pracovníkov až do čakania a až potom uzavrieť frontu, bez časových odhadov cez sleep. Pridaj predčasné prebudenie s nezmeneným predikátom a chyby inicializácie, prvého aj druhého štartu. Timeout testu odhalí zaseknutie, nie záruku férového plánovania."},
+            ],
+        },
+    },
+    {
         "key": "reference",
         "parent_key": "",
         "kind": "chapter",
@@ -1312,6 +1389,8 @@ C_LEARNING_GOALS = {
     "stdlib-reference": ("Zachovať vlastníctvo a údaje pri chybe alokácie alebo prevodu.", "Navrhnúť konzistentný porovnávač bez pretekajúceho odčítania."),
     "stdio-reference": ("Odlíšiť chybu formátovania od skrátenia a skontrolovať miesto pre nulu.", "Správne vyhodnotiť počet prenesených prvkov a uzavrieť prúd aj pri chybe."),
     "numeric-reference": ("Zvoliť typ a formát podľa skutočných limitov implementácie.", "Overiť rozsah pred prevodom a dodržať doménu ctype.h bez straty EOF."),
+    "conditions": ("Kontrolovať predikát v slučke pod rovnakým mutexom aj po prebudení.", "Odlíšiť oznámenie zmeny od uchovaného stavu a dokončenia vlákna."),
+    "queues": ("Zachovať invarianty kruhového bufferu a dočítať prijaté položky po uzavretí.", "Zobudiť obe skupiny čakajúcich a dokončiť pracovníkov aj pri čiastočnom štarte."),
     "threads": ("Udržať požičané dáta živé až do úspešného join a odlíšiť chybu čakania od chyby pracovníka.", "Chrániť súvisiace hodnoty jedným mutexom aj na chybových cestách."),
     "atomics": ("Rozlíšiť read-modify-write od dvojice oddelených atomických operácií.", "Odôvodniť relaxed počítadlo a jednorazovú publikáciu cez release/acquire."),
 }
@@ -1320,6 +1399,8 @@ C_LEARNING_GOALS = {
 # Tento rámec je úmyselne oddelený od faktického výkladu. Každá lekcia sa tak
 # začína problémom, nadväznosťou a jadrom pojmu, potom smeruje k vlastnej práci.
 C_TEACHING_FRAMES = {
+    "conditions": {"context": "Pracovník potrebuje počkať na spoločný stav bez aktívneho opakovania neúspešných pokusov o čítanie.", "priorKnowledge": ("Poznáš mutex, životnosť požičaných objektov a úspešný join.",), "keyIdea": "Podmienková premenná oznamuje zmenu, ale o pokračovaní rozhoduje predikát znova overený pod mutexom.", "transfer": "Pri každom čakaní pomenuj predikát, jeho mutex a vlákno zodpovedné za zmenu aj prebudenie."},
+    "queues": {"context": "Potrebuješ prenášať položky medzi pracovníkmi bez neobmedzeného rastu pamäte a bez zaseknutia pri ukončovaní.", "priorKnowledge": ("Vieš použiť cnd_wait v slučke a odlišuješ signal od broadcast.",), "keyIdea": "Kapacita a uzavretie patria do spoločného stavu, ktorý musí ukončiť oba druhy čakania pred join.", "transfer": "Pri vlastnej fronte napíš pravidlo prijatia, dočítania, uzavretia aj upratania po čiastočne úspešnom štarte."},
     "threads": {"context": "Potrebuješ odovzdať výpočet inému vláknu bez straty životnosti vstupov a bez súčasného neplatného prístupu k výsledku.", "priorKnowledge": ("Poznáš callback s kontextom a životnosť lokálnych objektov.", "Vieš kontrolovať návratové stavy a hranice aritmetiky."), "keyIdea": "Vlastníctvo dát, dokončenie pracovníka a synchronizácia spoločného stavu sú odlišné zodpovednosti, ktoré treba riešiť spolu.", "transfer": "Pri vlastnej úlohe označ posledné použitie každého požičaného objektu a pravidlo ochrany všetkých súvisiacich polí."},
     "atomics": {"context": "Počítadlo aj príznak dostupnej správy môžu byť atomické, ale každý z nich oznamuje iný druh informácie.", "priorKnowledge": ("Rozumieš vytvoreniu vlákna, join a ochrane údajov mutexom.",), "keyIdea": "Atomickosť jedného kroku nie je publikovanie okolitej pamäte; pamäťové poradie musí zodpovedať celému protokolu.", "transfer": "Pri atomickej premennej napíš, či chráni iba vlastnú hodnotu alebo má sprístupniť aj ďalšie neatomické údaje."},
     "program": {"context": "Potrebuješ spoľahlivo dostať krátky zdrojový súbor až k spustiteľnému programu a vedieť rozlíšiť chybu prekladu od výsledku behu.", "priorKnowledge": ("Dokážeš čítať krátky textový súbor.",), "keyIdea": "Zdroj, hlavičky, preklad a spustenie sú nadväzujúce kroky; main je dohodnutý vstupný bod programu.", "transfer": "Pri najbližšom programe najprv pomenuj, čo patrí do hlavičky, čo do main a akú informáciu má návratový kód odovzdať prostrediu."},
@@ -1372,6 +1453,8 @@ C_EXERCISE_TOPICS = {
     "portability": "portability",
     "threads": "threads",
     "atomics": "atomics",
+    "conditions": "conditions",
+    "queues": "queues",
 }
 
 
@@ -1413,9 +1496,29 @@ C_CHECKPOINT_IDS = {
     "portability": "c-wire-format-contract",
     "threads": "c-thread-join-lifetime",
     "atomics": "c-release-acquire-publication",
+    "conditions": "c-condition-predicate",
+    "queues": "c-queue-close-drain",
 }
 
 C_EXAMPLES = [
+    {
+        "key": "condition-gate", "page_key": "conditions", "position": 10,
+        "title": "Jednorazová brána s čakaním",
+        "description": "Predikát ready pod mutexom a publikácia 42 bez aktívneho čakania.",
+        "source": CONDITION_GATE, "stdin": "",
+    },
+    {
+        "key": "queue-drain", "page_key": "queues", "position": 10,
+        "title": "Uzavretie fronty a dočítanie položiek",
+        "description": "Deterministický jednovláknový test kontraktu vrátane nedotknutého výstupu pri konci.",
+        "source": QUEUE_DRAIN, "stdin": "",
+    },
+    {
+        "key": "producer-consumer", "page_key": "queues", "position": 20,
+        "title": "Producent a konzument nad malou frontou",
+        "description": "Dvanásť hodnôt cez kapacitu tri, uzavretie a join každého vytvoreného pracovníka.",
+        "source": PRODUCER_CONSUMER, "stdin": "",
+    },
     {
         "key": "thread-lifetime", "page_key": "threads", "position": 10,
         "title": "Požičané dáta až do join",
