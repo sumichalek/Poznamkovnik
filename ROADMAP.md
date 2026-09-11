@@ -177,3 +177,32 @@ Kontrakty inicializácie, čakania, prebúdzania a životnosti boli skontrolovan
 Synchronizácia pri vytvorení a úspešnom pripojení vlákna bola skontrolovaná proti [WG14 N1570, oddielom 7.26.5.1 a 7.26.5.6](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf). Ide o návrh C11; príklady sa prekladajú v režime C17. Vlastník bežného uzavretia a politika skorého ukončenia pri chybe sú kontrakty tejto skupiny, nie ďalšie pravidlá štandardnej knižnice.
 
 Ďalej: vlastníctvo položiek prenášaných frontou. Určiť okamih odovzdania dynamicky alokovanej položky, zachovanie vlastníctva pri odmietnutom vložení a uvoľnenie prijatých aj zostávajúcich položiek pri chybe, až po ukončení pracovníkov. Začať samostatnou malou ukážkou s jedným producentom a konzumentom; nezamieňať kópiu ukazovateľa za kópiu dát. Dlhodobá úloha zostáva rozpracovaná, mobilná konzola a firmvérové toolchainy sú samostatné bloky. Popis úlohy sa približuje limitu 10000 znakov; ďalšie podrobnosti viesť v tomto súbore bez orezania histórie úlohy.
+
+## Ohraničenie Prvej Verzie C
+
+Po otázke na zostávajúcu prácu sme oddelili dokončenie praktickej učebnice od ďalších pokročilých rozšírení. Pracovný odhad pred týmto blokom bol 8–12 blokov, orientačne 20–30 hodín s rezervou, nie záväzný termín. Používateľ vybral prácu na hodinu; prvý ohraničený blok je rekurzia. Ďalšie pokračovania majú uzatvárať tento rozsah, nie automaticky pridávať nadväzujúce špeciality súbežnosti.
+
+- [x] Rekurzia: základný prípad, postup ku koncu, návraty, vlastný lokálny stav a porovnanie s cyklom.
+- [ ] Argumenty programu: argc/argv, hranice prístupu, kontrolované spracovanie a chybné vstupy.
+- [ ] Viacrozmerné polia a zložitejšie deklarácie: rozšíriť existujúce základy a príklady.
+- [ ] union a jednoduché vlastné kolekcie: pomenovaný stav, kopírovanie, vlastníctvo a uvoľnenie zdrojov.
+- [ ] Praktické desatinné výpočty, math.h a doplnenie knižničnej referencie v rozsahu bežných úloh.
+- [ ] Dva súhrnné malé projekty spájajúce viac kapitol, s cvičeniami a testami.
+- [ ] Záverečný audit nadväznosti a správnosti celého obsahu, vrátane skrátených výrezov a pokrytia cvičeniami. Pri výreze increment v lekcii functions preveriť kontrakt pre INT_MAX.
+
+Vlastnené položky v súbežnej fronte, ďalšie vláknové protokoly, úplná referencia každej funkcie, POSIX, sieťovanie a firmvér sú voliteľné ďalšie rozšírenia. Tento rozsah nahrádza predchádzajúci automatický bod pokračovania s frontou. Mobilné úpravy aplikácie zostávajú samostatnou úlohou.
+
+## Učebnica C: Rekurzia 2026-09-11
+
+- Pridaná samostatná lekcia Rekurzia a návrat z volania medzi funkcie a rozsah/životnosť. Dva spustiteľné programy, jedno cvičenie so štyrmi variantmi, kontrolná otázka, učebný rámec a ciele. Pôvodná lekcia funkcií a jej cvičenie sa nemenili; všetkých 101 predchádzajúcich zdrojových konštánt zostalo zhodných.
+- Prvá ukážka vypíše cestu volaní sum_to dovnútra aj späť. Prijíma iba 0 až 10; väčší vstup odmietne pred prvým enter. Výklad rozlišuje základný prípad, vlastné automatické objekty jednotlivých volaní, návrat hodnoty a zdieľanú statickú premennú. Zásobník volaní je vysvetľujúci model, nie prísľub konkrétneho rozloženia pamäte.
+- Druhý program porovnáva rekurzívny a iteratívny Euklidov algoritmus. Kontrola b == 0 predchádza operácii %, rekurzívny krok zmenší druhý argument. Nulové vstupy aj zvolený výsledok gcd(0, 0) == 0 majú explicitný kontrakt. Výklad odlišuje matematické ukončenie od obmedzených zdrojov prostredia; nesľubuje optimalizáciu koncového volania.
+- Pridaných 11 Python testov. Natívne programy prešli s UBSan a varovaniami ako chybami, hlavné výpisy pri -O0 aj -O2/NDEBUG. Overený celý rozsah výpisu 0..10 aj opakované volania v jednom procese, odmietnutie 11 a UINT_MAX, chyby výpisu a záverečného flush. Obe verzie gcd súhlasia s nezávislou tabuľkou math.gcd pre všetkých 4096 dvojíc 0..63; ďalšie prípady pokrývajú UINT_MAX, susedné hodnoty, nuly, rovnosť a dlhší reťazec zvyškov.
+- Samostatná kontrola skutočných volaní vyžaduje (48,18), (18,12), (12,6), (6,0). Odmietne nezmenené argumenty aj nahradenie rekurzie cyklom. Skúšobňa cvičenia naďalej hodnotí iba výstup; test aj zadanie výslovne priznávajú, že správny cyklus môže výstupovou kontrolou prejsť. Každý variant odmieta bezpečný štartovací kód a chybný základný návrat.
+- Cielená sada rekurzie a obnovy obsahu: 27 testov úspešných. npm run check: 263 Python testov úspešných, 4 preskočené pre nedostupné C#/Go/Java/Rust nástroje; 10 frontendových testov úspešných. Rozšírený test opakovaného nasadenia chráni poznámky, koncepty, postup, odpovede a časy vytvorenia novej stránky.
+- Oba programy prešli cez skutočný debug sandbox, API aj tlačidlo Spustiť; štyri riešenia cvičenia cez API. Chromium pri 1440/875/390 bez pretekania dokumentu a čítačky a bez JavaScript výnimiek. Používateľský stav zostal nezmenený, dočasný prehliadač a relácia ukončené. Report a snímky: /tmp/poznamkovnik-tutorial-recursion-verification/.
+- CSS, mobilné rozloženie, spúšťače aj limity sa nemenili, zostavené assets ostali zhodné. Úzka mobilná čítačka zostáva existujúcim obmedzením. Dlhodobá úloha učebníc ostáva rozpracovaná; jej popis s 9994 znakmi sa neorezával ani ďalej nepredlžoval. Podrobný postup pokračuje tu.
+
+Prípustnosť priamych aj nepriamych rekurzívnych volaní a vznik samostatných automatických objektov boli overené v [WG14 N1570, oddieloch 6.5.2.2 a 6.2.4](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf). Ide o návrh C11; ukážky a testy sa prekladajú v režime C17.
+
+Ďalej: jeden ohraničený blok argumentov programu argc/argv, vrátane nulového počtu používateľských argumentov, hraníc a kontrolovaného prevodu čísla. Najprv preveriť, ako ich poskytuje existujúca skúšobňa; nezamieňať stdin s argumentmi ani nerozširovať sandbox. Po tomto hodinovom výbere nezačínať automaticky ďalšiu tému.

@@ -23,6 +23,7 @@ from backend.tutorial_c_examples import (
     EXACT_WIDTH_ID,
     FILE_ROUNDTRIP,
     FORMATTED_OUTPUT,
+    GCD_COMPARISON,
     GROW_BUFFER,
     GROUP_FINISH,
     INTEGER_LIMITS,
@@ -43,6 +44,7 @@ from backend.tutorial_c_examples import (
     PRODUCER_GROUP_FAILURE,
     QUEUE_DRAIN,
     READ_LINES,
+    RECURSION_TRACE,
     RESTRICT_COPY,
     SAFE_INDEX,
     SEQUENCED_ARGUMENTS,
@@ -249,6 +251,41 @@ C_PAGES = [
                 {"type": "paragraph", "text": "Pri najbližšej funkcii si pred telom odpovedz: čo je platný vstup, aký výsledok dostane volajúci, ktoré údaje funkcia smie zmeniť a kto zodpovedá za prípadnú dynamickú pamäť. Až potom napíš prvý riadok tela."}
             ]
         }
+    },
+    {
+        "key": "recursion", "parent_key": "foundations", "kind": "lesson", "position": 52,
+        "title": "Rekurzia a návrat z volania",
+        "summary": "Základný prípad, zmenšovanie úlohy, vlastné lokálne premenné a porovnanie s cyklom.",
+        "content": {
+            "lead": "Rekurzívna funkcia rieši úlohu pomocou menšieho prípadu tej istej úlohy. Nestačí, že volá samu seba: potrebuje prípad bez ďalšieho volania a pravidlo, ktoré k nemu každý krok priblíži.",
+            "blocks": [
+                {"type": "heading", "text": "Dve otázky pred prvým rekurzívnym volaním"},
+                {"type": "paragraph", "text": "Súčet od jednej po tri je 3 plus súčet od jednej po dva. Ten je 2 plus súčet od jednej po jeden. Pri nule už nemáme čo pridávať: súčet prázdnej postupnosti je nula. Základný prípad je teda n == 0 a menšia úloha používa n - 1 iba vtedy, keď n nie je nula."},
+                {"type": "list", "items": [
+                    "Základný prípad vráti výsledok bez ďalšej rekurzie.",
+                    "Rekurzívny krok musí zachovať platný vstup a zmenšiť niečo, čo nemôže klesať donekonečna.",
+                    "Volajúca funkcia po návrate menšej úlohy pokračuje tam, kde čakala. Return ukončí jedno volanie, nie automaticky celý program."
+                ]},
+                {"type": "heading", "text": "Sleduj cestu dovnútra aj späť"},
+                {"type": "code", "language": "c", "title": "Malý súčet s výpisom vstupov a návratov", "source": RECURSION_TRACE},
+                {"type": "paragraph", "text": "Táto ukážka prijíma iba n od 0 po 10. Horná kontrola udrží výpis krátky, počet vnorených volaní najviac jedenásť a súčet najviac 55. Väčšiu hodnotu odmietne ukončením programu ešte pred prvým výpisom enter. Exit je tu politika samostatnej ukážky; všeobecná knižničná funkcia by mala chybu odovzdať volajúcemu."},
+                {"type": "code", "language": "text", "title": "Výstup pre n = 3", "source": "enter n=3\nenter n=2\nenter n=1\nenter n=0\nleave n=0 sum=0\nleave n=1 sum=1\nleave n=2 sum=3\nleave n=3 sum=6\ntotal=6\n"},
+                {"type": "paragraph", "text": "Volanie s n == 3 čaká na sum_to(2). Volanie s n == 2 čaká na sum_to(1). Až sum_to(0) nevolá ďalšiu funkciu a vráti nulu. Potom sa dopočítajú výsledky 1, 3 a 6 v opačnom poradí. Vstupy teda vidíš zostupne, návraty vzostupne."},
+                {"type": "heading", "text": "Rovnaké meno neznamená ten istý objekt"},
+                {"type": "paragraph", "text": "Každé aktívne volanie má vlastný parameter n a vlastnú automatickú premennú result. Volanie s n == 2 neprepíše n v čakajúcom volaní s n == 3. Menšia funkcia vráti číslo, volajúci ho uloží do svojho smaller a pripočíta svoje n. Nejde o zdieľanú globálnu ani statickú premennú."},
+                {"type": "paragraph", "text": "Čakajúce volania si môžeš predstaviť ako zásobník: posledné rozpracované sa dokončí ako prvé. Je to model priebehu programu, nie sľub konkrétneho rozloženia pamäte. Nahradenie lokálnej premennej deklaráciou static by vytvorilo spoločný stav pre volania a zmenilo význam programu."},
+                {"type": "heading", "text": "Iný spôsob zmenšovania: najväčší spoločný deliteľ"},
+                {"type": "paragraph", "text": "Najväčší spoločný deliteľ je najväčšie kladné celé číslo, ktoré delí oba nenulové vstupy bez zvyšku. Pre 48 a 18 je to 6. Euklidov algoritmus nahradí dvojicu (a, b) dvojicou (b, a % b). Odčítanie násobku b od a zachová spoločných deliteľov, preto sa výsledok nezmení. Ak je b nenulové, zvyšok je menší než b; postup sa preto dostane k b == 0, kde vráti a."},
+                {"type": "code", "language": "c", "title": "Tá istá úloha rekurziou aj cyklom", "source": GCD_COMPARISON},
+                {"type": "paragraph", "text": "Postup pre 48 a 18 je (48, 18), (18, 12), (12, 6), (6, 0). Výsledok je 6 v oboch verziách. Typ unsigned int predstavuje nezáporné vstupy. Nulu na jednej strane prijímame: gcd(0, b) je b a gcd(a, 0) je a. Pre dvojicu (0, 0) si toto rozhranie výslovne volí návrat 0; nejde o tvrdenie, že existuje najväčší kladný deliteľ dvoch núl."},
+                {"type": "callout", "tone": "warning", "text": "Kontrola b == 0 musí predchádzať výrazu a % b. Zvyšok po delení nulou nie je základný prípad, ale chyba. Nezmenené argumenty v opakovanom volaní sa zase nepribližujú ku koncu. Pri unsigned n sa n - 1 počíta až po vylúčení nuly, aby sa hodnota nepreklopila na veľké číslo."},
+                {"type": "heading", "text": "Kedy je cyklus jednoduchší"},
+                {"type": "paragraph", "text": "Iteratívna verzia drží iba aktuálne a, b a zvyšok. Najprv uloží zvyšok a až potom prepíše a a b. Rekurzívna verzia vyjadruje menšiu úlohu jedným volaním. Pri tomto algoritme sú obe čitateľné; rekurzia sama osebe nesľubuje vyšší výkon."},
+                {"type": "paragraph", "text": "Hĺbka rekurzie spotrebúva zdroje prostredia. C nesľubuje neobmedzené vnorenie ani odstránenie koncového rekurzívneho volania optimalizáciou. Pre dlhý jednoduchý priechod býva vhodný cyklus; rekurzia je užitočná pri prirodzene vnorených úlohách, napríklad pri stromoch. Matematické ukončenie treba odlíšiť od prijateľnej hĺbky v konkrétnom programe."},
+                {"type": "heading", "text": "Prenes pravidlo do vlastného riešenia"},
+                {"type": "paragraph", "text": "Pred rekurzívnou funkciou pomenuj základný prípad, zmenšujúcu sa hodnotu a spôsob skladania výsledku. Ručne prejdi najmenší vstup a prvý krok nad ním. Potom over nuly, rovnaké vstupy a opakované volania. Zhodný výstup s cyklom overuje výsledok, ale sám nedokazuje, že riešenie používa rekurziu alebo zvládne ľubovoľnú hĺbku."}
+            ],
+        },
     },
     {
         "key": "data",
@@ -1489,6 +1526,7 @@ C_LEARNING_GOALS = {
     "operators": ("Čítať podmienku bez spoliehania sa na náhodnú prioritu operátorov.", "Použiť zátvorky na vyjadrenie zámeru."),
     "flow": ("Zvoliť if, switch, for alebo while podľa povahy rozhodnutia.", "Pomenovať invariant jednoduchého cyklu."),
     "functions": ("Navrhnúť jasné vstupy a návratovú hodnotu funkcie.", "Rozlíšiť návrat hodnoty a zmenu cez ukazovateľ."),
+    "recursion": ("Určiť základný prípad a hodnotu, ktorá sa pri každom kroku zmenší.", "Vysvetliť poradie návratov a porovnať rekurzívne riešenie s cyklom."),
     "callbacks": ("Navrhnúť typovaný callback s kontextom, zastavením a chybovou cestou.", "Pomenovať životnosť požičaných dát a použiť nezávislé kurzory va_list."),
     "scope": ("Rozlíšiť rozsah mena od životnosti objektu.", "Vysvetliť, čo const chráni a čo nie."),
     "arrays": ("Vypočítať platné indexy poľa.", "Odovzdať do funkcie pole aj jeho veľkosť."),
@@ -1522,6 +1560,7 @@ C_LEARNING_GOALS = {
 # Tento rámec je úmyselne oddelený od faktického výkladu. Každá lekcia sa tak
 # začína problémom, nadväznosťou a jadrom pojmu, potom smeruje k vlastnej práci.
 C_TEACHING_FRAMES = {
+    "recursion": {"context": "Úlohu možno vyriešiť menším prípadom tej istej úlohy, ale treba vedieť, kde volania skončia a ako sa vrátia výsledky.", "priorKnowledge": ("Poznáš parametre, lokálne premenné, návratové hodnoty a podmienky.", "Vieš čítať cyklus a zvyšok po celočíselnom delení."), "keyIdea": "Každé volanie má vlastný lokálny stav a každý rekurzívny krok sa musí priblížiť k základnému prípadu.", "transfer": "Pri vlastnej rekurzii zapíš základný prípad, zmenšujúcu sa mieru a hraničné vstupy skôr než telo funkcie."},
     "producer-groups": {"context": "Viaceré zdroje posielajú dávky do spoločnej malej fronty a potrebujú oznámiť koniec až po dokončení celej skupiny.", "priorKnowledge": ("Poznáš ohraničenú frontu, uzavretie, kooperatívny koniec a úspešný join.",), "keyIdea": "Konzument musí zostať aktívny počas pripájania producentov a bežný koniec celej skupiny vlastní koordinátor.", "transfer": "Pri vlastnej skupine zakresli závislosti čakania, spočítaj úspešné štarty a označ miesto uzavretia na každej chybovej ceste."},
     "deadlines": {"context": "Čakanie na ďalšiu položku má časový termín, ale pri prebudení sa môže zmeniť aj dostupnosť dát.", "priorKnowledge": ("Poznáš slučku nad predikátom, mutex a uzavretie fronty s dočítaním.",), "keyIdea": "Termín sa pri prebudení neposúva a výsledok operácie stále určuje stav pod opäť získaným mutexom.", "transfer": "Pri vlastnom čakaní pomenuj hodiny, prioritu dát a timeoutu a hranice garantovaného času návratu."},
     "cancellation": {"context": "Potrebuješ zastaviť dvojicu pracovníkov bez straty prijatých položiek a bez predčasného zániku ich údajov.", "priorKnowledge": ("Rozlišuješ timeout, uzavretie fronty a úspešný join.",), "keyIdea": "Požiadavka musí zmeniť predikát a zobudiť čakajúcich, kým až join potvrdí bezpečný koniec používania dát.", "transfer": "Pre každé miesto čakania opíš reakciu na zastavenie a vlastníka dočítania aj konečného uvoľnenia zdrojov."},
@@ -1558,6 +1597,7 @@ C_EXERCISE_TOPICS = {
     "operators": "operators",
     "flow": "flow",
     "functions": "functions",
+    "recursion": "recursion",
     "scope": "scope",
     "arrays": "arrays",
     "pointers": "pointers",
@@ -1603,6 +1643,7 @@ C_CHECKPOINT_IDS = {
     "operators": "c-short-circuit",
     "flow": "c-loop-invariant",
     "functions": "c-pass-by-value",
+    "recursion": "c-recursion-progress",
     "scope": "c-object-lifetime",
     "arrays": "c-array-bound",
     "pointers": "c-pointer-write",
@@ -1633,6 +1674,18 @@ C_CHECKPOINT_IDS = {
 }
 
 C_EXAMPLES = [
+    {
+        "key": "recursion-trace", "page_key": "recursion", "position": 10,
+        "title": "Volania dovnútra, výsledky späť",
+        "description": "Malý súčet ukazuje vlastné parametre a poradie návratov rekurzívnych volaní.",
+        "source": RECURSION_TRACE, "stdin": "",
+    },
+    {
+        "key": "gcd-recursion-loop", "page_key": "recursion", "position": 20,
+        "title": "Spoločný deliteľ rekurziou aj cyklom",
+        "description": "Euklidov algoritmus so základným prípadom pred delením a explicitným pravidlom pre nuly.",
+        "source": GCD_COMPARISON, "stdin": "",
+    },
     {
         "key": "producer-group", "page_key": "producer-groups", "position": 10,
         "title": "Traja producenti a jeden konzument",

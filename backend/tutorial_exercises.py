@@ -119,6 +119,37 @@ def _c_practice(topic: str, variant: int) -> dict[str, Any] | None:
             "expectedOutput": f"{max(left, right)}\n",
             "hints": ("Podmienkový výraz alebo if sú rovnako platné riešenia.",),
         }
+    if topic == "recursion":
+        left, right, expected = _pick(((48, 18, 6), (270, 192, 6), (35, 64, 1), (7, 7, 7)), variant)
+        return {
+            "title": "Základný prípad a menšia úloha",
+            "description": "Doplň gcd_recursive pre nezáporné unsigned int. Pri b == 0 vráť a bez delenia. Inak vráť výsledok rekurzívneho volania s argumentmi b a a % b. Pre (0, 0) je výsledok podľa dohody 0. Main nemeň. Skúšobňa overuje výstup; použitie rekurzie musíš skontrolovať aj v zdroji.",
+            "starterSource": "#include <stdio.h>\n#include <stdlib.h>\n" + r"""
+static unsigned int gcd_recursive(unsigned int a, unsigned int b)
+{
+    /* Replace this placeholder with a base case and a smaller recursive call. */
+    (void) a;
+    (void) b;
+    return 0U;
+}
+""" + f"""
+int main(void)
+{{
+    if (printf("gcd=%u\\nleft-zero=%u right-zero=%u both-zero=%u\\n",
+               gcd_recursive({left}U, {right}U), gcd_recursive(0U, {right}U),
+               gcd_recursive({left}U, 0U), gcd_recursive(0U, 0U)) < 0) {{
+        return EXIT_FAILURE;
+    }}
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}}
+""",
+            "stdin": "",
+            "expectedOutput": f"gcd={expected}\nleft-zero={right} right-zero={left} both-zero=0\n",
+            "hints": (
+                "Kontrola nulového druhého argumentu musí prísť pred operáciou %.",
+                "Keď b nie je nula, a % b je menšie než b. Práve druhý argument sa tak približuje k nule.",
+            ),
+        }
     if topic == "arrays":
         values = _pick(((3, 5, 2), (10, -4, 7), (8, 1, 1, 2)), variant)
         initializer = ", ".join(str(value) for value in values)

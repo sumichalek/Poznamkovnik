@@ -74,6 +74,18 @@ TUTORIAL_CHECKPOINTS: dict[str, tuple[dict[str, Any], ...]] = {
             "incorrectFeedback": "C odovzdáva všetky parametre hodnotou. Na zmenu cudzieho objektu funkcia potrebuje dostať jeho adresu.",
         },
         {
+            "id": "c-recursion-progress",
+            "prompt": "Čo zaručuje postup gcd_recursive(a, b) k základnému prípadu?",
+            "options": (
+                ("a", "Funkcia sa volá znova s rovnakými argumentmi, kým ju nezastaví prekladač."),
+                ("b", "Pri b == 0 sa vráti a; inak sa druhý argument zmení na a % b, ktoré je menšie než b."),
+                ("c", "Lokálna premenná static automaticky obmedzí počet volaní."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Druhý argument je nezáporný a klesá k nule; nulový prípad sa vybaví ešte pred delením.",
+            "incorrectFeedback": "Samotné volanie seba nestačí. Potrebuješ základný prípad a menšiu úlohu. Rovnaké argumenty sa ku koncu nepribližujú.",
+        },
+        {
             "id": "c-object-lifetime",
             "prompt": "Čo platí pre ukazovateľ vrátený na obyčajnú lokálnu premennú funkcie?",
             "options": (

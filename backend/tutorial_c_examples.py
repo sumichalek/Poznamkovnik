@@ -1,5 +1,76 @@
 """C17 programs shared by the lesson text and its runnable examples."""
 
+RECURSION_SUM = r"""#include <stdio.h>
+#include <stdlib.h>
+
+/* A small teaching trace, not a general-purpose summation API. */
+static unsigned int sum_to(unsigned int n)
+{
+    if (n > 10U) {
+        fputs("Trace accepts only n <= 10.\n", stderr);
+        exit(EXIT_FAILURE);
+    }
+    if (printf("enter n=%u\n", n) < 0) { exit(EXIT_FAILURE); }
+    unsigned int result = 0U;
+    if (n != 0U) {
+        unsigned int smaller = sum_to(n - 1U);
+        result = n + smaller;
+    }
+    if (printf("leave n=%u sum=%u\n", n, result) < 0) { exit(EXIT_FAILURE); }
+    return result;
+}
+"""
+
+RECURSION_TRACE_MAIN = r"""
+int main(void)
+{
+    unsigned int total = sum_to(3U);
+    if (printf("total=%u\n", total) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+RECURSION_TRACE = RECURSION_SUM + RECURSION_TRACE_MAIN
+
+GCD_RECURSIVE = r"""
+/* Nonnegative unsigned inputs; this API defines gcd(0, 0) as 0. */
+static unsigned int gcd_recursive(unsigned int a, unsigned int b)
+{
+    if (b == 0U) { return a; }
+    return gcd_recursive(b, a % b);
+}
+"""
+
+GCD_ITERATIVE = r"""
+static unsigned int gcd_iterative(unsigned int a, unsigned int b)
+{
+    while (b != 0U) {
+        unsigned int remainder = a % b;
+        a = b;
+        b = remainder;
+    }
+    return a;
+}
+"""
+
+GCD_MAIN = r"""
+int main(void)
+{
+    unsigned int recursive = gcd_recursive(48U, 18U);
+    unsigned int iterative = gcd_iterative(48U, 18U);
+    if (recursive != iterative) { return EXIT_FAILURE; }
+    if (printf("recursive=%u iterative=%u\n", recursive, iterative) < 0 ||
+        printf("left-zero=%u right-zero=%u both-zero=%u\n",
+               gcd_recursive(0U, 18U), gcd_recursive(48U, 0U),
+               gcd_recursive(0U, 0U)) < 0) {
+        return EXIT_FAILURE;
+    }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+GCD_COMPARISON = "#include <stdio.h>\n#include <stdlib.h>\n" + GCD_RECURSIVE + GCD_ITERATIVE + GCD_MAIN
+
 FORMATTED_OUTPUT = r"""#include <stdio.h>
 #include <stdlib.h>
 
