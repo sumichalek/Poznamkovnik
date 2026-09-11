@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from backend.tutorial_c_examples import LINE_READER
+from backend.tutorial_c_examples import COUNT_POSITIVE, LINE_READER
 
 
 MAX_PRACTICE_VARIANT = 10_000
@@ -265,15 +265,121 @@ int main(void)
                 "Jediný zápis *result = requested patrí na úspešnú cestu.",
             ),
         }
-    if topic == "testing":
-        value = _pick((4, 11, -3, 20), variant)
+    if topic == "safety":
+        values = _pick(((10, 20), (-4, 0, 9), (7, 8, 9, 10), (0, -2, 4, 6, 8)), variant)
         return {
-            "title": "Vstup a jednoduchý výpočet",
-            "description": "Načítaj celé číslo a vypíš jeho dvojnásobok.",
-            "starterSource": "#include <stdio.h>\n\nint main(void)\n{\n    int value = 0;\n\n    if (scanf(\"%d\", &value) != 1) {\n        return 1;\n    }\n\n    /* Vypočítaj a vypíš dvojnásobok value. */\n    return 0;\n}\n",
-            "stdin": f"{value}\n",
-            "expectedOutput": f"{value * 2}\n",
-            "hints": ("Skontroluj návratovú hodnotu scanf pred použitím value.",),
+            "title": "Over index pred čítaním",
+            "description": "Doplň get_value: NULL vstup alebo výstup a index mimo 0 až count-1 odmietni návratom 0 bez zmeny výsledku. Pri úspechu zapíš prvok a vráť 1. Nenulové values podľa kontraktu odkazuje na aspoň count čitateľných prvkov. Zachovaj main, ktorý skúša hranice, prázdny rozsah aj NULL; nevytváraj ani nečítaj neplatný prvok pred kontrolami.",
+            "starterSource": r"""#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+static int get_value(const int values[], size_t count, int index, int *result)
+{
+    /* Replace this placeholder with checks before the array access. */
+    (void) values;
+    (void) count;
+    (void) index;
+    (void) result;
+    return 0;
+}
+
+int main(void)
+{
+    const int values[] = {""" + ", ".join(map(str, values)) + r"""};
+    const size_t count = sizeof values / sizeof values[0];
+    const int indices[] = {-1, 0, """ + f"{len(values) - 1}, {len(values)}" + r""", INT_MIN, INT_MAX};
+    for (size_t i = 0; i < sizeof indices / sizeof indices[0]; ++i) {
+        int value = 77;
+        int ok = get_value(values, count, indices[i], &value);
+        if (printf("%d:%d\n", ok, value) < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    int value = 77;
+    int empty = get_value(values, 0, 0, &value);
+    int missing = get_value(NULL, count, 0, &value);
+    int output = get_value(values, count, 0, NULL);
+    if (printf("empty=%d null=%d output=%d value=%d\n",
+               empty, missing, output, value) < 0 || fflush(stdout) == EOF) {
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+""",
+            "stdin": "",
+            "expectedOutput": f"0:77\n1:{values[0]}\n1:{values[-1]}\n0:77\n0:77\n0:77\nempty=0 null=0 output=0 value=77\n",
+            "hints": (
+                "NULL a záporný index odmietni ako prvé. Na porovnanie nezáporného indexu a count môžeš použiť uintmax_t.",
+                "Rovnosť indexu s count už nie je platná. Jediný zápis *result patrí až za všetky kontroly.",
+            ),
+        }
+    if topic == "testing":
+        samples = _pick((
+            ((), (0,), (-2, 0, 3), (4,)),
+            ((), (-3,), (0, 0), (4, 0, 2)),
+            ((0,), (-1, 0), (0, 2), (0, 0, 0)),
+            ((), (-4, -1), (1, 2, 3), (0, 0, 4)),
+        ), variant)
+        rows = "\n".join(
+            "        {{" + (", ".join(map(str, values)) or "0") + "}, "
+            + f"{len(values)}, {sum(value > 0 for value in values)}" + "},"
+            for values in samples
+        )
+        return {
+            "title": "Test musí rozpoznať aj známu chybu",
+            "description": "Doplň failed(actual, expected): pri rozdiele vráť 1, pri zhode 0. Pripravený main spočíta neúspešné prípady pre správne count_positive aj chybné count_faulty, ktoré započítava nuly. Funkcie výpočtu, tabuľku očakávaní a main nemeň. Nejde o počet chybných prvkov, ale o počet zlyhaných testovacích prípadov. Nepouži assert: porovnania majú fungovať aj s NDEBUG.",
+            "starterSource": COUNT_POSITIVE + r"""
+#include <stdio.h>
+#include <stdlib.h>
+
+static size_t count_faulty(const int values[], size_t count)
+{
+    size_t positive = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (values[i] >= 0) {
+            ++positive;
+        }
+    }
+    return positive;
+}
+
+static size_t failed(size_t actual, size_t expected)
+{
+    /* Replace this placeholder with an always-active comparison. */
+    (void) actual;
+    (void) expected;
+    return 0;
+}
+
+int main(void)
+{
+    const struct {
+        int values[4];
+        size_t count;
+        size_t expected;
+    } cases[] = {
+""" + rows + r"""
+    };
+    size_t good = 0;
+    size_t faulty = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        good += failed(count_positive(cases[i].values, cases[i].count), cases[i].expected);
+        faulty += failed(count_faulty(cases[i].values, cases[i].count), cases[i].expected);
+    }
+    if (printf("good=%zu faulty=%zu\n", good, faulty) < 0 || fflush(stdout) == EOF) {
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+""",
+            "stdin": "",
+            "expectedOutput": f"good=0 faulty={sum(0 in values for values in samples)}\n",
+            "hints": (
+                "Operátor != vytvorí 0 pri zhode a 1 pri rozdiele. Vráť výsledok porovnania, nie samotnú vypočítanú hodnotu.",
+                "Zlyhanie známeho mutanta je tu žiadaná informácia. Tento program porovnáva dve implementácie, preto samotný počet faulty neznamená neúspech celého programu.",
+            ),
         }
     return None
 

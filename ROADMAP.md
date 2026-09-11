@@ -47,3 +47,19 @@ Učebnice ostatných jazykov a mikrokontrolérov zostávajú rozpracovanou dlhod
 - Dočasné testovacie projekty a relácie odstránené, pôvodný stav projektov nezmenený. Snímky a podrobný lokálny report: /tmp/poznamkovnik-runtime-verification/ (dočasné súbory, nie trvalá záloha).
 
 Ďalej pokračovať učebnicou C: nedefinované správanie, testovanie a ladenie. Mobilné rozloženie konzoly a overenie skutočných firmvérových nástrojov riešiť ako samostatné bloky.
+
+## Učebnica C: Bezpečnosť A Testovanie 2026-09-11
+
+- Rozšírené obe lekcie: logická chyba verzus UB, poradie kontrol, hranice poľa a aritmetiky, životnosť, vedľajšie účinky, assert/NDEBUG, tabuľkové a regresné testy, sanitizéry a konkrétny postup v GDB.
+- Dve existujúce ukážky opravené pri zachovaní identifikátorov: bezpečný index používa úplný riadok a kontrolovaný prevod; assert ukážka pri NDEBUG nehlási úspech testov, ktoré neprebehli.
+- Tri nové spustiteľné programy: kontrolované delenie, sedem hraničných testov a zámerná logická chyba na krokovanie. Posledný program má očakávaný neúspešný návrat a výstup expected=1 actual=2, nie UB.
+- Nové cvičenie bezpečného indexovania a zmysluplná náhrada cvičenia testovania, každé so štyrmi variantmi; nová kontrolná otázka o poradí kontroly a prístupu. Diagnostika počas písania sa nepridávala.
+- Pridaných 10 Python testov: hranice, NULL, zachovanie výstupu, NDEBUG vrátane hodnoty 0, známe mutácie algoritmu, oprava logickej chyby a všetky varianty cvičení. Rozšírený test zachovania poznámok, konceptov, odpovedí a postupu pri opakovanom nasadení.
+- npm run check: 150 Python testov úspešných, 4 preskočené pre nedostupné nástroje; všetkých 10 frontendových testov úspešných. Zostavené assets bez zmeny. Existujúce upozornenia ResourceWarning k SQLite zostávajú.
+- Po reštarte overených všetkých päť programov cez API aj tlačidlo Spustiť a osem riešení cvičení cez API. Obe lekcie skontrolované v Chromium pri šírkach 1440/875/390 bez pretekania čítačky či dokumentu a bez JavaScript výnimiek. Používateľský stav učebnice zostal nezmenený.
+- Skutočné GDB overilo step, podmienený breakpoint, next, hodnoty, zásobník a finish na dočasnom programe. Toto nie je overenie celého debuggerového rozhrania Vývoja. ASan nebol spustený v sandboxe a limity sandboxu sa nemenili.
+- Snímky, API report a záznam GDB: /tmp/poznamkovnik-tutorial-safety-verification/ (dočasné overenie, nie trvalá záloha).
+
+Technické pravidlá boli skontrolované proti primárnym zdrojom: význam celočíselného delenia a assert v [návrhu WG14 N1570, oddiely 6.5.5 a 7.2](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf), režim pokračovania sanitizéra v [dokumentácii GCC](https://gcc.gnu.org/onlinedocs/gcc/Instrumentation-Options.html), virtuálny adresný priestor v [obmedzeniach ASan](https://clang.llvm.org/docs/AddressSanitizer.html#limitations) a krokovanie v [dokumentácii GDB](https://sourceware.org/gdb/current/onlinedocs/gdb.html/Continuing-and-Stepping.html). N1570 je návrh C11, nie vydanie normy C17; programy sa overovali v režime C17.
+
+Ďalší obsahový blok: rozšíriť rýchlu referenciu C pre string.h a stdlib.h o kontrakty, kapacity, prekrývanie oblastí a testované príklady. Učebnice ako celok zostávajú rozpracované. Mobilná konzola a reálne firmvérové toolchainy naďalej patria do samostatných úloh.

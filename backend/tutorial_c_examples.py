@@ -556,3 +556,179 @@ MEASUREMENTS_SINGLE_FILE = (
     + "\n"
     + MEASUREMENTS_MAIN.removeprefix('#include "merania.h"\n')
 )
+
+SAFE_INDEX = LINE_READER + "\n" + INT_PARSER + r"""
+#include <stdint.h>
+
+int main(void)
+{
+    const int values[] = {10, 20, 30, 40};
+    const size_t count = sizeof values / sizeof values[0];
+    char line[64];
+    int requested = 0;
+    if (read_line(stdin, line, sizeof line) != LINE_OK ||
+        parse_int(line, &requested) != PARSE_OK) {
+        fputs("Expected one complete integer line.\n", stderr);
+        return EXIT_FAILURE;
+    }
+    if (requested < 0 || (uintmax_t) requested >= (uintmax_t) count) {
+        fputs("Index out of bounds.\n", stderr);
+        return EXIT_FAILURE;
+    }
+    if (printf("value: %d\n", values[(size_t) requested]) < 0 ||
+        fflush(stdout) == EOF) {
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+"""
+
+DIVIDE_INT = r"""#include <limits.h>
+#include <stddef.h>
+
+typedef enum { DIVIDE_OK, DIVIDE_ARGUMENT, DIVIDE_ZERO, DIVIDE_RANGE } DivideStatus;
+
+/* A non-NULL result points to a writable int. Failure leaves it unchanged. */
+static DivideStatus divide_int(int numerator, int denominator, int *result)
+{
+    if (result == NULL) {
+        return DIVIDE_ARGUMENT;
+    }
+    if (denominator == 0) {
+        return DIVIDE_ZERO;
+    }
+    if (denominator == -1 && numerator < -INT_MAX) {
+        return DIVIDE_RANGE;
+    }
+    *result = numerator / denominator;
+    return DIVIDE_OK;
+}
+"""
+
+CHECKED_DIVISION = DIVIDE_INT + r"""
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    const int cases[][2] = {{7, 2}, {-7, 2}, {0, 2}, {7, 0}};
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        int value = 99;
+        DivideStatus status = divide_int(cases[i][0], cases[i][1], &value);
+        if (printf("%d / %d: status=%d value=%d\n",
+                   cases[i][0], cases[i][1], (int) status, value) < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+ASSERT_MAXIMUM = r"""#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#ifndef NDEBUG
+static int maximum(int left, int right)
+{
+    return left > right ? left : right;
+}
+#endif
+
+int main(void)
+{
+#ifdef NDEBUG
+    fputs("Assertions disabled; tests not run.\n", stderr);
+    return EXIT_FAILURE;
+#else
+    assert(maximum(2, 3) == 3);
+    assert(maximum(5, 2) == 5);
+    assert(maximum(5, 5) == 5);
+    assert(maximum(-4, -1) == -1);
+    if (puts("4 assertions passed.") == EOF || fflush(stdout) == EOF) {
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+#endif
+}
+"""
+
+COUNT_POSITIVE = r"""#include <stddef.h>
+
+/* values points to at least count readable ints; NULL is allowed for count=0. */
+static size_t count_positive(const int values[], size_t count)
+{
+    size_t positive = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (values[i] > 0) {
+            ++positive;
+        }
+    }
+    return positive;
+}
+"""
+
+BOUNDARY_TESTS = COUNT_POSITIVE + r"""
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    const struct {
+        const char *name;
+        int values[5];
+        size_t count;
+        size_t expected;
+    } cases[] = {
+        {"empty", {0}, 0, 0},
+        {"zero", {0}, 1, 0},
+        {"negative", {-3}, 1, 0},
+        {"positive", {4}, 1, 1},
+        {"first", {4, -1, 0}, 3, 1},
+        {"last", {-2, 0, 3}, 3, 1},
+        {"mixed", {-2, 0, 3, 0, 5}, 5, 2}
+    };
+    size_t failures = 0;
+    const size_t total = sizeof cases / sizeof cases[0];
+    for (size_t i = 0; i < total; ++i) {
+        size_t actual = count_positive(cases[i].values, cases[i].count);
+        if (actual != cases[i].expected) {
+            ++failures;
+            fprintf(stderr, "%s: expected=%zu actual=%zu\n",
+                    cases[i].name, cases[i].expected, actual);
+        }
+    }
+    if (printf("tests=%zu failures=%zu\n", total, failures) < 0 ||
+        fflush(stdout) == EOF) {
+        return EXIT_FAILURE;
+    }
+    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+"""
+
+DEBUG_POSITIVE = r"""#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+/* Intentionally wrong predicate, but valid memory accesses. */
+static size_t count_positive(const int values[], size_t count)
+{
+    size_t positive = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (values[i] >= 0) {
+            ++positive;
+        }
+    }
+    return positive;
+}
+
+int main(void)
+{
+    const int values[] = {-2, 0, 3};
+    size_t actual = count_positive(values, sizeof values / sizeof values[0]);
+    if (printf("expected=1 actual=%zu\n", actual) < 0 || fflush(stdout) == EOF) {
+        return EXIT_FAILURE;
+    }
+    return actual == 1 ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+"""

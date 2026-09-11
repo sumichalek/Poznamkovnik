@@ -220,7 +220,7 @@ class TutorialLearningTestCase(unittest.TestCase):
     def test_c_updated_lessons_reseed_without_losing_learning_state(self) -> None:
         language = next(item for item in self.database.list_tutorial_languages(self.user["id"]) if item["code"] == "c")
         detail = self.database.tutorial_language_detail(self.user["id"], language["id"])
-        seeds = [page for page in C_PAGES if page["key"] in {"preprocessor", "build", "io", "errors"}]
+        seeds = [page for page in C_PAGES if page["key"] in {"preprocessor", "build", "io", "errors", "safety", "testing"}]
         saved = []
         for seed in seeds:
             page = next(item for item in detail["pages"] if item["title"] == seed["title"])
@@ -230,7 +230,7 @@ class TutorialLearningTestCase(unittest.TestCase):
             self.database.save_tutorial_note(self.user["id"], page["id"], {"content": note})
             self.database.save_tutorial_example_draft(self.user["id"], example["id"], {"source": draft, "stdin": "input\n"})
             self.database.save_tutorial_page_progress(self.user["id"], page["id"], {"status": "completed"})
-            correct = "b" if seed["key"] in {"preprocessor", "errors"} else "a"
+            correct = "b" if seed["key"] in {"preprocessor", "errors", "safety"} else "a"
             answer = self.database.answer_tutorial_checkpoint(self.user["id"], page["id"], {"optionId": correct})
             self.assertTrue(answer["isCorrect"])
             with self.database.connect() as connection:

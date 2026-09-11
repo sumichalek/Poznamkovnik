@@ -218,6 +218,18 @@ TUTORIAL_CHECKPOINTS: dict[str, tuple[dict[str, Any], ...]] = {
             "incorrectFeedback": "Ak jedna hodnota znamená zároveň výsledok aj chybu, volajúci nevie spoľahlivo rozhodnúť, čo sa stalo.",
         },
         {
+            "id": "c-check-before-access",
+            "prompt": "Program najprv načíta values[index] a až potom odmietne index >= count. Čo treba opraviť?",
+            "options": (
+                ("a", "Zapnúť optimalizáciu, aby prekladač dodatočne opravil poradie."),
+                ("b", "Overiť platnosť indexu pred čítaním; neskoršie odmietnutie už neodstráni neplatný prístup."),
+                ("c", "Nič, ak pri skúške program nespadol."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Najprv over nezápornosť a hranicu count, až potom čítaj prvok. Pri neplatnom prístupe už neskoršie if nepomôže.",
+            "incorrectFeedback": "Kontrola musí predchádzať operácii, ktorú chráni. Úspešný beh ani optimalizácia nie sú dôkazom platného prístupu do poľa.",
+        },
+        {
             "id": "c-boundary-test",
             "prompt": "Ktorý test najlepšie dopĺňa bežný vstup pre funkciu, ktorá pracuje s poľom?",
             "options": (

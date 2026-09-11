@@ -1,11 +1,15 @@
 """Vstavaný, používateľovi nezávislý obsah prvej učebnice C."""
 
 from backend.tutorial_c_examples import (
+    ASSERT_MAXIMUM,
     ATOMIC_COUNTER,
     BIT_MASKS,
+    BOUNDARY_TESTS,
     CHECKED_ADD,
+    CHECKED_DIVISION,
     CONDITIONAL_BUILD,
     CONST_VIEWS,
+    DEBUG_POSITIVE,
     FILE_ROUNDTRIP,
     FORMATTED_OUTPUT,
     GROW_BUFFER,
@@ -20,6 +24,7 @@ from backend.tutorial_c_examples import (
     PARSE_POSITIVE,
     READ_LINES,
     RESTRICT_COPY,
+    SAFE_INDEX,
     SINGLE_EVALUATION,
 )
 
@@ -739,9 +744,48 @@ C_PAGES = [
         "summary": "Čo C sľubuje, čo nedefinuje a ako hľadať chyby systematicky.",
         "content": {
             "lead": "Nedefinované správanie znamená, že štandard jazyka už neurčuje výsledok. Program nemusí spadnúť; môže vypísať zdanlivo správny výsledok alebo sa správať inak po zmene optimalizácie.",
-            "sections": [
-                {"title": "Typické príčiny", "bullets": ["Prístup mimo poľa.", "Dereferencovanie NULL alebo neinitializovaného ukazovateľa.", "Použitie hodnoty po free.", "Pretečenie znamienkového int.", "Nesprávny formát printf alebo scanf."]},
-                {"title": "Postup pri chybe", "paragraphs": ["Najskôr reprodukuj čo najmenší prípad, potom zapni varovania a sanitizéry vo vlastnom vývojovom prostredí. Kontroluj hranice, návratové hodnoty a invarianty dátových štruktúr."], "callout": "Skúšobňa je určená na krátke príklady. Na skutočné ladenie viac-súborových programov patrí projektový build, testy a debugger."}
+            "blocks": [
+                {"type": "heading", "text": "Nie každá chyba znamená to isté"},
+                {"type": "paragraph", "text": "Program má spočítať kladné merania. Podmienka value >= 0 namiesto value > 0 započíta aj nulu: je to logická chyba s dobre definovaným, ale nesprávnym výsledkom. Čítanie values[count] je iný problém. Porušuje pravidlá prístupu do poľa a jeho výsledok už nemožno odvodiť z pravidiel C. Oprava preto začína pomenovaním porušeného pravidla, nie hľadaním hodnoty, ktorá sa náhodou vypísala."},
+                {"type": "list", "items": [
+                    "Chyba syntaxe alebo obmedzenia jazyka vyžaduje diagnostiku prekladača; napríklad dve nezlučiteľné deklarácie tej istej funkcie v tom istom rozsahu. Diagnostika nemusí znamenať, že prekladač odmietne pokračovať.",
+                    "Logická chyba porušuje zadanie. Prekladač nevie, či si chcel počítať kladné alebo nezáporné čísla.",
+                    "Implementáciou definované správanie má zdokumentovanú voľbu, napríklad či má obyčajný char znamienko. Prenositeľný program nemá bezdôvodne predpokladať jednu voľbu.",
+                    "Nešpecifikované správanie pripúšťa viac možností bez povinnosti dokumentovať zvolenú možnosť. Napríklad poradie vyhodnotenia nezávislých argumentov funkcie nie je určené zľava doprava.",
+                    "Nedefinované správanie, skrátene UB, nemá záruky výsledku. Pád, úspešný návrat ani rovnaký výpis pri desiatich behoch nie sú jeho definíciou ani spoľahlivým testom."
+                ]},
+                {"type": "heading", "text": "Hranicu kontroluj pred prístupom"},
+                {"type": "code", "title": "Chybný úryvok: kontrola prichádza neskoro", "language": "c", "source": "int value = values[index]; /* UB if index is outside the array. */\nif (index >= count) {\n    return 1;\n}\n"},
+                {"type": "paragraph", "text": "Priradenie už načítalo prvok. Neskoršie if nemôže vziať tento prístup späť. Ani podmienka values[index] != 0 && index < count nepomôže, pretože ľavá strana sa vyhodnotí prvá. Správne poradie pri nezápornom indexe je index < count && values[index] != 0. Skrátené vyhodnocovanie && potom zabezpečí, že sa pravá strana pri neplatnom indexe nevykoná."},
+                {"type": "paragraph", "text": "Pole so štyrmi prvkami má platné indexy 0, 1, 2 a 3. Adresu jeden prvok za koncom možno vytvoriť a použiť ako hranicu cyklu, ale nemožno z nej čítať prvok. Ešte vzdialenejší ukazovateľ nemožno všeobecne ani vytvoriť aritmetikou nad týmto poľom. Počet prvkov odovzdaný funkcii musí zodpovedať skutočnému dostupnému poľu; samotný parameter count nič nealokuje."},
+                {"type": "code", "title": "Úplný vstup, rozsah indexu a až potom čítanie", "language": "c", "source": SAFE_INDEX},
+                {"type": "paragraph", "text": "Prvé dve pomocné funkcie poznáš z kapitol o vstupe a kontraktoch. read_line odmietne neúplný či príliš dlhý riadok a parse_int overí celý číselný zápis aj rozsah int. V main sa najprv odmietne záporný index. uintmax_t zo stdint.h potom umožní porovnať nezáporné číslo s count bez zúženia na potenciálne menší size_t. Prevod na size_t pri indexovaní už nasleduje po dôkaze, že index je menší než count."},
+                {"type": "list", "items": [
+                    "Vstup 0 vyberie 10, vstup 3 vyberie 40. Sú to prvý a posledný platný prvok.",
+                    "Vstupy -1 a 4 sa odmietnu bez čítania prvku. Rovnosť s count už znamená neplatný index.",
+                    "Vstupy 2x, prázdny riadok, číslo mimo int a riadok nad 63 bajtov sa odmietnu ešte pri spracovaní vstupu.",
+                    "Program zámerne prijíma index typu int. Pre skutočne veľké polia by rozhranie potrebovalo iný číselný rozsah aj zodpovedajúci parser."
+                ]},
+                {"type": "heading", "text": "Aritmetiku nemožno dodatočne ospravedlniť"},
+                {"type": "paragraph", "text": "Pri znamienkovom int musí byť výsledok aritmetickej operácie reprezentovateľný. Výraz INT_MAX + 1 nemá zaručené pretočenie na INT_MIN. Kontrola výsledku po sčítaní je neskoro; kapitola o bitoch ukazuje checked_add s kontrolou pred sčítaním. Naproti tomu unsigned int používa modulárnu aritmetiku, ale aj definované pretočenie môže pokaziť výpočet veľkosti alokácie."},
+                {"type": "paragraph", "text": "Celočíselné delenie má dve nebezpečné hranice: nulový deliteľ a nereprezentovateľný podiel. Na bežnom dvojkovom doplnku je INT_MIN / -1 mimo int. Rovnaký problém má aj INT_MIN % -1, hoci matematický zvyšok vyzerá ako nula. Pri platnom delení sa podiel skracuje smerom k nule: -7 / 2 je -3, nie -4."},
+                {"type": "code", "title": "Delenie s kontrolou pred operáciou", "language": "c", "source": CHECKED_DIVISION},
+                {"type": "paragraph", "text": "Kontroly vracajú DIVIDE_ARGUMENT=1, DIVIDE_ZERO=2 alebo DIVIDE_RANGE=3 ešte pred zápisom. Iba DIVIDE_OK=0 mení výsledok. Preto posledný riadok ukážky oznámi status=2 value=99. Podmienka numerator < -INT_MAX zachytí zápornú hodnotu bez kladného náprotivku aj bez predpokladu konkrétnej reprezentácie C17. Samotné -INT_MAX je reprezentovateľné; vypočítať najprv -numerator by pri krajnej hodnote mohlo vyvolať práve chybu, ktorej sa snažíme vyhnúť."},
+                {"type": "heading", "text": "Poradie účinkov nie je priorita operátorov"},
+                {"type": "code", "title": "Chybné dvojité zvýšenie a jednoznačná náhrada", "language": "c", "source": "/* Wrong in C17: unsequenced modifications of i. */\nprintf(\"%d %d\\n\", i++, i++);\n\n/* Instead, use separate full expressions. */\nint first = i;\n++i;\nint second = i;\n++i;\nprintf(\"%d %d\\n\", first, second);\n"},
+                {"type": "paragraph", "text": "Zátvorky určujú zoskupenie, nie všeobecné poradie vedľajších účinkov. Dve nezoradené zmeny i v argumentoch printf sú v C17 UB, nie iba výber medzi dvoma poradiami výpisu. Náhrada predpokladá, že obe zvýšenia zostanú v rozsahu int; napríklad pri i=4 vypíše 4 5 a zanechá i=6. Samostatné príkazy spriehľadnia poradie, ale neodstránia potrebu kontrolovať rozsah."},
+                {"type": "heading", "text": "Životnosť a knižničné kontrakty"},
+                {"type": "paragraph", "text": "Po free už pôvodný objekt neexistuje. Nastavenie jednej premennej na NULL neopraví ostatné ukazovatele, ktoré naň odkazovali. Rovnako nemožno vrátiť adresu lokálneho poľa a používať ju po návrate funkcie. Oprava musí určiť vlastníka a životnosť objektu, napríklad nechať pole vytvoriť volajúcim alebo jasne odovzdať vlastníctvo dynamickej alokácie."},
+                {"type": "list", "items": [
+                    "Nenulový ukazovateľ ešte nemusí byť platný. Kontrola proti NULL nenahrádza znalosť životnosti, veľkosti a zarovnania objektu.",
+                    "Nečítaj neinicializované lokálne hodnoty. Inicializácia je súčasť prípravy stavu, nie kozmetická úprava varovaní.",
+                    "printf potrebuje správny typ argumentu pre formát; pre size_t je určené %zu. Preklad bez varovania nie je univerzálnym overením knižničných kontraktov.",
+                    "memcpy nesmie kopírovať prekrývajúce sa oblasti; pre platné prekrývajúce sa oblasti je určené memmove. Zmena funkcie však neopraví príliš malý cieľ.",
+                    "Nedefinovaný nie je ľubovoľný nepríjemný výsledok. Neúspešné fopen s návratom NULL je bežná definovaná chybová cesta."
+                ]},
+                {"type": "callout", "tone": "warning", "text": "Chybné úryvky slúžia na rozbor, nie ako programy s očakávaným výstupom. UB neopravíš tým, že vypneš optimalizáciu alebo že sanitizér pri jednom behu nič neoznámil. Najprv oprav porušený predpoklad a potom doplň testy hraníc."},
+                {"type": "heading", "text": "Od chyby k overiteľnej oprave"},
+                {"type": "paragraph", "text": "Zapíš konkrétny vstup a požadovaný výsledok. Zmenši program bez odstránenia príčiny. Nájdeš kontrolu až za operáciou, nesprávnu hranicu alebo objekt po skončení životnosti? Presuň kontrolu pred operáciu a výstup meň až po úspechu. Nakoniec over najbližší platný aj neplatný prípad: pri neprázdnom poli index count - 1 a count, pri delení nulu aj krajné hodnoty z limits.h. Prázdny rozsah over osobitne bez odčítania od nulového count. Nasledujúca kapitola ukáže, ako z takýchto prípadov zostaviť opakovateľný test."}
             ]
         }
     },
@@ -813,10 +857,46 @@ C_PAGES = [
         "summary": "Malé testy, assert, varovania, sanitizéry a postup pri hľadaní chyby.",
         "content": {
             "lead": "Spoľahlivosť nevznikne jedným veľkým testom na konci. V C sa oplatí oddeliť čistý výpočet od vstupu a výstupu, aby si mohol malé funkcie kontrolovať priamo.",
-            "sections": [
-                {"title": "Čo testovať", "paragraphs": ["Pre každú funkciu vyber typický prípad, hranice a neplatné vstupy. Ak funkcia pracuje s poľom, vyskúšaj prázdne pole, jeden prvok a najväčší očakávaný počet prvkov."], "bullets": ["Test očakáva konkrétny výsledok, nie iba to, že program nespadol.", "Chybu zmenši na čo najkratší reprodukovateľný príklad.", "Názov testu má opisovať správanie, nie implementáciu."]},
-                {"title": "assert a nástroje", "paragraphs": ["assert je dobrý pre interné predpoklady a malé výukové testy. Pre ladenie v lokálnom prostredí pridaj sanitizéry, napríklad -fsanitize=address,undefined, a nechaj zapnuté varovania."], "callout": "assert môže byť v produkčnom builde vypnutý cez NDEBUG. Kontrolu chýb, od ktorej závisí bezpečný beh programu, preto zapisuj obyčajnou podmienkou."},
-                {"title": "Debugger", "paragraphs": ["Debugger ukáže aktuálne hodnoty a zásobník volaní, ale nenahrádza predstavu o správnom správaní. Najprv si stanov očakávané vstupy a výstupy, potom sleduj miesto, kde sa od nich program odchýli."]}
+            "blocks": [
+                {"type": "heading", "text": "Najprv sľub funkcie, potom test"},
+                {"type": "paragraph", "text": "count_positive má vrátiť počet hodnôt väčších než nula medzi prvými count prvkami. Nula sa nepočíta. Volajúci zaručuje čitateľné pole s aspoň count prvkami; pri count=0 sa nečíta nič a možno odovzdať aj NULL. Funkcia nevykonáva vstup ani výstup, preto ju možno skúšať priamo, bez simulácie terminálu."},
+                {"type": "paragraph", "text": "Test pozostáva z prípravy dát, jedného volania a porovnania so samostatne určeným očakávaním. Očakávanie nepočítaj rovnakým algoritmom ako výsledok: skopírovaná chyba by potvrdila samu seba. Pri poli {-2, 0, 3} vieme ručne povedať, že výsledok má byť 1."},
+                {"type": "list", "items": [
+                    "Prázdny rozsah overí, že funkcia vráti nulu bez načítania prvku.",
+                    "Jeden záporný, nulový a kladný prvok odlíšia jednotlivé vetvy podmienky.",
+                    "Kladný prvok iba na začiatku alebo iba na konci odhalí vynechanú hranicu cyklu.",
+                    "Zmiešané pole s nulami rozlíši > od >= a preverí opakované zvyšovanie počítadla.",
+                    "Neplatné vstupy testuj podľa kontraktu. Funkciu bez sľubu kontroly NULL nevolaj s NULL a kladným count a neočakávaj bezpečnú chybu. Pre kontrolované rozhranie by si musel navrhnúť stav zlyhania."
+                ]},
+                {"type": "heading", "text": "assert: krátke tvrdenie s dôležitou podmienkou"},
+                {"type": "code", "title": "Štyri tvrdenia, alebo výslovné odmietnutie vypnutých testov", "language": "c", "source": ASSERT_MAXIMUM},
+                {"type": "paragraph", "text": "Aktívny assert pri nepravdivom výraze vypíše diagnostiku a ukončí program cez abort. Ďalšie tvrdenia už neprebehnú. Ak je pri vložení assert.h definované NDEBUG, výraz assert sa vôbec nevyhodnocuje. Platí to aj pre -DNDEBUG=0: rozhoduje existencia makra, nie jeho číselná hodnota. Ukážka preto pri vypnutí testov vracia neúspech a nikdy netvrdí, že prešli."},
+                {"type": "callout", "tone": "warning", "text": "Potrebné operácie nedávaj dovnútra assert. Pri assert(read_value(&value)) sa s NDEBUG neuskutoční ani čítanie. Operáciu vykonaj osobitne, jej chybu spracuj bežným if a assert si nechaj na interné tvrdenie. Rovnako ním nenahrádzaj kontrolu cudzieho vstupu alebo neúspešného malloc."},
+                {"type": "heading", "text": "Tabuľka testov, ktorá zostane aktívna"},
+                {"type": "code", "title": "Sedem pomenovaných prípadov a návratový stav", "language": "c", "source": BOUNDARY_TESTS},
+                {"type": "paragraph", "text": "Každý riadok tabuľky nesie názov, dáta, počet spracovaných prvkov a očakávanie. Pole values má vždy päť miest; empty znamená nulový spracovaný rozsah, nie neprenositeľné pole dĺžky nula. Pri rozdiele pribudne zlyhanie a vypíše sa názov, očakávanie aj skutočnosť. Súhrn tests=7 failures=0 znamená, že prešlo týchto sedem prípadov, nie dôkaz správnosti pre každý vstup."},
+                {"type": "paragraph", "text": "Porovnania cez if fungujú aj s NDEBUG a program pri zlyhaní vracia EXIT_FAILURE. To je dôležité pre automatizáciu: samotné slovo FAIL vo výstupe s úspešným návratom by bežný testovací skript nemusel považovať za chybu. Názvy prípadov navyše umožnia pochopiť zlyhanie bez hádania, ktorý riadok tabuľky sa práve vykonal."},
+                {"type": "paragraph", "text": "Over aj kvalitu testov. Dočasne zmeň > 0 na >= 0: prípady zero, first, last a mixed musia zlyhať, spolu štyri. Potom obnov správnu podmienku. Takto vložená známa chyba sa nazýva mutant. Testy, ktoré ju nerozlíšia od správneho programu, majú medzeru. Cvičenie na konci kapitoly precvičuje práve kontrolu správneho a zámerne chybného výpočtu."},
+                {"type": "heading", "text": "Varovania a sanitizéry odpovedajú na iné otázky"},
+                {"type": "paragraph", "text": "Varovania kontrolujú podozrivý zdroj počas prekladu, napríklad nesúlad formátu a argumentu. Sanitizéry pridávajú kontroly vykonaných operácií počas behu. UBSan vie odhaliť napríklad znamienkové pretečenie; AddressSanitizer, skrátene ASan, pomáha pri viacerých chybách pamäte. Ani jeden nepozná zadanie count_positive, preto od nich nečakaj hlásenie na >= namiesto >."},
+                {"type": "code", "title": "Samostatné príkazy v lokálnom termináli s GCC", "language": "sh", "source": "gcc -std=c17 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wformat=2 -g3 -O0 main.c -o program\n./program\n\ngcc -std=c17 -Wall -Wextra -g3 -O1 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer main.c -o program-sanitized\n./program-sanitized\n"},
+                {"type": "paragraph", "text": "Druhý preklad potrebuje dostupné knižnice sanitizérov. ASan na 64-bitových platformách mapuje veľký virtuálny adresný priestor, čo nie je to isté ako spotreba fyzickej pamäte. Preto tento príkaz nie je prísľubom behu v pamäťovo obmedzenom sandboxe. Vo Vývoji profil Ladenie pri C používa UBSan, nie ASan; profil Vydanie tieto kontroly nepridáva. Kontroly behu nastanú až pri vedomom spustení programu, nie počas písania."},
+                {"type": "paragraph", "text": "Pri UBSan môže byť povolené pokračovanie po diagnostike, takže úspešný návrat procesu nevylučuje nájdenú chybu. Lokálny príkaz vyššie používa -fno-sanitize-recover=all, aby prvé zachytené porušenie skončilo neúspešne. Čítaj preto aj stderr. Tichý sanitizér znamená iba to, že pri vykonaných operáciách jeho zapnuté kontroly nič nezachytili."},
+                {"type": "heading", "text": "Ladenie konkrétnej logickej chyby"},
+                {"type": "code", "title": "Zámerne chybný program: nula sa počíta ako kladná", "language": "c", "source": DEBUG_POSITIVE},
+                {"type": "paragraph", "text": "Tento program má definované správanie: vypíše expected=1 actual=2 a vráti neúspech. Nečíta mimo poľa. Taký príklad sa hodí na prvé krokovanie, pretože vieme odlíšiť chybný výsledok od nepredvídateľného UB. Prelož ho ako main.c prvým príkazom s -g3 -O0 a spusti gdb ./program. Diagnostické symboly priradia inštrukcie k zdroju; bez optimalizácie sa stav sleduje jednoduchšie."},
+                {"type": "code", "title": "Príkazy v GDB po otvorení programu", "language": "text", "source": "break count_positive\nrun\nprint count\nprint values[0]@3\nbacktrace\nlist count_positive\n"},
+                {"type": "paragraph", "text": "Breakpoint zastaví vstup do count_positive. count má byť 3 a výraz values[0]@3 v GDB zobrazí tri prvky {-2, 0, 3}; znak @ je syntax debuggera, nie operátor C. Backtrace ukáže count_positive volané z main. Na riadku inicializácie ešte nemusí byť positive nastavené: debugger zvyčajne ukazuje príkaz, ktorý sa len chystá vykonať."},
+                {"type": "paragraph", "text": "Príkazom next prejdi inicializáciu a potom cyklus. Pri každom if sleduj print i, print values[i] a print positive. Kým i=0, záporné číslo počítadlo nezvýši. Pri i=1 má values[i] hodnotu 0, no podmienka >= 0 dovolí ++positive. To je prvý rozdiel oproti kontraktu. Výrazy values[i] vyhodnocuj iba vnútri platného rozsahu, nie po skončení cyklu s i=count."},
+                {"type": "list", "items": [
+                    "next prejde na ďalší zdrojový krok bez vstupu do volanej funkcie. Jeden zdrojový riadok nemusí zodpovedať jednej strojovej inštrukcii.",
+                    "step môže vstúpiť do volanej funkcie. Na call-site count_positive v main tak môžeš pozorovať prechod do výpočtu.",
+                    "finish dokončí aktuálnu funkciu a vráti sa k volajúcemu; pri tomto programe uvidíš chybný návrat 2.",
+                    "continue pokračuje po ďalší breakpoint alebo koniec programu. backtrace ukazuje zásobník aktuálnych volaní, nie históriu všetkých predošlých volaní."
+                ]},
+                {"type": "heading", "text": "Oprava má zostať chránená regresným testom"},
+                {"type": "paragraph", "text": "Zmeň jedinú chybnú podmienku na > 0, ukonči GDB, prelož znova a zopakuj beh. Očakávanie sa nemení: teraz má byť actual=1. Prípad s nulou zachovaj v tabuľke, aby sa rovnaká chyba neskôr nevrátila. Over aj pôvodné ostatné prípady, pretože oprava jedného vstupu môže pokaziť iný."},
+                {"type": "callout", "tone": "info", "text": "Keď sa zlyhanie nedá zopakovať, odlož presný vstup, verziu zdroja, príkaz prekladu, návratový stav a obe výstupné vetvy stdout a stderr. Pri náhodných testoch aj počiatočné semeno. Menší reprodukovateľný príklad zvyčajne pomôže viac než množstvo výpisov bez jasnej otázky."}
             ]
         }
     },
@@ -916,9 +996,9 @@ C_LEARNING_GOALS = {
     "portability": ("Rozlíšiť definované, implementačne závislé, nešpecifikované a nedefinované správanie.", "Vybrať prenositeľný typ alebo rozhranie namiesto predpokladu o jednej platforme."),
     "build": ("Rozdeliť výpočet na hlavičku, implementáciu a volajúci program.", "Vysvetliť rozdiel medzi deklaráciou, definíciou a väzbou mena.", "Odlíšiť chybu prekladu od chýbajúcej alebo viacnásobnej definície pri linkovaní."),
     "io": ("Skontrolovať chybu pri textovom vstupe a výstupe.", "Oddeliť parsovanie textu od logiky programu."),
-    "safety": ("Rozpoznať nebezpečnú hranicu pri práci s pamäťou alebo vstupom.", "Vybrať obranný krok, ktorý obmedzí následky chyby."),
+    "safety": ("Odlíšiť logickú chybu od nedefinovaného správania.", "Overiť hranicu poľa a rozsah operácie pred jej vykonaním.", "Rozpoznať porušenú životnosť objektu a nezoradené vedľajšie účinky."),
     "errors": ("Navrhnúť návratový stav, ktorý nezamieňa chybu s hodnotou.", "Uvoľniť zdroje aj na chybovej ceste."),
-    "testing": ("Vybrať bežný aj hraničný vstup pre malú funkciu.", "Použiť diagnostiku prekladača a sanitizér pri hľadaní chyby."),
+    "testing": ("Zostaviť pomenované hraničné a regresné testy s návratovým stavom.", "Vysvetliť rozdiel medzi assert, kontrolou vstupu a NDEBUG.", "Overiť testy známou chybou a nájsť prvú odchýlku krokovaním v GDB."),
 }
 
 
@@ -943,9 +1023,9 @@ C_TEACHING_FRAMES = {
     "portability": {"context": "Kód môže dnes fungovať na jednom počítači a zajtra zlyhať inde, ak vychádza z nezdokumentovaného predpokladu.", "priorKnowledge": ("Poznáš typy, rozsahy a základný preklad.",), "keyIdea": "Prenositeľný C kód sa opiera o definované pravidlá a explicitné rozhrania, nie o náhodné vlastnosti jednej platformy.", "transfer": "Pri každej závislosti od veľkosti, bajtového poradia alebo typu char si vyhľadaj, čo sľubuje štandard a čo iba konkrétna platforma."},
     "build": {"context": "Viacsúborový projekt potrebuje oddeliť verejné rozhranie od implementácie a spojiť svoje časti do jedného programu.", "priorKnowledge": ("Vieš preložiť jeden zdrojový súbor a odovzdať pole funkcii.",), "keyIdea": "Deklarácia umožní skontrolovať volanie; definícia poskytne implementáciu a linker pripojí potrebné objektové súbory.", "transfer": "Pri pridávaní funkcie rozhodni, či je verejná, a skontroluj jej deklaráciu, definíciu aj zaradenie do zostavenia."},
     "io": {"context": "Vstup a výstup sú hranica medzi tvojím programom a nepredvídateľným vonkajším svetom.", "priorKnowledge": ("Poznáš reťazce, hodnoty a návratový stav funkcie.",), "keyIdea": "Najprv čítaj do známeho priestoru, potom over výsledok a až potom prevádzaj text na doménovú hodnotu.", "transfer": "Pri každom vstupe oddel načítanie, validáciu a vlastnú logiku do viditeľných krokov."},
-    "safety": {"context": "Bezpečný program ráta s chybným vstupom, neúspešným volaním aj hranicou poľa skôr, než nastanú.", "priorKnowledge": ("Poznáš polia, ukazovatele a návratové hodnoty.",), "keyIdea": "Obrana je súčet malých zmlúv: obmedzená veľkosť, overený výsledok, jasné vlastníctvo a bezpečná chybová cesta.", "transfer": "Vyber jeden vstup vo vlastnom kóde a dopíš, čo sa stane pri prázdnej, príliš dlhej alebo neplatnej hodnote."},
+    "safety": {"context": "Program môže vypísať správne číslo a pritom už porušiť pravidlá jazyka pri prístupe do pamäte.", "priorKnowledge": ("Poznáš polia, ukazovatele, životnosť objektov a chybové kontrakty.",), "keyIdea": "Bezpečnostná kontrola musí predchádzať neplatnej operácii; zdanlivý úspech ani neskoršia podmienka jej následky neodstránia.", "transfer": "Pri vlastnom indexovaní alebo delení nájdi posledný platný a prvý neplatný vstup a over poradie kontrol."},
     "errors": {"context": "Volajúci program musí vedieť, či dostal výsledok alebo iba náznak, že niečo zlyhalo.", "priorKnowledge": ("Vieš navrhnúť jednoduchú funkciu.",), "keyIdea": "Dobrý chybový kontrakt oddeľuje stav zlyhania od bežných dát a zachováva zdroje v platnom stave.", "transfer": "Pri funkcii s chybou si napíš, čo platí o výstupe a zdrojoch po každej návratovej ceste."},
-    "testing": {"context": "Jeden úspešný beh hovorí málo; správnosť sa ukáže, keď program skúsiš na typických aj hraničných situáciách.", "priorKnowledge": ("Vieš spustiť a preložiť malý program.",), "keyIdea": "Test je konkrétna otázka na správanie programu a diagnostika pomáha zmenšiť priestor, v ktorom hľadáš chybu.", "transfer": "Pre najbližšiu funkciu si vyber jeden bežný, jeden hraničný a jeden neplatný vstup ešte pred písaním opravy."},
+    "testing": {"context": "Počítanie kladných hodnôt môže prejsť prekladom aj sanitizérom a predsa nesprávne započítať nulu.", "priorKnowledge": ("Vieš preložiť program, oddeliť funkciu a pomenovať jej kontrakt.", "Rozlišuješ logickú chybu a nedefinované správanie."), "keyIdea": "Test porovná výsledok s nezávislým očakávaním; debugger hľadá prvú odchýlku a regresný prípad chráni opravu.", "transfer": "Doplň hraničný test k vlastnej funkcii a zámernou malou chybou over, že test naozaj zlyhá."},
 }
 
 C_EXERCISE_TOPICS = {
@@ -965,6 +1045,7 @@ C_EXERCISE_TOPICS = {
     "build": "build",
     "io": "io",
     "errors": "errors",
+    "safety": "safety",
     "testing": "testing",
 }
 
@@ -997,6 +1078,7 @@ C_CHECKPOINT_IDS = {
     "build": "c-declaration-definition",
     "io": "c-input-boundary",
     "errors": "c-error-status",
+    "safety": "c-check-before-access",
     "testing": "c-boundary-test",
 }
 
@@ -1220,8 +1302,14 @@ C_EXAMPLES = [
         "position": 10,
         "title": "Kontrola indexu poľa",
         "description": "Index sa overí ešte pred pretypovaním na size_t a prístupom do poľa.",
-        "source": "#include <stddef.h>\n#include <stdio.h>\n\nint main(void)\n{\n    const int values[] = {10, 20, 30, 40};\n    const size_t count = sizeof values / sizeof values[0];\n    long requested = 0L;\n\n    fputs(\"Index: \", stdout);\n    if (scanf(\"%ld\", &requested) != 1) {\n        fputs(\"Očakávam celé číslo.\\n\", stderr);\n        return 1;\n    }\n\n    if (requested < 0L || (size_t) requested >= count) {\n        fputs(\"Index je mimo poľa.\\n\", stderr);\n        return 1;\n    }\n\n    printf(\"Hodnota: %d\\n\", values[(size_t) requested]);\n    return 0;\n}\n",
+        "source": SAFE_INDEX,
         "stdin": "2\n",
+    },
+    {
+        "key": "checked-division", "page_key": "safety", "position": 20,
+        "title": "Delenie až po kontrole",
+        "description": "Nulový deliteľ a nereprezentovateľný podiel sa odmietnu pred operáciou; výsledok pri chybe zostane nezmenený.",
+        "source": CHECKED_DIVISION, "stdin": "",
     },
     {
         "key": "parse-positive",
@@ -1237,9 +1325,21 @@ C_EXAMPLES = [
         "page_key": "testing",
         "position": 10,
         "title": "Malé testy cez assert",
-        "description": "Samostatná funkcia sa otestuje pre bežné aj hraničné vstupy.",
-        "source": "#include <assert.h>\n#include <stdio.h>\n\nstatic int maximum(int left, int right)\n{\n    return left > right ? left : right;\n}\n\nstatic void test_maximum(void)\n{\n    assert(maximum(2, 3) == 3);\n    assert(maximum(5, 5) == 5);\n    assert(maximum(-4, -1) == -1);\n}\n\nint main(void)\n{\n    test_maximum();\n    puts(\"Všetky testy prešli.\");\n    return 0;\n}\n",
+        "description": "Štyri tvrdenia pre maximum; pri NDEBUG program výslovne oznámi, že testy neprebehli.",
+        "source": ASSERT_MAXIMUM,
         "stdin": "",
+    },
+    {
+        "key": "boundary-positive", "page_key": "testing", "position": 20,
+        "title": "Tabuľka hraničných testov",
+        "description": "Sedem pomenovaných prípadov, počet zlyhaní a neúspešný návrat pri chybe; kontroly zostávajú aktívne aj s NDEBUG.",
+        "source": BOUNDARY_TESTS, "stdin": "",
+    },
+    {
+        "key": "debug-positive", "page_key": "testing", "position": 30,
+        "title": "Nájdi chybu krokovaním",
+        "description": "Zámerná logická chyba: nula sa počíta ako kladná. Výstup expected=1 actual=2 a neúspešný návrat sú podkladom na opravu.",
+        "source": DEBUG_POSITIVE, "stdin": "",
     },
     {
         "key": "snprintf-message",
