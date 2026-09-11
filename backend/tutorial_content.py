@@ -3,18 +3,22 @@
 from backend.tutorial_c_examples import (
     ASSERT_MAXIMUM,
     ATOMIC_COUNTER,
+    BINARY_ROUNDTRIP,
     BIT_MASKS,
     BOUNDARY_TESTS,
     CHECKED_ADD,
     CHECKED_DIVISION,
+    CLASSIFY_BYTES,
     COMPARE_STRINGS,
     CONDITIONAL_BUILD,
     CONST_VIEWS,
+    CONVERT_SIZES,
     COPY_TEXT_DEMO,
     DEBUG_POSITIVE,
     FILE_ROUNDTRIP,
     FORMATTED_OUTPUT,
     GROW_BUFFER,
+    INTEGER_LIMITS,
     MACRO_EXPANDED,
     MACRO_EXPANSION,
     MACRO_PARENTHESES,
@@ -29,6 +33,7 @@ from backend.tutorial_c_examples import (
     RESTRICT_COPY,
     SAFE_INDEX,
     SINGLE_EVALUATION,
+    SNPRINTF_MESSAGE,
     SORT_SEARCH,
     STRTOL_REFERENCE,
 )
@@ -920,12 +925,52 @@ C_PAGES = [
         "kind": "reference",
         "position": 160,
         "title": "stdio.h: printf, fgets a FILE",
-        "summary": "Formátovaný výstup, riadkový vstup a práca so súbormi.",
+        "summary": "Formáty a návratové hodnoty, snprintf, celé riadky, binárne dáta a životnosť prúdu.",
         "content": {
             "lead": "stdio.h je rozhranie k štandardnému vstupu, výstupu a súborom.",
-            "sections": [
-                {"title": "printf", "paragraphs": ["int printf(const char *format, ...); vypíše formátovaný text a pri úspechu vracia počet zapísaných znakov, pri chybe zápornú hodnotu."], "bullets": ["%d: int", "%u: unsigned int", "%ld: long", "%zu: size_t", "%c: char", "%s: nulou ukončený reťazec"]},
-                {"title": "fgets", "paragraphs": ["char *fgets(char *buffer, int count, FILE *stream); vráti buffer alebo NULL. Načítaný nový riadok obvykle ostáva v texte, pokiaľ sa zmestil."], "callout": "Nikdy nevolaj strlen ani printf s %s na poli, o ktorom nevieš, či obsahuje koncový nulový znak."}
+            "blocks": [
+                {"type": "heading", "text": "Rýchla orientácia v návratových hodnotách"},
+                {"type": "list", "items": [
+                    "printf a fprintf vracajú pri úspechu počet vypísaných znakov; záporný výsledok znamená chybu. fprintf navyše prijíma cieľový FILE *.",
+                    "snprintf zapisuje do poľa s danou kapacitou a vracia požadovanú dĺžku bez koncovej nuly, aj keď sa výstup celý nezmestil. Záporný výsledok znamená chybu formátovania.",
+                    "fgets vracia cieľový ukazovateľ alebo NULL. fgetc vracia znak cez int alebo EOF. Pri neúspešnom čítaní odlišuj koniec od chyby cez ferror.",
+                    "fread a fwrite vracajú počet celých prenesených prvkov, nie všeobecne počet bajtov. Ak je veľkosť prvku 1, ide zároveň o počet bajtov.",
+                    "fopen a tmpfile vracajú FILE * alebo NULL. fclose a fflush vracajú pri úspechu 0, pri chybe EOF; fseek vracia pri úspechu 0, inak nenulovú hodnotu."
+                ]},
+                {"type": "heading", "text": "Formát je typový kontrakt, nie ozdoba výpisu"},
+                {"type": "list", "items": [
+                    "%d očakáva int, %u unsigned int, %ld long a %zu size_t. Počet bajtov zo sizeof teda nevypisuj automaticky cez %d.",
+                    "%f pri printf očakáva double; float sa pri volaní s premenlivým počtom argumentov povýši na double. Pre long double je určené %Lf.",
+                    "%c pracuje s argumentom typu int po celočíselných povýšeniach. %s potrebuje platný reťazec, nie ľubovoľné pole alebo NULL.",
+                    "%p očakáva void *. Pri ukazovateli na objekt použi napríklad printf(\"%p\", (void *) pointer); presný zápis adresy závisí od implementácie.",
+                    "Šírka či presnosť cez hviezdičku prijíma int. Pri %.*s preto nemožno bez kontroly podať size_t alebo ho naslepo zúžiť na int.",
+                    "%% vypíše doslovné percento. Cudzí text patrí do argumentu, napríklad printf(\"%s\", text), nie na miesto formátu."
+                ]},
+                {"type": "paragraph", "text": "Počet a typy argumentov musia zodpovedať formátu aj pri sprintf či snprintf. Nesprávny formát neopraví menšia kapacita cieľa. Prekladač pri známych formátoch pomôže varovaniami, ale formát vytvorený až počas behu nemusí vedieť overiť. Šírka ako %8s je minimálna šírka zobrazenia, nie ochrana pred dlhým reťazcom. Presnosť %.8s obmedzuje počet vypísaných bajtov, nie celkovú veľkosť výsledku s ďalším textom."},
+                {"type": "paragraph", "text": "Pri scanf je kontrakt odlišný: odovzdávaš adresy objektov. %f tam potrebuje float * a %lf double *; pre printf sa float aj tak povýši na double. Počet úspešných priradení ešte nemusí znamenať prijatie celého vstupu. Číselný prevod scanf s nereprezentovateľným výsledkom môže viesť k UB, preto pre neobmedzený číselný vstup naďalej používame celý riadok a kontrolovaný parser z predchádzajúcich kapitol."},
+                {"type": "heading", "text": "snprintf má tri výsledky"},
+                {"type": "code", "title": "Presná kapacita, skrátenie a nulová kapacita", "language": "c", "source": SNPRINTF_MESSAGE},
+                {"type": "paragraph", "text": "Text value=42 má osem bajtov a potrebuje deviate miesto pre koncovú nulu. FORMAT_OK=0 znamená celý uložený text, FORMAT_ERROR=1 záporný návrat a FORMAT_TRUNCATED=2 nedostatok miesta. Pri kapacite 9 vznikne celý text, pri 8 iba value=4 a pri 1 prázdny reťazec. Vo všetkých týchto prípadoch snprintf vracia požadovanú dĺžku 8, nie skutočne uložený počet."},
+                {"type": "paragraph", "text": "Najprv sa overuje záporný výsledok. Až potom sa nezáporná požadovaná dĺžka porovnáva s kapacitou cez uintmax_t, aby sa nezúžila ani na platforme s menším size_t než int. Rovnosť už znamená nedostatok miesta pre nulu. Na bežnej platforme so širším size_t uvidíš aj zápis (size_t) required >= capacity; jeho prenositeľnosť však závisí od rozsahu prevodu."},
+                {"type": "paragraph", "text": "Pri kapacite 0 sa nezapisuje nič a cieľ môže byť NULL. Posledný riadok preto ukáže pôvodné old v našom nedotknutom poli a zároveň požadovanú dĺžku 8. Také volanie je otázkou na veľkosť, nie úspešným vytvorením reťazca. Pred neskoršou alokáciou required + 1 najprv skontroluj nezápornosť a to, že celý súčet vojde do size_t."},
+                {"type": "callout", "tone": "warning", "text": "Skrátenie cez snprintf už mohlo zmeniť cieľ. Nie je to rovnaký kontrakt ako copy_text, ktoré pri odmietnutí nezapisuje nič. Po zápornom výsledku nepovažuj obsah za platný dokončený reťazec. Prekrývanie cieľa s textovým argumentom, napríklad snprintf(text, capacity, \"%s!\", text), nie je podporovaná náhrada memmove."},
+                {"type": "paragraph", "text": "Kapacita sa počíta v bajtoch. Skrátený UTF-8 text sa môže skončiť uprostred znaku, aj keď má správnu nulovú termináciu. Ak aplikácia potrebuje celé používateľské znaky, musí navrhnúť samostatné pravidlo skrátenia. Samotný snprintf rieši hranicu objektu, nie jazykové hranice textu."},
+                {"type": "heading", "text": "fgets: časť riadka nie je celý údaj"},
+                {"type": "paragraph", "text": "Pre platný prúd a cieľ s count miestami, kde count je aspoň 2, načíta fgets najviac count - 1 znakov a pri úspechu pridá nulu. Ak sa do tejto hranice zmestí nový riadok, zostane v poli. Chýbajúci nový riadok môže znamenať dlhší vstup, ale aj posledný riadok ukončený EOF. Pri NULL obsah bez ďalšieho nespracúvaj; skontroluj príčinu čítania."},
+                {"type": "paragraph", "text": "fgets prijíma limit typu int. Pri veľkom dynamickom poli preto neposielaj jeho size_t kapacitu cez neoverený prevod. Navyše môže načítať vložený nulový bajt, po ktorom strlen už nevidí zvyšok údajov. Keď kontrakt vyžaduje iba úplné textové riadky bez vloženej nuly, treba tieto pravidlá overiť osobitne."},
+                {"type": "code", "title": "Opakovanie overeného čítania celých riadkov", "language": "c", "source": READ_LINES},
+                {"type": "paragraph", "text": "Toto je rovnaký read_line z kapitoly o vstupe, nie nová verzia. Pri poli na osem bajtov prijme sedem bajtov obsahu; dlhší riadok odmietne a spotrebuje jeho zvyšok. Prázdny riadok je platný text, prázdny vstup je LINE_END. Program skúša abc a 1234567, pričom posledný riadok nemusí mať záverečné '\\n'. Chybové vetvy poznáš z pôvodnej kapitoly."},
+                {"type": "heading", "text": "FILE: otvorenie, poloha a jedno uzavretie"},
+                {"type": "paragraph", "text": "Režim fopen \"r\" číta existujúci súbor, \"w\" vytvorí alebo vymaže obsah a \"a\" pridáva na koniec. Znak + povoľuje oba smery, b žiada binárny režim. Otvorenie vždy môže zlyhať. Po úspešnom otvorení musí vlastník zabezpečiť uzavretie na každej návratovej ceste; po fclose sa FILE * už nepoužíva ani pri hlásenej chybe uzavretia."},
+                {"type": "paragraph", "text": "Pri aktualizačnom prúde nemožno ľubovoľne striedať čítanie a zápis. Pri prechode zo zápisu na čítanie pomôže fflush alebo operácia polohovania; opačný prechod vyžaduje polohovanie, okrem prípadu, keď čítanie narazilo na EOF. Ukážka používa explicitný fflush a fseek. rewind nemá návratový stav, preto tu pre kontrolované zlyhanie používame fseek."},
+                {"type": "heading", "text": "Binárny prenos zachová aj vloženú nulu"},
+                {"type": "code", "title": "Štyri bajty cez dočasný súbor", "language": "c", "source": BINARY_ROUNDTRIP},
+                {"type": "paragraph", "text": "tmpfile vytvorí dočasný binárny aktualizačný prúd bez prepisovania používateľských súborov. fwrite a fread majú veľkosť prvku 1, preto porovnávame ich návrat priamo s počtom bajtov. Výpis 41 00 FF 0A ukáže aj nulu, pri ktorej by sa výpis cez %s skončil. Porovnanie cez memcmp nastáva až po úspešnom načítaní celého požadovaného rozsahu."},
+                {"type": "paragraph", "text": "Kratší fread s prvkami veľkosti 1 môže znamenať koniec alebo chybu; ferror tieto situácie rozlíši. Pri väčších prvkoch môže zostať aj neúplný prvok, ktorého hodnotu nemožno používať ako hotový údaj. Nečítaj neinicializovaný zvyšok poľa a nezamieňaj počet dokončených prvkov s kapacitou objektu. Táto ukážka očakáva presne štyri bajty, nie ľubovoľne dlhý prúd."},
+                {"type": "paragraph", "text": "Surový zápis struct alebo celého čísla cez fwrite nevytvára sám osebe prenositeľný súborový formát. Treba dohodnúť šírky, bajtové poradie a kódovanie; výplňové bajty štruktúry nie sú jej logickými dátami. Naša ukážka preto prenáša explicitné bajtové hodnoty, nie obraz vnútorného objektu."},
+                {"type": "heading", "text": "Výstup môže zlyhať aj neskôr"},
+                {"type": "paragraph", "text": "Úspešný printf alebo fwrite môže údaje iba uložiť do knižničného vyrovnávacieho priestoru. Preto sa kontrolujú aj fflush a fclose. fflush nezaručuje fyzickú trvácnosť dát na disku a fflush(stdin) nie je v ISO C prenositeľné čistenie vstupu. Ak už zlyhal zápis a potom aj uzavretie, výsledok zostáva neúspešný a pôvodná príčina sa nemá stratiť."},
+                {"type": "callout", "tone": "info", "text": "Pri formátovaní vyskúšaj kapacitu presne s nulou, o bajt menšiu, 1 a 0. Pri súbore over neúspešné otvorenie, krátky prenos a chybu uzavretia bez druhého fclose. Testovať treba návrat aj stav dát, nie iba pekný výpis šťastnej cesty."}
             ]
         }
     },
@@ -1055,10 +1100,46 @@ C_PAGES = [
         "summary": "limits.h, stdint.h, ctype.h a bezpečné spracovanie znakov.",
         "content": {
             "lead": "Základné celočíselné typy majú implementáciou závislú šírku. Ak potrebuješ presný rozsah alebo prácu s jednotlivými znakmi vstupu, siahni po príslušných štandardných hlavičkách.",
-            "sections": [
-                {"title": "Hranice a presná šírka", "paragraphs": ["limits.h obsahuje hranice typov ako INT_MAX a CHAR_BIT. stdint.h pridáva typy int32_t a uint64_t, ak ich daná platforma podporuje, a najmenej široké typy int_least32_t."], "bullets": ["size_t je určený pre veľkosti a indexy.", "Pri výpise size_t použi %zu.", "Pri výpise typov z stdint.h sú prenositeľné makrá z inttypes.h, napríklad PRIu64."]},
-                {"title": "ctype.h", "paragraphs": ["isdigit, isspace, toupper a podobné funkcie prijímajú hodnotu EOF alebo hodnotu, ktorú možno reprezentovať ako unsigned char. Pri obyčajnom char preto pred volaním bezpečne pretypuj na unsigned char."], "callout": "Nespoliehaj sa na to, že char je vždy znamienkový alebo vždy neznamienkový. Táto vlastnosť je závislá od implementácie."},
-                {"title": "Konverzie", "paragraphs": ["Pri prechode medzi znamienkovými a neznamienkovými typmi najprv over rozsah. Tichá konverzia záporného čísla na unsigned typ dá veľkú kladnú hodnotu podľa pravidiel modulo aritmetiky."]}
+            "blocks": [
+                {"type": "heading", "text": "Vyber hlavičku podľa otázky"},
+                {"type": "list", "items": [
+                    "limits.h: CHAR_BIT a rozsahy základných celočíselných typov, napríklad CHAR_MIN, CHAR_MAX, INT_MIN a INT_MAX.",
+                    "stddef.h: size_t pre veľkosti objektov a ptrdiff_t pre reprezentovateľný rozdiel ukazovateľov do toho istého poľa.",
+                    "stdint.h: celočíselné rodiny s určenými požiadavkami na šírku, intmax_t/uintmax_t a limity vrátane SIZE_MAX.",
+                    "inttypes.h: makrá formátov pre tieto celočíselné rodiny. Formát vyber podľa typu, nie podľa odhadu jeho typedef.",
+                    "ctype.h: klasifikácia a zmena veľkosti jednotlivých bajtových znakov. Nie je to knižnica na spracovanie celých Unicode znakov.",
+                    "float.h: rozsah a presnosť typov s pohyblivou rádovou čiarkou. Ich pravidlá sa nesmú zamieňať s celočíselnými limitmi."
+                ]},
+                {"type": "heading", "text": "Koľko bitov a aký rozsah naozaj máš"},
+                {"type": "code", "title": "Hranice implementácie a formáty inttypes.h", "language": "c", "source": INTEGER_LIMITS},
+                {"type": "paragraph", "text": "sizeof počíta bajty jazyka C a sizeof(char) je vždy 1. CHAR_BIT určuje, koľko bitov má taký bajt; nemusí ich byť osem. Súčin sizeof(int) a CHAR_BIT vyjadruje veľkosť uloženia, nie automaticky počet hodnotových bitov: reprezentácia môže obsahovať aj výplň. Skutočný rozsah int preto čítaj z INT_MIN a INT_MAX."},
+                {"type": "paragraph", "text": "Číselné hranice vo výpise sa môžu líšiť medzi počítačom a mikrokontrolérom. CHAR_MIN môže byť záporné alebo nula podľa obyčajného char. Hodnoty measurement=123456 a count=9000000000 sa však zmestia do zvolených najmenej širokých typov a ich výpis používa zodpovedajúce makrá, nie predpoklad, že 64-bitový typ je vždy unsigned long."},
+                {"type": "heading", "text": "Presná šírka, najmenej široký typ a konštanta"},
+                {"type": "list", "items": [
+                    "int32_t a uint64_t vyžadujú presne danú šírku bez výplňových bitov; presné typy sú dostupné len vtedy, keď ich implementácia vie poskytnúť.",
+                    "int_least32_t a uint_least64_t garantujú aspoň potrebnú šírku, nie presný počet bajtov. Sú vhodné, keď potrebuješ rozsah a nie konkrétny obraz pamäte.",
+                    "int_fast32_t vyberá implementácia s ohľadom na efektívnu prácu pri aspoň danej šírke. Názov nie je univerzálny výkonnostný sľub pre každý algoritmus.",
+                    "INT32_C a UINT64_C vytvárajú konštanty pre zodpovedajúce least rodiny po povýšení. Samotný veľký číselný literál bez vhodnej prípony nemusí mať očakávaný typ.",
+                    "PRIdLEAST32 a PRIuLEAST64 sa spoja s okolitými literálmi formátu pri preklade. Pre presné typy použi zodpovedajúce PRId32 či PRIu64, ak sú tieto typy dostupné."
+                ]},
+                {"type": "heading", "text": "Pretypovanie nie je kontrola rozsahu"},
+                {"type": "paragraph", "text": "size_t je neznamienkový. Prevod -1 na size_t je definovaný a vytvorí SIZE_MAX, ale to z neplatného počtu nevytvorí použiteľnú kapacitu. Pri prevode veľkého neznamienkového čísla do int mimo rozsahu je v C17 výsledok implementačne definovaný alebo vznikne implementačne definovaný signál. Prevod môže teda byť chybným rozhodnutím aj bez bežného aritmetického pretečenia."},
+                {"type": "code", "title": "Dva smery prevodu so zachovaním výsledku pri chybe", "language": "c", "source": CONVERT_SIZES},
+                {"type": "paragraph", "text": "int_to_size najprv odmietne NULL, potom zápornú hodnotu a prípadné prekročenie SIZE_MAX. Aj nezáporný int môže byť na inej implementácii širší než size_t. size_to_int zase porovná s INT_MAX pred zápisom. uintmax_t dokáže reprezentovať hodnoty každého neznamienkového celočíselného typu, takže kontroly nestrácajú vysoké bity zúžením."},
+                {"type": "paragraph", "text": "CONVERT_OK=0 znamená zapísaný výsledok, CONVERT_ARGUMENT=1 chýbajúci výstupný ukazovateľ a CONVERT_RANGE=2 neprípustnú hodnotu. V prvom riadku zostane pri -1 pôvodných 77. Nula aj 12 sú platné. Posledný prípad so SIZE_MAX závisí od konkrétnych limitov: na bežnom 64-bitovom počítači sa do int nezmestí, no výklad nepredpokladá rovnaký pomer typov na každom zariadení."},
+                {"type": "callout", "tone": "warning", "text": "Najprv over rozsah pôvodnej hodnoty, až potom ju preveď. Kontrola už zúženého výsledku nemá informáciu o zahodených bitoch. Pri zmiešanom signed/unsigned porovnaní sa navyše môže záporná hodnota implicitne zmeniť na veľké neznamienkové číslo; vetvu pre záporné čísla preto rieš osobitne."},
+                {"type": "heading", "text": "ctype.h má presnú doménu argumentov"},
+                {"type": "paragraph", "text": "isdigit, isspace, toupper a príbuzné funkcie prijímajú EOF alebo hodnotu reprezentovateľnú ako unsigned char. Záporný obyčajný char, ktorý nie je EOF, je mimo kontraktu. Pre znak uložený v char preto použi isdigit((unsigned char) character). Samotné rozšírenie na int zápornú hodnotu neopraví."},
+                {"type": "paragraph", "text": "Klasifikačné funkcie vracajú nulu alebo nenulovú hodnotu, nie nevyhnutne 1. Na rozhodnutie použi if (isdigit(byte)); pre výpis 0/1 použi isdigit(byte) != 0. toupper zase vracia prevedený znak alebo pôvodnú hodnotu, ak sa nič nemení; nie je to booleovský test."},
+                {"type": "code", "title": "Bajty zo vstupu bez zámeny s EOF", "language": "c", "source": CLASSIFY_BYTES},
+                {"type": "paragraph", "text": "fgetc sa najprv uloží do int a overí proti EOF. Až potom z neho vytvoríme bajt. Na bežnom osembitovom systéme by predčasné uloženie do signed char mohlo zmeniť bajt FF na -1 a zameniť ho s EOF; pri unsigned char by sa zase skutočné EOF mohlo stratiť. Cyklus sa skončí na výsledku čítania a následne ferror rozlíši chybu od obyčajného konca."},
+                {"type": "paragraph", "text": "Skúšobný vstup a0 Z s novým riadkom ukáže číslicu, medzeru aj ukončenie riadka. Hodnoty sú vypísané šestnástkovo, aby boli viditeľné aj riadiace bajty. V ASCII prostredí sa a zmení z 61 na 41, číslica 0 je 30 a medzera 20. Číselné kódy písmen však nie sú všeobecnou zárukou jazyka C."},
+                {"type": "heading", "text": "Locale, UTF-8 a biele znaky"},
+                {"type": "paragraph", "text": "Program začína v locale C, kým ho sám nezmení cez setlocale. Klasifikácia písmen a niektorých ďalších znakov môže závisieť od locale; isspace v locale C rozpoznáva medzeru, '\\f', '\\n', '\\r', '\\t' a '\\v'. Ak protokol povoľuje iba doslovnú medzeru, širší test isspace by menil jeho pravidlá."},
+                {"type": "paragraph", "text": "Prechod cez bajty UTF-8 a volanie toupper na každý z nich nevykoná správnu Unicode zmenu veľkosti písmen. Tá môže vyžadovať dekódovanie, viac znakov alebo jazykový kontext. Tento príklad vedome učí bajtové rozhranie, nie spracovanie ľubovoľného prirodzeného jazyka."},
+                {"type": "heading", "text": "Pripomenutie limitov desatinných typov"},
+                {"type": "paragraph", "text": "FLT_MAX a DBL_MAX opisujú najväčšiu konečnú kladnú hodnotu príslušného typu. FLT_MIN nie je najzápornejšie číslo, ale najmenšia kladná normalizovaná hodnota float. FLT_EPSILON opisuje rozostup pri hodnote 1, nie univerzálnu toleranciu pre všetky porovnania. Toleranciu a prijateľné zaokrúhlenie musí určiť význam výpočtu."},
+                {"type": "callout", "tone": "info", "text": "Pri prenositeľnosti overuj pravidlá, nie naučený výpis jednej platformy. Skús rovnaký program so znamienkovým aj neznamienkovým char, EOF hneď na začiatku, vloženú nulu a bajt FF. Pri prevodoch otestuj obe hranice a potvrď, že odmietnutie nezmenilo výstupný objekt."}
             ]
         }
     }
@@ -1092,6 +1173,8 @@ C_LEARNING_GOALS = {
     "testing": ("Zostaviť pomenované hraničné a regresné testy s návratovým stavom.", "Vysvetliť rozdiel medzi assert, kontrolou vstupu a NDEBUG.", "Overiť testy známou chybou a nájsť prvú odchýlku krokovaním v GDB."),
     "string-reference": ("Vybrať reťazcovú alebo bajtovú funkciu podľa dostupného rozsahu.", "Overiť ukončenie, kapacitu a prekrytie pred kopírovaním."),
     "stdlib-reference": ("Zachovať vlastníctvo a údaje pri chybe alokácie alebo prevodu.", "Navrhnúť konzistentný porovnávač bez pretekajúceho odčítania."),
+    "stdio-reference": ("Odlíšiť chybu formátovania od skrátenia a skontrolovať miesto pre nulu.", "Správne vyhodnotiť počet prenesených prvkov a uzavrieť prúd aj pri chybe."),
+    "numeric-reference": ("Zvoliť typ a formát podľa skutočných limitov implementácie.", "Overiť rozsah pred prevodom a dodržať doménu ctype.h bez straty EOF."),
 }
 
 
@@ -1142,6 +1225,8 @@ C_EXERCISE_TOPICS = {
     "testing": "testing",
     "string-reference": "string-reference",
     "stdlib-reference": "stdlib-reference",
+    "stdio-reference": "stdio-reference",
+    "numeric-reference": "numeric-reference",
 }
 
 
@@ -1177,6 +1262,8 @@ C_CHECKPOINT_IDS = {
     "testing": "c-boundary-test",
     "string-reference": "c-copy-terminator-capacity",
     "stdlib-reference": "c-comparator-overflow",
+    "stdio-reference": "c-snprintf-required",
+    "numeric-reference": "c-ctype-input-domain",
 }
 
 C_EXAMPLES = [
@@ -1443,9 +1530,21 @@ C_EXAMPLES = [
         "page_key": "stdio-reference",
         "position": 10,
         "title": "Formátovanie s kapacitou",
-        "description": "snprintf oznámi aj to, že sa výsledok do poľa nezmestil celý.",
-        "source": "#include <stdio.h>\n\nint main(void)\n{\n    const char *name = \"Jana\";\n    char message[32] = \"\";\n    int written = snprintf(message, sizeof message, \"Ahoj, %s!\", name);\n\n    if (written < 0 || (size_t) written >= sizeof message) {\n        fputs(\"Správa sa nezmestila do poľa.\\n\", stderr);\n        return 1;\n    }\n\n    puts(message);\n    return 0;\n}\n",
+        "description": "Kapacity 9, 8, 1 a 0 ukážu rozdiel medzi požadovanou dĺžkou a skutočným obsahom cieľa.",
+        "source": SNPRINTF_MESSAGE,
         "stdin": "",
+    },
+    {
+        "key": "stdio-lines-reference", "page_key": "stdio-reference", "position": 20,
+        "title": "Celý riadok v referencii",
+        "description": "Spoločný overený read_line: sedem bajtov obsahu, koncová nula a odlíšenie konca od odmietnutia.",
+        "source": READ_LINES, "stdin": "abc\n1234567",
+    },
+    {
+        "key": "binary-roundtrip-reference", "page_key": "stdio-reference", "position": 30,
+        "title": "Binárny súbor vrátane nulového bajtu",
+        "description": "fwrite a fread s prvkami veľkosti 1, kontrola krátkeho prenosu a jediné fclose na každej ceste.",
+        "source": BINARY_ROUNDTRIP, "stdin": "",
     },
     {
         "key": "strtol-reference",
@@ -1494,9 +1593,21 @@ C_EXAMPLES = [
         "page_key": "numeric-reference",
         "position": 10,
         "title": "Bezpečná práca so znakom",
-        "description": "Funkcie z ctype.h dostanú hodnotu pretypovanú na unsigned char.",
-        "source": "#include <ctype.h>\n#include <stdio.h>\n\nint main(void)\n{\n    char character = 'c';\n\n    if (isdigit((unsigned char) character)) {\n        puts(\"Je to číslica.\");\n    } else {\n        printf(\"%c -> %c\\n\", character, (char) toupper((unsigned char) character));\n    }\n\n    return 0;\n}\n",
-        "stdin": "",
+        "description": "fgetc zostáva int až po kontrolu EOF; klasifikácia vracia 0/1 a výpis ukáže aj riadiace bajty.",
+        "source": CLASSIFY_BYTES,
+        "stdin": "a0 Z\n",
+    },
+    {
+        "key": "integer-limits-reference", "page_key": "numeric-reference", "position": 20,
+        "title": "Hranice typov na tejto platforme",
+        "description": "CHAR_BIT, rozsahy int a char, SIZE_MAX a výpis najmenej širokých typov cez makrá inttypes.h.",
+        "source": INTEGER_LIMITS, "stdin": "",
+    },
+    {
+        "key": "convert-sizes-reference", "page_key": "numeric-reference", "position": 30,
+        "title": "Prevod veľkosti až po kontrole",
+        "description": "Oba smery medzi int a size_t odmietnu neprípustný rozsah bez prepísania pôvodného výsledku.",
+        "source": CONVERT_SIZES, "stdin": "",
     },
     {
         "key": "callback-operation",

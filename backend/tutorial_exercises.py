@@ -422,6 +422,91 @@ int main(void)
                 "Rovnocenné prvky musia dostať nulu. Pretypovanie už pretečeného a - b neopraví porušenie rozsahu.",
             ),
         }
+    if topic == "stdio-reference":
+        capacity = _pick((9, 8, 1, 0), variant)
+        capacities = (capacity, 9, 8, 1, 0)
+        return {
+            "title": "Tri výsledky snprintf",
+            "description": "Doplň format_result: záporný required znamená FORMAT_ERROR (1), nezáporný required >= capacity znamená FORMAT_TRUNCATED (2), inak FORMAT_OK (0). Pri nulovej kapacite sa text neuložil ani pri required == 0. Main skúša skutočné formátovanie aj samostatné záporné návraty; tie iba simulujú chybu pre klasifikátor. Main ani enum nemeň. Zápornú hodnotu skontroluj pred prevodom na neznamienkový typ.",
+            "starterSource": r"""#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef enum { FORMAT_OK, FORMAT_ERROR, FORMAT_TRUNCATED } FormatStatus;
+
+static FormatStatus format_result(int required, size_t capacity)
+{
+    /* Replace this placeholder with the three return-value checks. */
+    (void) required;
+    (void) capacity;
+    return FORMAT_OK;
+}
+
+int main(void)
+{
+    const size_t capacities[] = {""" + ", ".join(map(str, capacities)) + r"""};
+    for (size_t i = 0; i < sizeof capacities / sizeof capacities[0]; ++i) {
+        char text[9] = "old";
+        size_t capacity = capacities[i];
+        int required = snprintf(capacity == 0 ? NULL : text, capacity, "value=%d", 42);
+        if (required < 0) { return EXIT_FAILURE; }
+        if (printf("%zu:%d:%d:[%s]\n", capacity, required,
+                   (int) format_result(required, capacity), text) < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    if (printf("errors=%d,%d empty=%d,%d\n", (int) format_result(-1, 0),
+               (int) format_result(-1, SIZE_MAX), (int) format_result(0, 0),
+               (int) format_result(0, 1)) < 0 || fflush(stdout) == EOF) {
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+""",
+            "stdin": "",
+            "expectedOutput": "".join(
+                f"{size}:8:{0 if size > 8 else 2}:[{'value=42'[:size - 1] if size else 'old'}]\n"
+                for size in capacities
+            ) + "errors=1,1 empty=2,0\n",
+            "hints": (
+                "Najprv sa vráť pri required < 0. Až potom porovnávaj nezápornú požadovanú dĺžku a kapacitu.",
+                "Pre spoločný neznamienkový typ oboch hodnôt použi uintmax_t. Rovnosť už znamená, že chýba miesto pre koncovú nulu.",
+            ),
+        }
+    if topic == "numeric-reference":
+        first, category = _pick((("'7'", 1), (r"'\n'", 2), ("'a'", 0), ("0xFF", 0)), variant)
+        return {
+            "title": "Klasifikácia bajtu bez záporného argumentu",
+            "description": "Doplň classify_char: číslica má výsledok 1, biely znak 2 a ostatné 0. Použi isdigit a isspace v počiatočnom C locale. Parameter char je uložený bajt, nie výsledok fgetc ani EOF: pred volaním ctype ho preveď na unsigned char a testuj nenulový výsledok. Main vrátane bajtov 00, FF a 80 nemeň. Porovnanie výstupu samo osebe nedokazuje dodržanie domény ctype; skontroluj aj argumenty vo svojom kóde.",
+            "starterSource": r"""#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+static unsigned int classify_char(char value)
+{
+    /* Replace this placeholder with unsigned-byte classification. */
+    (void) value;
+    return 0;
+}
+
+int main(void)
+{
+    const unsigned char values[] = {""" + first + r""", '0', '9', ' ', '\t', 'A', 0, 0xFF, 0x80};
+    for (size_t i = 0; i < sizeof values / sizeof values[0]; ++i) {
+        if (printf("%u\n", classify_char((char) values[i])) < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+""",
+            "stdin": "",
+            "expectedOutput": f"{category}\n1\n1\n2\n2\n0\n0\n0\n0\n",
+            "hints": (
+                "Ulož (unsigned char) value do pomocnej premennej. Obe klasifikačné funkcie musia dostať túto nezápornú hodnotu.",
+                "isdigit ani isspace nemusia pri pravde vrátiť práve 1. Použi != 0 a až potom vráť dohodnutú kategóriu.",
+            ),
+        }
     if topic == "testing":
         samples = _pick((
             ((), (0,), (-2, 0, 3), (4,)),

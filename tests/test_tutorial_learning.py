@@ -222,6 +222,7 @@ class TutorialLearningTestCase(unittest.TestCase):
         detail = self.database.tutorial_language_detail(self.user["id"], language["id"])
         seeds = [page for page in C_PAGES if page["key"] in {
             "preprocessor", "build", "io", "errors", "safety", "testing", "string-reference", "stdlib-reference",
+            "stdio-reference", "numeric-reference",
         }]
         saved = []
         for seed in seeds:
@@ -232,7 +233,10 @@ class TutorialLearningTestCase(unittest.TestCase):
             self.database.save_tutorial_note(self.user["id"], page["id"], {"content": note})
             self.database.save_tutorial_example_draft(self.user["id"], example["id"], {"source": draft, "stdin": "input\n"})
             self.database.save_tutorial_page_progress(self.user["id"], page["id"], {"status": "completed"})
-            correct = "b" if seed["key"] in {"preprocessor", "errors", "safety", "string-reference", "stdlib-reference"} else "a"
+            correct = "b" if seed["key"] in {
+                "preprocessor", "errors", "safety", "string-reference", "stdlib-reference",
+                "stdio-reference", "numeric-reference",
+            } else "a"
             answer = self.database.answer_tutorial_checkpoint(self.user["id"], page["id"], {"optionId": correct})
             self.assertTrue(answer["isCorrect"])
             with self.database.connect() as connection:

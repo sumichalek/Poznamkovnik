@@ -894,3 +894,199 @@ int main(void)
     return EXIT_SUCCESS;
 }
 """
+
+FORMAT_RESULT = r"""#include <stddef.h>
+#include <stdint.h>
+
+typedef enum { FORMAT_OK, FORMAT_ERROR, FORMAT_TRUNCATED } FormatStatus;
+
+static FormatStatus format_result(int required, size_t capacity)
+{
+    if (required < 0) {
+        return FORMAT_ERROR;
+    }
+    if ((uintmax_t) required >= (uintmax_t) capacity) {
+        return FORMAT_TRUNCATED;
+    }
+    return FORMAT_OK;
+}
+"""
+
+SNPRINTF_MESSAGE = FORMAT_RESULT + r"""
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    const size_t capacities[] = {9, 8, 1, 0};
+    for (size_t i = 0; i < sizeof capacities / sizeof capacities[0]; ++i) {
+        char text[9] = "old";
+        size_t capacity = capacities[i];
+        int required = snprintf(capacity == 0 ? NULL : text, capacity, "value=%d", 42);
+        FormatStatus status = format_result(required, capacity);
+        if (status == FORMAT_ERROR) {
+            fputs("Formatting failed.\n", stderr);
+            return EXIT_FAILURE;
+        }
+        if (printf("capacity=%zu required=%d status=%d text=[%s]\n",
+                   capacity, required, (int) status, text) < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+BINARY_ROUNDTRIP = r"""#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main(void)
+{
+    const unsigned char original[] = {0x41, 0x00, 0xFF, 0x0A};
+    unsigned char restored[sizeof original] = {0};
+    FILE *file = tmpfile();
+    if (file == NULL) {
+        fputs("Cannot open temporary file.\n", stderr);
+        return EXIT_FAILURE;
+    }
+    int result = EXIT_FAILURE;
+    if (fwrite(original, 1, sizeof original, file) != sizeof original ||
+        fflush(file) == EOF) {
+        fputs("Write failed.\n", stderr);
+        goto cleanup;
+    }
+    if (fseek(file, 0L, SEEK_SET) != 0) {
+        fputs("Seek failed.\n", stderr);
+        goto cleanup;
+    }
+    if (fread(restored, 1, sizeof restored, file) != sizeof restored) {
+        fputs(ferror(file) ? "Read failed.\n" : "Unexpected end.\n", stderr);
+        goto cleanup;
+    }
+    if (memcmp(original, restored, sizeof original) != 0) {
+        fputs("Data differs.\n", stderr);
+        goto cleanup;
+    }
+    result = EXIT_SUCCESS;
+
+cleanup:
+    if (fclose(file) == EOF) {
+        fputs("Close failed.\n", stderr);
+        result = EXIT_FAILURE;
+    }
+    if (result != EXIT_SUCCESS) {
+        return result;
+    }
+    for (size_t i = 0; i < sizeof restored; ++i) {
+        if (printf("%02X%s", (unsigned int) restored[i],
+                   i + 1 == sizeof restored ? "\n" : " ") < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+CLASSIFY_BYTES = r"""#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    int ch;
+    while ((ch = fgetc(stdin)) != EOF) {
+        unsigned char byte = (unsigned char) ch;
+        if (printf("%02X digit=%d space=%d upper=%02X\n", (unsigned int) byte,
+                   isdigit(byte) != 0, isspace(byte) != 0,
+                   (unsigned int) toupper(byte)) < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    if (ferror(stdin)) {
+        fputs("Read failed.\n", stderr);
+        return EXIT_FAILURE;
+    }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+INTEGER_LIMITS = r"""#include <inttypes.h>
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    const int_least32_t measurement = INT32_C(123456);
+    const uint_least64_t count = UINT64_C(9000000000);
+    if (printf("CHAR_BIT=%d sizeof(int)=%zu\n", CHAR_BIT, sizeof(int)) < 0 ||
+        printf("INT_MIN=%d INT_MAX=%d\n", INT_MIN, INT_MAX) < 0 ||
+        printf("CHAR_MIN=%jd CHAR_MAX=%ju\n", (intmax_t) CHAR_MIN, (uintmax_t) CHAR_MAX) < 0 ||
+        printf("SIZE_MAX=%zu\n", (size_t) SIZE_MAX) < 0 ||
+        printf("measurement=%" PRIdLEAST32 " count=%" PRIuLEAST64 "\n", measurement, count) < 0 ||
+        fflush(stdout) == EOF) {
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+"""
+
+INTEGER_CONVERSIONS = r"""#include <limits.h>
+#include <stddef.h>
+#include <stdint.h>
+
+typedef enum { CONVERT_OK, CONVERT_ARGUMENT, CONVERT_RANGE } ConvertStatus;
+
+/* Non-NULL output points to a writable object; failure preserves its value. */
+static ConvertStatus int_to_size(int value, size_t *result)
+{
+    if (result == NULL) {
+        return CONVERT_ARGUMENT;
+    }
+    if (value < 0 || (uintmax_t) value > (uintmax_t) SIZE_MAX) {
+        return CONVERT_RANGE;
+    }
+    *result = (size_t) value;
+    return CONVERT_OK;
+}
+
+static ConvertStatus size_to_int(size_t value, int *result)
+{
+    if (result == NULL) {
+        return CONVERT_ARGUMENT;
+    }
+    if ((uintmax_t) value > (uintmax_t) INT_MAX) {
+        return CONVERT_RANGE;
+    }
+    *result = (int) value;
+    return CONVERT_OK;
+}
+"""
+
+CONVERT_SIZES = INTEGER_CONVERSIONS + r"""
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    const int counts[] = {-1, 0, 12};
+    for (size_t i = 0; i < sizeof counts / sizeof counts[0]; ++i) {
+        size_t value = 77;
+        ConvertStatus status = int_to_size(counts[i], &value);
+        if (printf("to-size %d: status=%d value=%zu\n", counts[i], (int) status, value) < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    const size_t sizes[] = {0, 12, SIZE_MAX};
+    for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; ++i) {
+        int value = 77;
+        ConvertStatus status = size_to_int(sizes[i], &value);
+        if (printf("to-int case=%zu: status=%d value=%d\n", i, (int) status, value) < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""

@@ -79,3 +79,18 @@ Technické pravidlá boli skontrolované proti primárnym zdrojom: význam celo�
 Kontrakty pamäte, vyhľadávania a kopírovania boli skontrolované proti [WG14 N1570, oddielom 7.22.3, 7.22.5 a 7.24](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf). Tento dokument je návrh C11; príklady sa prekladali v režime C17 a nepoužívajú osobitné správanie realloc s nulovou veľkosťou.
 
 Ďalej: doplniť zostávajúcu referenciu C pre stdio.h a čísla/znaky o snprintf, kontrolu formátov, limity typov a správne argumenty ctype.h. Dlhodobá úloha učebníc zostáva rozpracovaná; mobilnú konzolu a skutočné firmvérové toolchainy riešiť oddelene.
+
+## Referencia C: stdio.h, Limity A Znaky 2026-09-11
+
+- Rozšírené dve referenčné stránky pri zachovaní identifikátorov: návraty a formáty stdio, snprintf vrátane nulovej kapacity, hranice fgets, aktualizačné prúdy, binárny prenos a chybové cesty; limity typov, inttypes, kontrolované prevody, doména ctype, EOF, locale a hranice bajtového spracovania UTF-8.
+- Šesť spustiteľných ukážok zhodných s výkladom: dve existujúce rozšírené, tri nové programy a opätovné použitie overeného čítania riadkov. Pridané dve cvičenia so štyrmi variantmi a dve kontrolné otázky. Vyhodnotenie výstupu cvičenia ctype výslovne nie je dôkazom správnej domény argumentov.
+- Pridaných 12 Python testov: kapacity 0/1/8/9, záporný návrat a chyba formátovania bez čítania poškodeného cieľa, odmietnutie nesprávnych formátov prekladačom, binárne dáta s nulou, deväť simulovaných chybových ciest vrátane súčasnej chyby zápisu a uzavretia. Po otvorení sa prúd uzavrie práve raz, neúspešné otvorenie sa neuzatvára.
+- Všetkých 256 hodnôt osembitového bajtu overených na hostiteľskej platforme so znamienkovým aj neznamienkovým char. Skontrolované čisté EOF aj chyba čítania, kontrolované argumenty ctype a nenulové výsledky iné než 1. Prevody testujú hranice, NULL a zachovanie výstupného objektu pri odmietnutí; výklad nepredpokladá rovnaké šírky typov na každej platforme.
+- npm run check: 172 Python testov úspešných, 4 preskočené pre nedostupné C#/Go/Java/Rust nástroje; 10 frontendových testov úspešných. Zostavené assets bez zmeny. Existujúce SQLite ResourceWarning zostávajú mimo tohto obsahového bloku.
+- Po reštarte služby všetkých šesť programov prešlo cez API aj tlačidlo Spustiť, osem riešení cvičení cez API. Obe stránky overené v Chromium pri 1440/875/390 bez pretekania čítačky či dokumentu a bez JavaScript výnimiek. Na úzkom mobile zostáva existujúca úzka čítačka; dlhé riadky kódu sa posúvajú v bloku, nejde o novú mobilnú úpravu.
+- Test opakovaného nasadenia pokrýva poznámky, koncepty, postup, odpovede a čas vytvorenia aj pre tieto dve stránky. Odtlačok používateľského stavu v živej databáze zostal nezmenený. Dočasný prehliadač aj jeho overovacia relácia boli ukončené, služba na porte 1111 zostáva spustená.
+- Dočasné snímky a report: /tmp/poznamkovnik-tutorial-stdio-numeric-verification/. Diagnostika počas písania, CSS, sandbox a firmvérové nástroje sa nemenili.
+
+Kontrakty boli skontrolované proti [WG14 N1570, oddielom 7.4, 7.20 a 7.21](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf), najmä snprintf v 7.21.6.5 a blokovému prenosu v 7.21.8. Dokument je návrh C11; príklady a regresné testy používajú režim C17. Nejde o overenie na viacerých architektúrach.
+
+Ďalej: rozvinúť zatiaľ stručné lekcie C o callbackoch a prenositeľnosti. Doplniť callback s kontextom a jasnou životnosťou, pravidlá variadických argumentov a konkrétne prenositeľné dátové prevody s testami. Dlhodobá úloha učebníc zostáva rozpracovaná; mobilná konzola, súbežnosť a reálne firmvérové toolchainy zostávajú samostatnými blokmi.

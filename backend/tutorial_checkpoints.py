@@ -265,6 +265,30 @@ TUTORIAL_CHECKPOINTS: dict[str, tuple[dict[str, Any], ...]] = {
             "correctFeedback": "Správne. Rozdiel dvoch pravdivostných hodnôt je malý a reprezentovateľný; rozdiel krajných dát nemusí byť.",
             "incorrectFeedback": "qsort potrebuje konzistentné záporné, nulové alebo kladné porovnanie. Konkrétna veľkosť výsledku nerozhoduje, ale znamienkové pretečenie by porušilo pravidlá C.",
         },
+        {
+            "id": "c-snprintf-required",
+            "prompt": "snprintf s kapacitou 8 vrátil 8. Čo to znamená pre celý výsledný reťazec?",
+            "options": (
+                ("a", "Celý výsledok sa zmestil, pretože návrat nepresahuje kapacitu."),
+                ("b", "Výsledok sa nezmestil celý; osem bajtov obsahu potrebuje aj ďalšie miesto pre nulu."),
+                ("c", "Nastala chyba formátovania, pretože snprintf pri úspechu vracia iba nulu."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Nezáporný návrat udáva požadovanú dĺžku bez nuly. Aj rovnosť s kapacitou znamená skrátenie.",
+            "incorrectFeedback": "Najprv odlíš zápornú chybu, potom porovnaj požadovanú dĺžku s kapacitou. Na úplný reťazec treba aj koncovú nulu.",
+        },
+        {
+            "id": "c-ctype-input-domain",
+            "prompt": "Ako odovzdáš znak uložený v obyčajnom char do isdigit bez rizika záporného argumentu mimo EOF?",
+            "options": (
+                ("a", "Zavolám isdigit(character) == 1; test jednotky zároveň overí argument."),
+                ("b", "Použijem isdigit((unsigned char) character) a výsledok vyhodnotím ako nulu alebo nenulovú hodnotu."),
+                ("c", "Stačí isdigit((int) character), pretože širší typ vždy odstráni záporné znamienko."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Pre uložený char prevod na unsigned char zabezpečí bajtovú hodnotu. Pri fgetc však najprv zachovaj int a over EOF, až potom prevádzaj.",
+            "incorrectFeedback": "Rozšírenie char na int môže zachovať zápornú hodnotu. Klasifikačný výsledok navyše nemusí byť presne 1; správna doména argumentu sa overuje pred volaním.",
+        },
     ),
 }
 
