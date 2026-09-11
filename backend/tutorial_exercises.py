@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from backend.tutorial_c_examples import COUNT_POSITIVE, LINE_READER
+from backend.tutorial_c_examples import COUNT_POSITIVE, LINE_READER, WALK_VALUES
 
 
 MAX_PRACTICE_VARIANT = 10_000
@@ -505,6 +505,108 @@ int main(void)
             "hints": (
                 "Ulož (unsigned char) value do pomocnej premennej. Obe klasifikačné funkcie musia dostať túto nezápornú hodnotu.",
                 "isdigit ani isspace nemusia pri pravde vrátiť práve 1. Použi != 0 a až potom vráť dohodnutú kategóriu.",
+            ),
+        }
+    if topic == "callbacks":
+        limit = _pick((8, 3, 10, 6), variant)
+        accepted = (3, 5, 9, 1)
+        stop = next((index for index, value in enumerate(accepted) if value >= limit), len(accepted))
+        return {
+            "title": "Callback riadi zastavenie a mení svoj kontext",
+            "description": "Doplň accept_below. NULL kontext znamená VISIT_ERROR. Inak ide o živý LimitState: pri value >= limit vráť VISIT_STOP bez zmeny, potom odmietni accepted == SIZE_MAX ako VISIT_ERROR. Až pri prijatí zvýš accepted, ulož last a vráť VISIT_CONTINUE. Pole, walk_values a main nemeň. Zastavujúci prvok sa nepočíta; skoršie prijaté hodnoty zostávajú v kontexte.",
+            "starterSource": WALK_VALUES + r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct { int limit; size_t accepted; int last; } LimitState;
+
+static VisitAction accept_below(int value, void *context)
+{
+    /* Replace this placeholder with context checks and one accepted value. */
+    (void) value;
+    (void) context;
+    return VISIT_CONTINUE;
+}
+
+int main(void)
+{
+    const int values[] = {3, 5, 9, 1};
+    LimitState state = {""" + str(limit) + r""", 0, 77};
+    WalkStatus status = walk_values(values, sizeof values / sizeof values[0], accept_below, &state);
+    if (printf("status=%d accepted=%zu last=%d\n", (int) status, state.accepted, state.last) < 0) { return EXIT_FAILURE; }
+    WalkStatus missing = walk_values(values, 1, accept_below, NULL);
+    WalkStatus empty = walk_values(NULL, 0, accept_below, NULL);
+    WalkStatus no_callback = walk_values(values, 1, NULL, &state);
+    LimitState full = {10, SIZE_MAX, 77};
+    VisitAction overflow = accept_below(1, &full);
+    if (printf("missing=%d empty=%d callback=%d full=%d unchanged=%d\n", (int) missing,
+               (int) empty, (int) no_callback, (int) overflow,
+               full.accepted == SIZE_MAX && full.last == 77) < 0) { return EXIT_FAILURE; }
+    LimitState boundary = {state.limit, 0, 77};
+    VisitAction equal = accept_below(boundary.limit, &boundary);
+    VisitAction stop_full = accept_below(full.limit, &full);
+    if (printf("equal=%d unchanged=%d full-stop=%d\n", (int) equal,
+               boundary.accepted == 0 && boundary.last == 77, (int) stop_full) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+""",
+            "stdin": "",
+            "expectedOutput": f"status={int(stop < len(accepted))} accepted={stop} last={accepted[stop - 1] if stop else 77}\n"
+                              "missing=3 empty=0 callback=2 full=2 unchanged=1\nequal=1 unchanged=1 full-stop=1\n",
+            "hints": (
+                "Po kontrole NULL priraď context do LimitState *state. Poradie kontroly limitu a kapacity počítadla patrí do kontraktu.",
+                "Stav meníš iba vo vetve VISIT_CONTINUE. VISIT_STOP nie je príkaz na preskočenie prvku, ale na ukončenie celého prechodu.",
+            ),
+        }
+    if topic == "portability":
+        value = _pick((43981, 65535, 256, 0), variant)
+        values = (value, 0, 255, 256, 65535, 65536)
+        return {
+            "title": "Ulož presne dohodnuté dva oktety",
+            "description": "Doplň encode_u16be: NULL odmietni ako CODEC_ARGUMENT (1), kapacitu menšiu než 2 ako CODEC_SIZE (2), hodnotu nad 65535 ako CODEC_RANGE (3). Iba pri úspechu ulož horných osem bitov na index 0, dolných osem na index 1 a vráť CODEC_OK (0). Chyba nesmie zmeniť cieľ. Main ani enum nemeň. Požiadavka CHAR_BIT == 8 je výslovná; nekopíruj vnútorný obraz celého čísla.",
+            "starterSource": r"""#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+_Static_assert(CHAR_BIT == 8, "This wire format requires 8-bit bytes");
+typedef enum { CODEC_OK, CODEC_ARGUMENT, CODEC_SIZE, CODEC_RANGE } CodecStatus;
+
+static CodecStatus encode_u16be(unsigned char *target, size_t capacity, uint_least32_t value)
+{
+    /* Replace this placeholder with validation and big-endian encoding. */
+    (void) target;
+    (void) capacity;
+    (void) value;
+    return CODEC_OK;
+}
+
+int main(void)
+{
+    const uint_least32_t values[] = {""" + ", ".join(f"UINT32_C({item})" for item in values) + r"""};
+    for (size_t i = 0; i < sizeof values / sizeof values[0]; ++i) {
+        unsigned char bytes[] = {0xAA, 0xBB};
+        CodecStatus status = encode_u16be(bytes, sizeof bytes, values[i]);
+        if (printf("%d:%02X %02X\n", (int) status, (unsigned int) bytes[0],
+                   (unsigned int) bytes[1]) < 0) { return EXIT_FAILURE; }
+    }
+    for (size_t capacity = 0; capacity < 2; ++capacity) {
+        unsigned char bytes[] = {0xAA, 0xBB};
+        CodecStatus status = encode_u16be(bytes, capacity, capacity == 0 ? UINT32_C(65536) : 1);
+        if (printf("short=%d:%02X %02X\n", (int) status, (unsigned int) bytes[0],
+                   (unsigned int) bytes[1]) < 0) { return EXIT_FAILURE; }
+    }
+    if (printf("null=%d\n", (int) encode_u16be(NULL, 0, UINT32_C(65536))) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+""",
+            "stdin": "",
+            "expectedOutput": "".join(f"0:{item >> 8:02X} {item & 255:02X}\n" if item <= 65535 else "3:AA BB\n" for item in values)
+                              + "short=2:AA BB\nshort=2:AA BB\nnull=1\n",
+            "hints": (
+                "Všetky tri kontroly patria pred prvý zápis. Nepretypúvaj hodnotu na úzky typ ešte pred kontrolou rozsahu.",
+                "Horný oktet získaš posunom o 8 doprava, dolný maskou 255. Indexy určuje formát, nie poradie bajtov procesora.",
             ),
         }
     if topic == "testing":

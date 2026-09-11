@@ -266,6 +266,30 @@ TUTORIAL_CHECKPOINTS: dict[str, tuple[dict[str, Any], ...]] = {
             "incorrectFeedback": "qsort potrebuje konzistentné záporné, nulové alebo kladné porovnanie. Konkrétna veľkosť výsledku nerozhoduje, ale znamienkové pretečenie by porušilo pravidlá C.",
         },
         {
+            "id": "c-callback-context-lifetime",
+            "prompt": "Prečo môže synchrónny walk_values bezpečne používať adresu lokálneho LimitState?",
+            "options": (
+                ("a", "Prevod na void * predĺži životnosť objektu až do jeho uvoľnenia."),
+                ("b", "Všetky volania skončia pred zánikom lokálneho objektu a walk_values si adresu neuchová."),
+                ("c", "Každý callback automaticky dostane vlastnú úplnú kópiu kontextu."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Rozhoduje kontrakt okamihu volania a životnosť objektu, nie samotný typ void *.",
+            "incorrectFeedback": "Odovzdáva sa hodnota ukazovateľa, nie kópia celého kontextu. Pri odloženom volaní treba zabezpečiť dlhšiu životnosť alebo bezpečné odregistrovanie.",
+        },
+        {
+            "id": "c-wire-format-contract",
+            "prompt": "Ako vytvoríš rovnaký dvojoktetový big-endian formát na little-endian aj big-endian cieli s CHAR_BIT == 8?",
+            "options": (
+                ("a", "Vždy skopírujem prvé dva bajty ľubovoľného celočíselného objektu."),
+                ("b", "Overím rozsah aj kapacitu a explicitne uložím najprv horných osem bitov a potom dolných osem."),
+                ("c", "Stačí pretypovať cieľový bajtový ukazovateľ na uint16_t * a zapísať hodnotu."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Bajty určuje vonkajší formát; nezávisia od rozloženia pracovného celočíselného objektu.",
+            "incorrectFeedback": "Kopírovanie objektu zachová jeho hostiteľské poradie. Pretypovaný prístup môže navyše porušiť zarovnanie a pravidlá typov; formát treba zakódovať explicitne.",
+        },
+        {
             "id": "c-snprintf-required",
             "prompt": "snprintf s kapacitou 8 vrátil 8. Čo to znamená pre celý výsledný reťazec?",
             "options": (

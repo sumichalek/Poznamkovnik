@@ -1090,3 +1090,242 @@ int main(void)
     return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 """
+
+CALLBACK_APPLY = r"""#include <stddef.h>
+
+typedef int (*BinaryOperation)(int left, int right);
+
+/* The result points to a writable int; operation must accept both values. */
+static int apply(int left, int right, BinaryOperation operation, int *result)
+{
+    if (operation == NULL || result == NULL) {
+        return 0;
+    }
+    *result = operation(left, right);
+    return 1;
+}
+
+static int maximum(int left, int right)
+{
+    return left > right ? left : right;
+}
+"""
+
+CALLBACK_OPERATION = CALLBACK_APPLY + r"""
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    int result = 77;
+    int ok = apply(4, 9, maximum, &result);
+    if (printf("ok=%d value=%d\n", ok, result) < 0) { return EXIT_FAILURE; }
+    result = 77;
+    ok = apply(4, 9, NULL, &result);
+    if (printf("missing=%d value=%d\n", ok, result) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+WALK_VALUES = r"""#include <stddef.h>
+
+typedef enum { VISIT_CONTINUE, VISIT_STOP, VISIT_ERROR } VisitAction;
+typedef VisitAction (*Visitor)(int value, void *context);
+typedef enum { WALK_DONE, WALK_STOPPED, WALK_ARGUMENT, WALK_CALLBACK_ERROR } WalkStatus;
+
+/* Synchronous, borrowed inputs: no callback or pointer is retained. */
+static WalkStatus walk_values(const int *values, size_t count, Visitor visit, void *context)
+{
+    if (visit == NULL || (count != 0 && values == NULL)) {
+        return WALK_ARGUMENT;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        VisitAction action = visit(values[i], context);
+        if (action == VISIT_STOP) { return WALK_STOPPED; }
+        if (action != VISIT_CONTINUE) { return WALK_CALLBACK_ERROR; }
+    }
+    return WALK_DONE;
+}
+"""
+
+LIMIT_VISITOR = WALK_VALUES + r"""
+#include <stdint.h>
+
+typedef struct { int limit; size_t accepted; int last; } LimitState;
+
+/* Non-NULL context points to a live, writable LimitState. */
+static VisitAction accept_below(int value, void *context)
+{
+    if (context == NULL) { return VISIT_ERROR; }
+    LimitState *state = context;
+    if (value >= state->limit) { return VISIT_STOP; }
+    if (state->accepted == SIZE_MAX) { return VISIT_ERROR; }
+    ++state->accepted;
+    state->last = value;
+    return VISIT_CONTINUE;
+}
+"""
+
+CALLBACK_CONTEXT = LIMIT_VISITOR + r"""
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    const int values[] = {3, 5, 9, 1};
+    const size_t count = sizeof values / sizeof values[0];
+    LimitState first = {8, 0, 77};
+    LimitState second = {10, 0, 77};
+    WalkStatus stopped = walk_values(values, count, accept_below, &first);
+    WalkStatus done = walk_values(values, count, accept_below, &second);
+    WalkStatus missing = walk_values(values, count, accept_below, NULL);
+    WalkStatus empty = walk_values(NULL, 0, accept_below, NULL);
+    if (printf("first: status=%d accepted=%zu last=%d\n", (int) stopped, first.accepted, first.last) < 0 ||
+        printf("second: status=%d accepted=%zu last=%d\n", (int) done, second.accepted, second.last) < 0 ||
+        printf("missing=%d empty=%d\n", (int) missing, (int) empty) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+VARIADIC_RANGE = r"""#include <stdarg.h>
+#include <stddef.h>
+
+typedef struct { int minimum; int maximum; } IntRange;
+
+/* count >= 1, followed by exactly count remaining arguments of promoted type int. */
+static int scan_extreme(unsigned int count, va_list args, int want_maximum)
+{
+    int best = va_arg(args, int);
+    for (unsigned int i = 1; i < count; ++i) {
+        int value = va_arg(args, int);
+        if (want_maximum ? value > best : value < best) { best = value; }
+    }
+    return best;
+}
+
+/* A nonempty call supplies exactly count ints; failure preserves *result. */
+static int variadic_range(IntRange *result, unsigned int count, ...)
+{
+    if (result == NULL || count == 0) { return 0; }
+    va_list args;
+    va_list copy;
+    va_start(args, count);
+    va_copy(copy, args);
+    int minimum = scan_extreme(count, args, 0);
+    int maximum = scan_extreme(count, copy, 1);
+    va_end(copy);
+    va_end(args);
+    *result = (IntRange) {minimum, maximum};
+    return 1;
+}
+"""
+
+VARIADIC_PASSES = VARIADIC_RANGE + r"""
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    short low = -3;
+    IntRange range = {77, 88};
+    int ok = variadic_range(&range, 4U, 7, low, 0, 9);
+    if (printf("ok=%d min=%d max=%d\n", ok, range.minimum, range.maximum) < 0) { return EXIT_FAILURE; }
+    range = (IntRange) {77, 88};
+    ok = variadic_range(&range, 0U);
+    if (printf("empty=%d min=%d max=%d\n", ok, range.minimum, range.maximum) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+EXACT_WIDTH_ID = r"""#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+#ifdef UINT32_MAX
+    uint32_t identifier = UINT32_C(4000000000);
+    if (printf("exact=%" PRIu32 "\n", identifier) < 0) { return EXIT_FAILURE; }
+#else
+    if (puts("exact=unavailable") == EOF) { return EXIT_FAILURE; }
+#endif
+    uint_least32_t portable = UINT32_C(4000000000);
+    if (printf("least=%" PRIuLEAST32 "\n", portable) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+OCTET_CODEC = r"""#include <limits.h>
+#include <stddef.h>
+#include <stdint.h>
+
+_Static_assert(CHAR_BIT == 8, "This wire format requires 8-bit bytes");
+typedef enum { CODEC_OK, CODEC_ARGUMENT, CODEC_SIZE, CODEC_RANGE } CodecStatus;
+
+/* Valid objects cover their declared capacities; failure never writes output. */
+static CodecStatus encode_u16be(unsigned char *target, size_t capacity, uint_least32_t value)
+{
+    if (target == NULL) { return CODEC_ARGUMENT; }
+    if (capacity < 2) { return CODEC_SIZE; }
+    if (value > UINT32_C(65535)) { return CODEC_RANGE; }
+    target[0] = (unsigned char) (value >> 8);
+    target[1] = (unsigned char) (value & UINT32_C(255));
+    return CODEC_OK;
+}
+
+static CodecStatus decode_u16be(const unsigned char *source, size_t length, uint_least32_t *result)
+{
+    if (source == NULL || result == NULL) { return CODEC_ARGUMENT; }
+    if (length < 2) { return CODEC_SIZE; }
+    *result = ((uint_least32_t) source[0] << 8) | (uint_least32_t) source[1];
+    return CODEC_OK;
+}
+"""
+
+WIRE_ROUNDTRIP = OCTET_CODEC + r"""
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    unsigned char bytes[2] = {0xAA, 0xBB};
+    uint_least32_t value = 77;
+    if (encode_u16be(bytes, sizeof bytes, UINT32_C(43981)) != CODEC_OK ||
+        decode_u16be(bytes, sizeof bytes, &value) != CODEC_OK) { return EXIT_FAILURE; }
+    if (printf("%02X %02X value=%" PRIuLEAST32 "\n", (unsigned int) bytes[0],
+               (unsigned int) bytes[1], value) < 0) { return EXIT_FAILURE; }
+    bytes[0] = 0xAA;
+    bytes[1] = 0xBB;
+    CodecStatus short_target = encode_u16be(bytes, 1, 1);
+    CodecStatus range = encode_u16be(bytes, sizeof bytes, UINT32_C(65536));
+    value = 77;
+    CodecStatus short_source = decode_u16be(bytes, 1, &value);
+    if (printf("short=%d range=%d bytes=%02X %02X\n", (int) short_target, (int) range,
+               (unsigned int) bytes[0], (unsigned int) bytes[1]) < 0 ||
+        printf("read=%d value=%" PRIuLEAST32 "\n", (int) short_source, value) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+SEQUENCED_ARGUMENTS = r"""#include <stdio.h>
+#include <stdlib.h>
+
+static int sequence = 0;
+
+static int next_number(void)
+{
+    return ++sequence;
+}
+
+int main(void)
+{
+    int first = next_number();
+    int second = next_number();
+    if (printf("ordered=%d,%d\n", first, second) < 0) { return EXIT_FAILURE; }
+    sequence = 0;
+    if (printf("unspecified=%d,%d\n", next_number(), next_number()) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
