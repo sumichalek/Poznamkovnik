@@ -14,6 +14,7 @@ from typing import Any
 from backend.tutorial_c_examples import (
     ATOMIC_SUPPORT, BOUNDED_QUEUE, COOPERATIVE_JOBS, COOPERATIVE_MAIN, COUNT_POSITIVE,
     GATE_MAIN, GATE_SUPPORT, LINE_READER, QUEUE_CLOSE, QUEUE_DRAIN_MAIN,
+    GROUP_MAIN, GROUP_RUN, GROUP_TYPES, GROUP_WORKERS,
     QUEUE_OPERATIONS, QUEUE_PUSH, QUEUE_SUPPORT, THREAD_JOIN,
     TIMED_QUEUE_MAIN, TIMED_QUEUE_POP, TIMED_QUEUE_TYPES, WALK_VALUES,
 )
@@ -612,6 +613,34 @@ int main(void)
             "hints": (
                 "Všetky tri kontroly patria pred prvý zápis. Nepretypúvaj hodnotu na úzky typ ešte pred kontrolou rozsahu.",
                 "Horný oktet získaš posunom o 8 doprava, dolný maskou 255. Indexy určuje formát, nie poradie bajtov procesora.",
+            ),
+        }
+    if topic == "producer-groups":
+        count = _pick((3, 0, 1, 2), variant)
+        return {
+            "title": "Dokonči skupinu v správnom poradí",
+            "description": "Doplň finish_group. Pri neúspešnom doterajšom výsledku uzavri frontu pred join. Pripoj každého z started producentov cez join_or_exit; chybu pracovníka zaznamenaj a uzavri frontu, ale pokračuj v pripájaní. Po producentoch frontu uzavri aj pri started == 0, pripoj konzumenta a zohľadni jeho výsledok. Žiadny mutex nedržíš a platné sú iba úspešne vytvorené identifikátory. Ostatný kód nemeň. Bezpečný štartovací kód skupinu zruší a vráti chybu. Samotný výpis nepreverí všetky poradia a zlyhania.",
+            "starterSource": THREAD_JOIN + BOUNDED_QUEUE + GROUP_TYPES + GROUP_WORKERS + r"""
+static int finish_group(Queue *queue, thrd_t *producers, size_t started,
+                        thrd_t consumer, int result)
+{
+    /* Replace this cancellation-only placeholder with coordinated completion. */
+    (void) result;
+    queue_close(queue);
+    for (size_t i = 0; i < started; ++i) {
+        int worker_result;
+        join_or_exit(producers[i], &worker_result);
+    }
+    int consumer_result;
+    join_or_exit(consumer, &consumer_result);
+    return EXIT_FAILURE;
+}
+""" + GROUP_RUN + GROUP_MAIN.replace("run_group(batches, 3, &summary)", f"run_group(batches, {count}, &summary)"),
+            "stdin": "",
+            "expectedOutput": f"accepted={count * 4} consumed={count * 4} total={(0, 10, 110, 1110)[count]}\n",
+            "hints": (
+                "Konzument musí odoberať položky aj počas čakania na producentov. Bežné uzavretie preto patrí až za ich slučku join.",
+                "Každý join potvrdí dokončenie, ale návrat pracovníka treba vyhodnotiť zvlášť. Chyba jedného nesmie preskočiť zvyšné platné identifikátory.",
             ),
         }
     if topic == "deadlines":

@@ -20,7 +20,7 @@ MAX_INPUT_BYTES = 64 * 1024
 MAX_ARGUMENT_BYTES = 8 * 1024
 MAX_ARGUMENT_COUNT = 32
 MAX_OUTPUT_BYTES = 64 * 1024
-# Modern C++ headers can make the compiler create an object or a temporary file
+# Debug information, runtime checks and C++ headers can produce compiler files
 # larger than the program-output cap. The compiled program still keeps that cap.
 COMPILE_FILE_LIMIT_BYTES = 8 * 1024 * 1024
 COMPILE_TIMEOUT_SECONDS = 4.0
@@ -423,7 +423,7 @@ class DevelopmentCodeRunner(CCodeRunner):
             tool = str(self.tool_paths[language_id])
             entry_path = f"/work/{filename}"
             run_memory_limit = MEMORY_LIMIT_BYTES
-            # -g1 keeps source locations while fitting inside the sandbox file-size limit.
+            # Keep source locations with compact debug information.
             native_profile_flags = ["-O0", "-g1"] if profile == "debug" else ["-O2", "-DNDEBUG"]
             # AddressSanitizer needs a virtual-memory reservation larger than this sandbox permits.
             # UndefinedBehaviorSanitizer remains useful here and reports source locations safely.
@@ -453,6 +453,7 @@ class DevelopmentCodeRunner(CCodeRunner):
                     ],
                     workspace,
                     timeout=COMPILE_TIMEOUT_SECONDS,
+                    file_limit=COMPILE_FILE_LIMIT_BYTES,
                 )
                 if compile_result["timedOut"] or compile_result["outputLimited"] or compile_result["exitCode"] != 0:
                     return {"compiled": False, "compile": compile_result, "run": None}

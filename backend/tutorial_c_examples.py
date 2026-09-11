@@ -2051,3 +2051,150 @@ int main(void)
 """
 
 COOPERATIVE_SHUTDOWN = THREAD_JOIN + BOUNDED_QUEUE + COOPERATIVE_JOBS + COOPERATIVE_PRODUCER + COOPERATIVE_MAIN
+
+GROUP_TYPES = r"""
+#include <limits.h>
+#include <stdint.h>
+enum { PRODUCER_LIMIT = 3 };
+typedef struct { const int *values; size_t count; } Batch;
+typedef struct { Queue *queue; Batch batch; size_t accepted; } BatchJob;
+typedef struct { Queue *queue; size_t count; unsigned int total; } GroupConsumer;
+typedef struct { size_t accepted, consumed; unsigned int total; } GroupSummary;
+"""
+
+GROUP_WORKERS = r"""
+/* The coordinator supplies a live job and keeps the borrowed batch alive. */
+static int group_producer(void *context)
+{
+    BatchJob *job = context;
+    if (job->batch.values == NULL && job->batch.count != 0) {
+        queue_close(job->queue);
+        return EXIT_FAILURE;
+    }
+    for (size_t i = 0; i < job->batch.count; ++i) {
+        if (!queue_push(job->queue, job->batch.values[i])) { return EXIT_FAILURE; }
+        ++job->accepted;
+    }
+    /* Finishing one batch must not close the queue for the other producers. */
+    return EXIT_SUCCESS;
+}
+
+static int group_consumer(void *context)
+{
+    GroupConsumer *job = context;
+    int value;
+    while (queue_pop(job->queue, &value)) {
+        if (value < 0 || job->count == SIZE_MAX ||
+            (unsigned int) value > UINT_MAX - job->total) {
+            queue_close(job->queue);
+            return EXIT_FAILURE;
+        }
+        ++job->count;
+        job->total += (unsigned int) value;
+    }
+    return EXIT_SUCCESS;
+}
+"""
+
+GROUP_FINISH = r"""
+/* No queue mutex is held. Consumer is running; only started producer handles exist. */
+static int finish_group(Queue *queue, thrd_t *producers, size_t started,
+                        thrd_t consumer, int result)
+{
+    if (result != EXIT_SUCCESS) { queue_close(queue); }
+    for (size_t i = 0; i < started; ++i) {
+        int worker_result = EXIT_FAILURE;
+        join_or_exit(producers[i], &worker_result);
+        if (worker_result != EXIT_SUCCESS) {
+            result = EXIT_FAILURE;
+            queue_close(queue);
+        }
+    }
+    queue_close(queue);
+    int consumer_result = EXIT_FAILURE;
+    join_or_exit(consumer, &consumer_result);
+    if (consumer_result != EXIT_SUCCESS) { result = EXIT_FAILURE; }
+    return result;
+}
+"""
+
+GROUP_RUN = r"""
+/* 0..PRODUCER_LIMIT borrowed batches; separate writable output changes only on success. */
+static int run_group(const Batch *batches, size_t count, GroupSummary *output)
+{
+    if (output == NULL || count > PRODUCER_LIMIT || (count != 0 && batches == NULL)) {
+        return EXIT_FAILURE;
+    }
+    Queue queue;
+    if (!queue_init(&queue)) { return EXIT_FAILURE; }
+    GroupConsumer consumer = {&queue, 0, 0};
+    thrd_t consumer_thread;
+    if (thrd_create(&consumer_thread, group_consumer, &consumer) != thrd_success) {
+        queue_destroy(&queue);
+        return EXIT_FAILURE;
+    }
+    BatchJob jobs[PRODUCER_LIMIT];
+    thrd_t producers[PRODUCER_LIMIT];
+    size_t started = 0;
+    int result = EXIT_SUCCESS;
+    for (size_t i = 0; i < count; ++i) {
+        jobs[i] = (BatchJob) {&queue, batches[i], 0};
+        if (thrd_create(&producers[i], group_producer, &jobs[i]) != thrd_success) {
+            result = EXIT_FAILURE;
+            break;
+        }
+        ++started;
+    }
+    result = finish_group(&queue, producers, started, consumer_thread, result);
+    queue_destroy(&queue);
+    if (result != EXIT_SUCCESS) { return result; }
+    size_t accepted = 0;
+    for (size_t i = 0; i < started; ++i) {
+        if (jobs[i].accepted > SIZE_MAX - accepted) { return EXIT_FAILURE; }
+        accepted += jobs[i].accepted;
+    }
+    if (accepted != consumer.count) { return EXIT_FAILURE; }
+    *output = (GroupSummary) {accepted, consumer.count, consumer.total};
+    return EXIT_SUCCESS;
+}
+"""
+
+GROUP_PIPELINE = THREAD_JOIN + BOUNDED_QUEUE + GROUP_TYPES + GROUP_WORKERS + GROUP_FINISH + GROUP_RUN
+
+GROUP_MAIN = r"""
+int main(void)
+{
+    const int first[] = {1, 2, 3, 4};
+    const int second[] = {10, 20, 30, 40};
+    const int third[] = {100, 200, 300, 400};
+    const Batch batches[] = {{first, 4}, {second, 4}, {third, 4}};
+    GroupSummary summary = {77, 77, 77};
+    if (run_group(batches, 3, &summary) != EXIT_SUCCESS) { return EXIT_FAILURE; }
+    if (printf("accepted=%zu consumed=%zu total=%u\n", summary.accepted,
+               summary.consumed, summary.total) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+PRODUCER_GROUP = GROUP_PIPELINE + GROUP_MAIN
+
+GROUP_FAILURE_MAIN = r"""
+int main(void)
+{
+    GroupSummary empty = {77, 77, 77};
+    if (run_group(NULL, 0, &empty) != EXIT_SUCCESS) { return EXIT_FAILURE; }
+    const int values[] = {1, 2, 3, 4, 5};
+    const Batch batches[] = {{values, 5}, {NULL, 1}, {values, 5}};
+    GroupSummary summary = {77, 88, 99};
+    int failed = run_group(batches, 3, &summary) != EXIT_SUCCESS;
+    int unchanged = summary.accepted == 77 && summary.consumed == 88 && summary.total == 99;
+    if (printf("empty=%zu:%zu:%u\nfailed=%d unchanged=%d\n",
+               empty.accepted, empty.consumed, empty.total, failed, unchanged) < 0) {
+        return EXIT_FAILURE;
+    }
+    if (!failed || !unchanged) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+PRODUCER_GROUP_FAILURE = GROUP_PIPELINE + GROUP_FAILURE_MAIN

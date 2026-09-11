@@ -14,6 +14,7 @@ from unittest.mock import patch
 from backend.code_runner import (
     CCodeRunner,
     CodeRunnerError,
+    COMPILE_FILE_LIMIT_BYTES,
     DevelopmentCodeRunner,
     MAX_OUTPUT_BYTES,
     MAX_PROCESS_COUNT,
@@ -106,6 +107,31 @@ class CodeRunnerStartupTestCase(unittest.TestCase):
                 self.assertIn("--clearenv", arguments)
                 self.assertIn("--ro-bind", arguments)
                 self.assertGreater(arguments.index(f"--nproc={MAX_PROCESS_COUNT}"), arguments.index("/usr/bin/bwrap"))
+
+    def test_native_compile_allowance_does_not_change_program_limits(self) -> None:
+        outcome = {"exitCode": 0, "timedOut": False, "outputLimited": False,
+                   "stdout": "", "stderr": "", "durationMs": 1}
+        runner = DevelopmentCodeRunner()
+        for language in ("c", "cpp"):
+            for profile in ("debug", "release"):
+                for execute_program in (False, True):
+                    with self.subTest(language=language, profile=profile, execute=execute_program), patch.object(
+                        runner, "status", return_value={"languages": {language: {"available": True}}}
+                    ), patch.object(runner, "_execute", return_value=outcome) as execute, patch.object(
+                        runner, "_native_binary_inspection", return_value=None
+                    ):
+                        result = runner.run(language, "int main(void) { return 0; }", "",
+                                            execute=execute_program, build_profile=profile)
+                    self.assertTrue(result["compiled"])
+                    self.assertEqual(execute.call_count, 2 if execute_program else 1)
+                    compile_call = execute.call_args_list[0]
+                    self.assertEqual(compile_call.kwargs["file_limit"], COMPILE_FILE_LIMIT_BYTES)
+                    self.assertEqual("-fsanitize=undefined" in compile_call.args[0], profile == "debug")
+                    if execute_program:
+                        run_call = execute.call_args_list[1]
+                        self.assertEqual(run_call.args[0], ["/work/program"])
+                        self.assertEqual(run_call.kwargs.get("file_limit", MAX_OUTPUT_BYTES), MAX_OUTPUT_BYTES)
+                        self.assertEqual(run_call.kwargs["memory_limit"], MEMORY_LIMIT_BYTES)
 
     @unittest.skipUnless(
         all(shutil.which(tool) for tool in ("gcc", "bwrap", "unshare", "prlimit")),
@@ -218,3 +244,34 @@ class SandboxLimitsTestCase(unittest.TestCase):
         )
         self.assertTrue(result["outputLimited"])
         self.assertLessEqual(len(result["stdout"].encode()), MAX_OUTPUT_BYTES)
+
+    def test_development_c_retains_file_limit_after_compilation(self) -> None:
+        source = r"""
+#include <signal.h>
+#include <stdio.h>
+#include <sys/resource.h>
+int main(void)
+{
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_FSIZE, &limit) != 0 || signal(SIGXFSZ, SIG_IGN) == SIG_ERR) { return 1; }
+    FILE *stream = fopen("large.bin", "wb");
+    if (stream == NULL) { return 2; }
+    const char chunk[4096] = {0};
+    int limited = 0;
+    for (unsigned int i = 0; i < BLOCK_COUNT; ++i) {
+        if (fwrite(chunk, 1, sizeof chunk, stream) != sizeof chunk) { limited = 1; break; }
+    }
+    if (fflush(stream) == EOF) { limited = 1; }
+    if (fclose(stream) == EOF) { limited = 1; }
+    printf("%llu:%llu limited=%d\n", (unsigned long long) limit.rlim_cur,
+           (unsigned long long) limit.rlim_max, limited);
+    return 0;
+}
+""".replace("BLOCK_COUNT", str(MAX_OUTPUT_BYTES // 4096 + 1))
+        for profile in ("debug", "release"):
+            with self.subTest(profile=profile):
+                result = DevelopmentCodeRunner().run("c", source, "", build_profile=profile)
+                self.assertTrue(result["compiled"], result)
+                self.assertEqual(result["run"]["exitCode"], 0, result)
+                self.assertEqual(result["run"]["stdout"], f"{MAX_OUTPUT_BYTES}:{MAX_OUTPUT_BYTES} limited=1\n")
+                self.assertEqual(result["run"]["stderr"], "")

@@ -24,6 +24,7 @@ from backend.tutorial_c_examples import (
     FILE_ROUNDTRIP,
     FORMATTED_OUTPUT,
     GROW_BUFFER,
+    GROUP_FINISH,
     INTEGER_LIMITS,
     MAILBOX_PUBLICATION,
     MACRO_EXPANDED,
@@ -38,6 +39,8 @@ from backend.tutorial_c_examples import (
     PARSE_NUMBER,
     PARSE_POSITIVE,
     PRODUCER_CONSUMER,
+    PRODUCER_GROUP,
+    PRODUCER_GROUP_FAILURE,
     QUEUE_DRAIN,
     READ_LINES,
     RESTRICT_COPY,
@@ -1197,6 +1200,51 @@ C_PAGES = [
         },
     },
     {
+        "key": "producer-groups", "parent_key": "tooling", "kind": "lesson", "position": 152,
+        "title": "Skupina producentov a spoločné ukončenie",
+        "summary": "Jeden vlastník bežného uzavretia, aktívny konzument a dokončenie pri čiastočnom štarte.",
+        "content": {
+            "lead": "Viacerí producenti môžu používať tú istú frontu, ale koniec jedného z nich nie je koncom celej skupiny. Koordinátor musí vedieť, koľko vlákien skutočne vzniklo, kto ešte potrebuje konzumenta a kedy možno oznámiť poslednú položku.",
+            "blocks": [
+                {"type": "heading", "text": "Fronta zostáva rovnaká, mení sa vlastník konca"},
+                {"type": "paragraph", "text": "Použijeme pôvodnú frontu s kapacitou tri, mutexom a podmienkami not_empty/not_full. Všetky vloženia a odbery sú chránené rovnakým mutexom. Traja producenti posielajú vlastné nemenné dávky a jeden konzument počíta položky a súčet. Nie je potrebné pridávať druhé neatomické počítadlo živých producentov do fronty."},
+                {"type": "list", "items": [
+                    "Bežný úspešný koniec dávky producenta frontu nezatvára. Ostatní môžu ešte posielať alebo sa ešte len vytvárať.",
+                    "Koordinátor najprv vytvorí konzumenta a potom producentov. Konzument zostáva aktívny, kým koordinátor pripája producentov, takže plná fronta sa môže uvoľňovať.",
+                    "Až po úspešnom pripojení všetkých vytvorených producentov koordinátor oznámi bežný koniec cez queue_close. Konzument dočíta prijaté položky, skončí a až potom sa pripojí aj on.",
+                    "Pri chybe platí skoršie uzavretie: cieľom je ukončiť všetky čakacie cesty a ohlásiť neúspech celej skupiny, nie predstierať úplne spracovaný vstup."
+                ]},
+                {"type": "heading", "text": "Koordinátor nepripája konzumenta ako prvého"},
+                {"type": "code", "language": "c", "title": "Poradie join a uzavretia bez držania mutexu fronty", "source": GROUP_FINISH},
+                {"type": "paragraph", "text": "finish_group dostane iba identifikátory skutočne vytvorených producentov, platné vlákno konzumenta a výsledok doterajšieho štartu. Ak štart už zlyhal, uzavrie frontu pred prvým join. V slučke neprestane pripájať ďalšie vlákna po chybe jedného pracovníka. Potom uzavrie frontu aj pri nulovom počte producentov a pripojí konzumenta."},
+                {"type": "callout", "tone": "warning", "text": "Join konzumenta pred uzavretím môže čakať navždy: konzument stále očakáva ďalšie dáta alebo koniec. Join producenta so zamknutým mutexom fronty môže zablokovať aj konzumenta, ktorý mu má uvoľniť miesto. Poradie vytvorenia preto nemusí byť poradím pripájania."},
+                {"type": "heading", "text": "Úplná skupina troch producentov"},
+                {"type": "code", "language": "c", "title": "Dvanásť položiek zo samostatných dávok", "source": PRODUCER_GROUP},
+                {"type": "paragraph", "text": "Dávky 1/2/3/4, 10/20/30/40 a 100/200/300/400 spolu vytvoria 12 položiek so súčtom 1110. Main vypíše accepted=12 consumed=12 total=1110. Súčet je reprezentovateľný aj v minimálnom rozsahu unsigned int. Konzument napriek tomu kontroluje hranicu súčtu aj počtu pred každým zvýšením."},
+                {"type": "paragraph", "text": "FIFO platí pre poradie skutočných vložení pod mutexom. Položky jedného producenta ostanú v jeho poradí, ale prepletenie rôznych dávok závisí od plánovania. Výpis súčtu a počtu nesľubuje, že najprv príde celá prvá dávka. Ani skôr vykonaný join nemení poradie, v akom sa položky už preniesli."},
+                {"type": "heading", "text": "Požičané vstupy a oddelené výsledky"},
+                {"type": "list", "items": [
+                    "run_group prijíma nula až tri dávky. Pri nulovom počte je NULL pole dávok platné. Pri nenulovom musí existovať pole príslušnej dĺžky; každá neprázdna dávka potrebuje platné pole int.",
+                    "BatchJob sa inicializuje pred thrd_create a každý producent má vlastný objekt aj vlastné accepted. Koordinátor ďalšou iteráciou neprepisuje kontext už spusteného pracovníka.",
+                    "Dávky aj vstupné polia ostávajú živé a nemenné až do dokončenia run_group. Rôzne dávky môžu čítať rovnaké nemenné pole. Do fronty sa kopírujú int, nie vlastníctvo ukazovateľov.",
+                    "GroupSummary je samostatný zapisovateľný objekt. Pri bežnom neúspešnom návrate zostáva bez zmeny. Čiastkové accepted a súčet sa doň prenesú až po všetkých join a kontrole rovnosti počtov.",
+                    "Maximálny počet producentov je limit tejto ukážky, nie prísľub neobmedzených vlákien. Nároky na zdroje a dostupnosť threads.h treba preveriť na každom cieli."
+                ]},
+                {"type": "heading", "text": "Čiastočne úspešný štart"},
+                {"type": "paragraph", "text": "Ak nevznikne konzument, nevytvára sa žiadny producent a možno hneď zrušiť inicializovanú frontu. Ak nevznikne prvý, druhý alebo tretí producent, started obsahuje iba počet úspechov. finish_group dostane neúspešný výsledok, uzavrie frontu pred pripájaním a pripojí len platné identifikátory, každý práve raz."},
+                {"type": "paragraph", "text": "Zlyhaný thrd_create nezanecháva platný identifikátor na join. Naopak, úspešne vytvorené vlákno treba pripojiť aj vtedy, keď jeho funkcia vrátila chybu. Tieto dve chyby sa nesmú zameniť. Pri chybe samotného thrd_join zostáva politika join_or_exit fatálna: program nepredstiera potvrdené dokončenie a bežné upratanie."},
+                {"type": "heading", "text": "Chyba pracovníka musí odblokovať jeho partnerov"},
+                {"type": "code", "language": "c", "title": "Nulová skupina a chybná druhá dávka bez zmeny výsledku", "source": PRODUCER_GROUP_FAILURE},
+                {"type": "paragraph", "text": "Prvé volanie vytvorí iba konzumenta, korektne mu oznámi koniec a vráti nulový súhrn. Druhé spustí tri dávky, z ktorých jedna má NULL pole a nenulový počet. Taký producent pred návratom chyby sám uzavrie frontu. Celá operácia zlyhá a pôvodný súhrn 77/88/99 zostane nezmenený. Program úmyselne overuje túto chybovú cestu a pri očakávanom výsledku skončí úspešne."},
+                {"type": "paragraph", "text": "Nestačí spoliehať sa až na neskoršiu kontrolu výsledku v koordinátorovi. Ten môže práve čakať na iného producenta, ktorý potrebuje uvoľniť miesto vo fronte. Podobne konzument pred chybou zápornej hodnoty či rozsahu uzavrie frontu, aby zablokovaní producenti mohli skončiť. queue_push odmietnutý po uzavretí už znamená dostupný ukončovací stav."},
+                {"type": "paragraph", "text": "V predchádzajúcej lekcii bolo predčasné zastavenie očakávaným úspechom. Táto operácia sľubuje spracovanie celých dávok, preto odmietnutý push vracia chybu skupiny. Návratový stav určuje kontrakt úlohy; samotná funkcia fronty sa kvôli tomu nemení. Pri chybe sa časť prijatých údajov môže prestať spracúvať, ale nehlási sa úspešný súhrn."},
+                {"type": "heading", "text": "Čo nestačí otestovať iba súčtom"},
+                {"type": "paragraph", "text": "Vynúť dokončenie prvého producenta ešte pred vznikom ďalšieho a over, že fronta zostáva otvorená. Skontroluj každú chybu štartu aj nula producentov. Pri zázname prijatých dát over každú hodnotu práve raz a poradie v rámci dávky, ale nevyžaduj jediné prepletenie dávok. Riadený model poradia join doplň skutočnými vláknami; sleep ani opakovaný náhodný beh nie sú dôkazom neprítomnosti zablokovania."},
+                {"type": "paragraph", "text": "Tento koordinátor má pevnú vopred známu skupinu a jedného konzumenta. Dynamické pridávanie producentov, vlastnené položky a presné výsledky pri zrušení potrebujú ďalší kontrakt. Neodvodzuj ich automaticky z tohto príkladu a neskracuj životnosť fronty cez detach."},
+            ],
+        },
+    },
+    {
         "key": "reference",
         "parent_key": "",
         "kind": "chapter",
@@ -1461,6 +1509,7 @@ C_LEARNING_GOALS = {
     "stdlib-reference": ("Zachovať vlastníctvo a údaje pri chybe alokácie alebo prevodu.", "Navrhnúť konzistentný porovnávač bez pretekajúceho odčítania."),
     "stdio-reference": ("Odlíšiť chybu formátovania od skrátenia a skontrolovať miesto pre nulu.", "Správne vyhodnotiť počet prenesených prvkov a uzavrieť prúd aj pri chybe."),
     "numeric-reference": ("Zvoliť typ a formát podľa skutočných limitov implementácie.", "Overiť rozsah pred prevodom a dodržať doménu ctype.h bez straty EOF."),
+    "producer-groups": ("Určiť jediného vlastníka bežného uzavretia skupiny producentov.", "Pripojiť len vytvorené vlákna v poradí umožňujúcom dočítanie a zachovať súhrn pri chybe."),
     "deadlines": ("Používať jeden absolútny termín TIME_UTC pri opakovanom čakaní.", "Po timeoute znovu rozhodnúť podľa stavu fronty pod mutexom a zachovať výstup pri konci."),
     "cancellation": ("Oddeliť požiadavku na zastavenie od potvrdeného dokončenia pracovníka.", "Zastaviť prijímanie, dočítať prijaté položky a pripojiť všetky vytvorené vlákna pred uprataním."),
     "conditions": ("Kontrolovať predikát v slučke pod rovnakým mutexom aj po prebudení.", "Odlíšiť oznámenie zmeny od uchovaného stavu a dokončenia vlákna."),
@@ -1473,6 +1522,7 @@ C_LEARNING_GOALS = {
 # Tento rámec je úmyselne oddelený od faktického výkladu. Každá lekcia sa tak
 # začína problémom, nadväznosťou a jadrom pojmu, potom smeruje k vlastnej práci.
 C_TEACHING_FRAMES = {
+    "producer-groups": {"context": "Viaceré zdroje posielajú dávky do spoločnej malej fronty a potrebujú oznámiť koniec až po dokončení celej skupiny.", "priorKnowledge": ("Poznáš ohraničenú frontu, uzavretie, kooperatívny koniec a úspešný join.",), "keyIdea": "Konzument musí zostať aktívny počas pripájania producentov a bežný koniec celej skupiny vlastní koordinátor.", "transfer": "Pri vlastnej skupine zakresli závislosti čakania, spočítaj úspešné štarty a označ miesto uzavretia na každej chybovej ceste."},
     "deadlines": {"context": "Čakanie na ďalšiu položku má časový termín, ale pri prebudení sa môže zmeniť aj dostupnosť dát.", "priorKnowledge": ("Poznáš slučku nad predikátom, mutex a uzavretie fronty s dočítaním.",), "keyIdea": "Termín sa pri prebudení neposúva a výsledok operácie stále určuje stav pod opäť získaným mutexom.", "transfer": "Pri vlastnom čakaní pomenuj hodiny, prioritu dát a timeoutu a hranice garantovaného času návratu."},
     "cancellation": {"context": "Potrebuješ zastaviť dvojicu pracovníkov bez straty prijatých položiek a bez predčasného zániku ich údajov.", "priorKnowledge": ("Rozlišuješ timeout, uzavretie fronty a úspešný join.",), "keyIdea": "Požiadavka musí zmeniť predikát a zobudiť čakajúcich, kým až join potvrdí bezpečný koniec používania dát.", "transfer": "Pre každé miesto čakania opíš reakciu na zastavenie a vlastníka dočítania aj konečného uvoľnenia zdrojov."},
     "conditions": {"context": "Pracovník potrebuje počkať na spoločný stav bez aktívneho opakovania neúspešných pokusov o čítanie.", "priorKnowledge": ("Poznáš mutex, životnosť požičaných objektov a úspešný join.",), "keyIdea": "Podmienková premenná oznamuje zmenu, ale o pokračovaní rozhoduje predikát znova overený pod mutexom.", "transfer": "Pri každom čakaní pomenuj predikát, jeho mutex a vlákno zodpovedné za zmenu aj prebudenie."},
@@ -1533,6 +1583,7 @@ C_EXERCISE_TOPICS = {
     "queues": "queues",
     "deadlines": "deadlines",
     "cancellation": "cancellation",
+    "producer-groups": "producer-groups",
 }
 
 
@@ -1578,9 +1629,22 @@ C_CHECKPOINT_IDS = {
     "queues": "c-queue-close-drain",
     "deadlines": "c-timeout-state-priority",
     "cancellation": "c-cooperative-stop-join",
+    "producer-groups": "c-producer-group-owner",
 }
 
 C_EXAMPLES = [
+    {
+        "key": "producer-group", "page_key": "producer-groups", "position": 10,
+        "title": "Traja producenti a jeden konzument",
+        "description": "Koordinátor pripojí producentov, uzavrie frontu a počká na dočítanie dvanástich položiek.",
+        "source": PRODUCER_GROUP, "stdin": "",
+    },
+    {
+        "key": "producer-group-failure", "page_key": "producer-groups", "position": 20,
+        "title": "Prázdna skupina a chyba dávky",
+        "description": "Nula producentov sa korektne dokončí; chybná dávka zastaví partnerov a nezmení výstupný súhrn.",
+        "source": PRODUCER_GROUP_FAILURE, "stdin": "",
+    },
     {
         "key": "timed-queue-states", "page_key": "deadlines", "position": 10,
         "title": "Položka, koniec alebo timeout",

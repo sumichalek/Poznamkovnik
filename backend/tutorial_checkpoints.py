@@ -266,6 +266,18 @@ TUTORIAL_CHECKPOINTS: dict[str, tuple[dict[str, Any], ...]] = {
             "incorrectFeedback": "qsort potrebuje konzistentné záporné, nulové alebo kladné porovnanie. Konkrétna veľkosť výsledku nerozhoduje, ale znamienkové pretečenie by porušilo pravidlá C.",
         },
         {
+            "id": "c-producer-group-owner",
+            "prompt": "Kto oznámi bežný koniec fronty v skupine troch producentov a jedného konzumenta?",
+            "options": (
+                ("a", "Prvý úspešne dokončený producent, aby ostatní zistili, že už môže byť koniec."),
+                ("b", "Koordinátor po pripojení všetkých producentov, pričom konzument dovtedy ďalej odoberá položky."),
+                ("c", "Koordinátor až po join konzumenta, ktorý dovtedy čaká na otvorenej fronte."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Dokončenie dávky nie je dokončenie skupiny. Po uzavretí konzument dočíta frontu a až potom sa pripojí aj on.",
+            "incorrectFeedback": "Predčasné uzavretie odmietne dáta ostatných. Join konzumenta pred oznámením konca zase môže čakať navždy. Chybová cesta uzatvára skôr a ohlasuje neúspech.",
+        },
+        {
             "id": "c-timeout-state-priority",
             "prompt": "cnd_timedwait vrátil thrd_timedout, ale po získaní mutexu už fronta obsahuje položku. Čo urobí ukázaný queue_pop_until?",
             "options": (
