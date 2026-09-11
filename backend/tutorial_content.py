@@ -15,6 +15,7 @@ from backend.tutorial_c_examples import (
     COMPARE_STRINGS,
     CONDITIONAL_BUILD,
     CONDITION_GATE,
+    COOPERATIVE_SHUTDOWN,
     CONST_VIEWS,
     CONVERT_SIZES,
     COPY_TEXT_DEMO,
@@ -48,6 +49,9 @@ from backend.tutorial_c_examples import (
     SPLIT_ATOMIC_UPDATE,
     STRTOL_REFERENCE,
     THREAD_LIFETIME,
+    TIMED_QUEUE_STATES,
+    TIMED_QUEUE_WAIT,
+    TIMEOUT_SHUTDOWN,
     VARIADIC_PASSES,
     WIRE_ROUNDTRIP,
 )
@@ -1125,6 +1129,74 @@ C_PAGES = [
         },
     },
     {
+        "key": "deadlines", "parent_key": "tooling", "kind": "lesson", "position": 150,
+        "title": "Časovo obmedzené čakanie",
+        "summary": "cnd_timedwait, absolútny termín TIME_UTC a rozlíšenie položky, konca a timeoutu.",
+        "content": {
+            "lead": "Čakanie nemusí pokračovať bez obmedzenia. Časový termín však pridáva ďalší možný výsledok, nie automatické zastavenie pracovníka. Aj pri jeho uplynutí musíš pod mutexom skontrolovať skutočný stav fronty.",
+            "blocks": [
+                {"type": "heading", "text": "Absolútny okamih, nie počet milisekúnd"},
+                {"type": "paragraph", "text": "cnd_timedwait prijíma ukazovateľ na struct timespec s absolútnym kalendárnym časom na báze TIME_UTC. tv_sec obsahuje celé sekundy a tv_nsec nanosekundovú časť od 0 do 999999999. Samotné {0, 500000000} neznamená čakanie pol sekundy odteraz: označuje okamih blízko epochy danej implementácie."},
+                {"type": "code", "language": "c", "title": "Overené načítanie hodín, ešte pred inicializáciou fronty", "source": "struct timespec deadline;\nif (timespec_get(&deadline, TIME_UTC) != TIME_UTC) {\n    fputs(\"Cannot read clock.\\n\", stderr);\n    return EXIT_FAILURE;\n}\n/* This is a deliberately immediate deadline, not a future duration. */"},
+                {"type": "paragraph", "text": "Pri úspechu timespec_get vracia požadovanú bázu, pri chybe nulu. Po chybe nepoužívaj neplatný obsah deadline. time_t nemá v C17 všeobecne predpísanú šírku ani konkrétnu epochu; pri tvorbe budúceho termínu musí pomocná funkcia kontrolovať rozsah sekúnd a normalizovať nanosekundy. Naslepo zvýšiť tv_sec alebo nechať tv_nsec dosiahnuť miliardu nestačí."},
+                {"type": "paragraph", "text": "Úplný príklad zámerne použije práve načítaný čas bez pripočítania intervalu. Na prázdnej otvorenej fronte tak ukáže vypršanie bez dlhého čakania a bez predpokladov o aritmetike time_t. queue_pop_until prijíma aj platný budúci termín od volajúceho; prevod ľubovoľného relatívneho trvania nie je súčasťou tejto ukážky."},
+                {"type": "heading", "text": "Ten istý termín pri každom prebudení"},
+                {"type": "code", "language": "c", "title": "Čakacia funkcia volaná s už zamknutým mutexom", "source": TIMED_QUEUE_WAIT},
+                {"type": "paragraph", "text": "Volajúci drží queue.mutex a počas celej operácie uchováva nemenný deadline. Každý cnd_timedwait dostane ten istý okamih. Ak by si po každom prebudení vytvoril nový termín typu teraz plus interval, postupné prebudenia by znovu predlžovali pôvodne určené čakanie."},
+                {"type": "list", "items": [
+                    "thrd_success znamená návrat z čakania s opäť získaným mutexom. Predikát musíš znova overiť, pretože prebudenie môže byť predčasné alebo položku mohol odobrať iný konzument.",
+                    "thrd_timedout nie je chyba synchronizácie. Aj po ňom rozhoduje stav pod znovu získaným mutexom: položka alebo uzavretie mohli pribudnúť počas návratu z čakania.",
+                    "Iný návrat sa nesmie zameniť za timeout či koniec dát. Tento samostatný program použije check_sync a fatálne skončí bez predstierania bezpečného bežného upratania.",
+                    "Na rozdiel od cnd_timedwait pracuje čakacia pomocná funkcia s vlastnými výsledkami QUEUE_ITEM, QUEUE_END a QUEUE_TIMEOUT. Ich číselné hodnoty nezamieňaj s thrd_success ani s booleovským výsledkom starého queue_pop."
+                ]},
+                {"type": "heading", "text": "Stav má v tomto kontrakte prednosť"},
+                {"type": "code", "language": "c", "title": "Timeout, neskoršia položka a uzavretá prázdna fronta", "source": TIMED_QUEUE_STATES},
+                {"type": "paragraph", "text": "Prvé čítanie vráti timeout a nechá výstup 77; frontu pritom neuzavrie, takže nasledujúci push uspeje. Po uzavretí sa uložená 42 dočíta aj s tým istým starým termínom. Až uzavretá prázdna fronta vráti QUEUE_END bez zmeny výstupu. Výpis používa porovnania s pomenovanými stavmi, nie odhad ich čísel."},
+                {"type": "paragraph", "text": "wait_for_item_until iba rozhoduje o dostupnosti pod držaným mutexom. queue_pop_until mutex zamkne, pri QUEUE_ITEM odoberie položku a upozorní producenta na miesto; vo všetkých bežných návratoch mutex odomkne práve raz. Pri konci a timeoute nemení výstupný int ani obsah fronty. Fronta, výstup aj deadline musia byť platné živé objekty; NULL toto rozhranie nepodporuje."},
+                {"type": "callout", "tone": "warning", "text": "QUEUE_ITEM neznamená, že položka vznikla pred termínom. Tento kontrakt uprednostní položku dostupnú pri kontrole pod mutexom, aj keď už čas uplynul. Pri požiadavke na presný čas prijatia musí návrh navyše evidovať a kontrolovať čas udalosti."},
+                {"type": "heading", "text": "Čo časový limit nezaručuje"},
+                {"type": "paragraph", "text": "Termín obmedzuje čakanie na podmienku, nie celú dobu volania. Úvodný mtx_lock aj opätovné získanie mutexu môžu trvať dlhšie a plánovač nemusí vlákno spustiť okamžite. TIME_UTC je kalendárny čas, nie záruka monotónneho merania trvania; zmena systémových hodín môže ovplyvniť čakanie. Údaj v nanosekundách tiež neznamená nanosekundovú presnosť hodín."},
+                {"type": "paragraph", "text": "clock() meria procesorový čas a nie je zdrojom termínu pre cnd_timedwait. Ak potrebuješ monotónny čas, musíš vybrať podporované rozhranie cieľovej platformy a použiť rovnaké hodiny pre termín aj čakaciu operáciu. Nespoj čas z jedných hodín s čakaním na iných."},
+                {"type": "heading", "text": "Testuj rozhodnutia, nie presné trvanie"},
+                {"type": "paragraph", "text": "Riadený test vráti najprv predčasné prebudenia a potom timeout, pričom kontroluje nezmenený termín. Ďalšie prípady vrátia timeout súčasne s novou položkou alebo uzavretím. Skutočné čakanie dopĺňa túto kontrolu, ale testy nemajú požadovať návrat na presnú milisekundu. Chybu načítania hodín a chybu synchronizácie skúšaj samostatne."},
+            ],
+        },
+    },
+    {
+        "key": "cancellation", "parent_key": "tooling", "kind": "lesson", "position": 151,
+        "title": "Kooperatívne zastavenie pracovníkov",
+        "summary": "Požiadavka na koniec, prebudenie, dočítanie prijatých položiek a potvrdený join.",
+        "content": {
+            "lead": "Zastavenie je dohoda medzi vláknami: niekto oznámi požiadavku, pracovník ju pozoruje na určenom mieste a dokončí svoju časť upratania. Až úspešný join potvrdí, že požičané objekty už nepoužíva.",
+            "blocks": [
+                {"type": "heading", "text": "Timeout nie je príkaz na ukončenie"},
+                {"type": "code", "language": "c", "title": "Pracovník po timeoute sám uzavrie frontu a vráti sa", "source": TIMEOUT_SHUTDOWN},
+                {"type": "paragraph", "text": "Main načíta okamžitý termín, vytvorí pracovníka a čaká na jeho dokončenie. Fronta je otvorená a prázdna, žiadny producent nevzniká. queue_pop_until vráti QUEUE_TIMEOUT; až nasledujúca vetva pracovníka explicitne zavolá queue_close. Po join main vypíše timeout=1 closed=1. Vynechanie tejto vetvy by nechalo frontu otvorenú, hoci samotné čakanie už skončilo."},
+                {"type": "paragraph", "text": "Fronta, TimedJob aj struct timespec zostávajú živé a na rovnakom mieste až do join. Pri neúspešnom vytvorení nevznikol používateľ fronty, takže main môže zrušiť inicializované zdroje. Pri neúspešnom join tento malý program fatálne skončí; nemá potvrdené dokončenie pracovníka a nesmie sa normálne vrátiť cez zánik požičaných objektov."},
+                {"type": "heading", "text": "Požiadavka, prebudenie, dokončenie"},
+                {"type": "code", "language": "c", "title": "Poradie ukončovania pri chybovom či používateľskom rozhodnutí", "source": "/* queue_close updates the predicate and broadcasts under its mutex. */\nqueue_close(&queue);\n/* The owner holds no queue mutex while joining every started worker. */\nfor (size_t i = 0; i < started; ++i) {\n    int result = EXIT_FAILURE;\n    join_or_exit(threads[i], &result);\n}\nqueue_destroy(&queue);"},
+                {"type": "paragraph", "text": "V tejto fronte už closed plní úlohu spoločnej požiadavky na zastavenie prijímania. Samostatný atomický stop príznak by sám nezobudil pracovníka zablokovaného v cnd_wait. Každá čakacia cesta musí mať ukončovací predikát aj príslušné prebudenie. Požiadavka môže prísť aj pred štartom: neskorší pracovník musí vidieť uchovaný stav, nie čakať na už minulý signál."},
+                {"type": "heading", "text": "Zastav prijímanie, dočítaj prijaté"},
+                {"type": "code", "language": "c", "title": "Konzument po tretej položke požiada producenta o koniec", "source": COOPERATIVE_SHUTDOWN},
+                {"type": "paragraph", "text": "Producent sa pokúša poslať 1 až 12 cez kapacitu tri. Konzument po treťom odobratí uzavrie frontu, ale pokračuje v dočítaní už prijatých hodnôt. Producent pri odmietnutí push nastaví vlastné stopped a vráti EXIT_SUCCESS: splnil dohodnutú požiadavku na zastavenie, nejde o chybu synchronizácie."},
+                {"type": "list", "items": [
+                    "accepted rastie iba po úspešnom queue_push. Odmietnutú položku producent nesmie započítať ako prijatú.",
+                    "consumed rastie iba po úspešnom queue_pop. Požiadavka na koniec nevymaže uložené položky a konzument nekončí pred dočítaním.",
+                    "Presný počet závisí od rozvrhu: pri STOP_AFTER == 3 sa prijmú tri až šesť položiek. Pred uzavretím môže producent doplniť voľné miesta, ale nie viac než kapacitu fronty.",
+                    "Main číta prijaté a spracované počty až po oboch join. Výpis stopped=1 drained=1 bounded=1 potvrdzuje zastavenie, rovnosť počtov a povolený rozsah, nie konkrétne poradie krokov.",
+                    "Počítadlá patria jednotlivým pracovníkom. Rozsah je tu obmedzený pevnými dvanástimi hodnotami; pri zmene na neobmedzenú službu treba znovu riešiť pretečenie a politiku prijímania."
+                ]},
+                {"type": "paragraph", "text": "Pri chybe druhého štartu main uzavrie frontu a až potom pripojí už spusteného konzumenta. Chyba vytvárania sa hlási ako EXIT_FAILURE, bežná kooperatívna požiadavka ako úspešné dokončenie pracovníka. Aj po chybe iného vlákna treba pripojiť všetky úspešne vytvorené vlákna."},
+                {"type": "callout", "tone": "warning", "text": "Kooperatívne zastavenie nie je okamžité prerušenie rozbehnutej práce. Slučka, výpočet alebo blokujúci vstup, ktorý nikdy nekontroluje požiadavku, sa týmto protokolom sám nezastaví. Nevyvodzuj z timeoutu či príznaku povolenie zničiť jeho pamäť a nepoužívaj detach ako náhradu potvrdeného dokončenia."},
+                {"type": "heading", "text": "Dočítanie a zahodenie sú odlišné politiky"},
+                {"type": "paragraph", "text": "Táto ukážka zachová prijaté položky a ich poradie. Okamžité zahodenie by potrebovalo iný kontrakt, napríklad samostatný stav zrušenia a pravidlo, kto uvoľní vlastníctvo nespracovaných objektov. Ani tak by nebolo dovolené zničiť mutex alebo dáta, ktoré ešte používa živé vlákno."},
+                {"type": "paragraph", "text": "Pri viacerých producentoch musí byť jasné, kto vlastní bežné uzavretie po poslednom dokončení a kto smie požiadať o predčasný koniec. Koniec jedného producenta nie je automaticky koncom celej skupiny. Táto verzia zostáva zámerne pri jednom producentovi a jednom konzumentovi."},
+                {"type": "heading", "text": "Over ukončenie bez časového odhadu"},
+                {"type": "paragraph", "text": "Testuj požiadavku pred štartom, počas čakania a po prijatí položiek. Vynúť odmietnutý push a over, že počítadlo nerastie. Pridaj chybu prvého aj druhého vytvorenia a kontrolu počtu join pred rušením zdrojov. Úspešný výpis z jedného rozvrhu ani UBSan nenahrádzajú kontrolu dátových pretekov a vlastníctva."},
+            ],
+        },
+    },
+    {
         "key": "reference",
         "parent_key": "",
         "kind": "chapter",
@@ -1389,6 +1461,8 @@ C_LEARNING_GOALS = {
     "stdlib-reference": ("Zachovať vlastníctvo a údaje pri chybe alokácie alebo prevodu.", "Navrhnúť konzistentný porovnávač bez pretekajúceho odčítania."),
     "stdio-reference": ("Odlíšiť chybu formátovania od skrátenia a skontrolovať miesto pre nulu.", "Správne vyhodnotiť počet prenesených prvkov a uzavrieť prúd aj pri chybe."),
     "numeric-reference": ("Zvoliť typ a formát podľa skutočných limitov implementácie.", "Overiť rozsah pred prevodom a dodržať doménu ctype.h bez straty EOF."),
+    "deadlines": ("Používať jeden absolútny termín TIME_UTC pri opakovanom čakaní.", "Po timeoute znovu rozhodnúť podľa stavu fronty pod mutexom a zachovať výstup pri konci."),
+    "cancellation": ("Oddeliť požiadavku na zastavenie od potvrdeného dokončenia pracovníka.", "Zastaviť prijímanie, dočítať prijaté položky a pripojiť všetky vytvorené vlákna pred uprataním."),
     "conditions": ("Kontrolovať predikát v slučke pod rovnakým mutexom aj po prebudení.", "Odlíšiť oznámenie zmeny od uchovaného stavu a dokončenia vlákna."),
     "queues": ("Zachovať invarianty kruhového bufferu a dočítať prijaté položky po uzavretí.", "Zobudiť obe skupiny čakajúcich a dokončiť pracovníkov aj pri čiastočnom štarte."),
     "threads": ("Udržať požičané dáta živé až do úspešného join a odlíšiť chybu čakania od chyby pracovníka.", "Chrániť súvisiace hodnoty jedným mutexom aj na chybových cestách."),
@@ -1399,6 +1473,8 @@ C_LEARNING_GOALS = {
 # Tento rámec je úmyselne oddelený od faktického výkladu. Každá lekcia sa tak
 # začína problémom, nadväznosťou a jadrom pojmu, potom smeruje k vlastnej práci.
 C_TEACHING_FRAMES = {
+    "deadlines": {"context": "Čakanie na ďalšiu položku má časový termín, ale pri prebudení sa môže zmeniť aj dostupnosť dát.", "priorKnowledge": ("Poznáš slučku nad predikátom, mutex a uzavretie fronty s dočítaním.",), "keyIdea": "Termín sa pri prebudení neposúva a výsledok operácie stále určuje stav pod opäť získaným mutexom.", "transfer": "Pri vlastnom čakaní pomenuj hodiny, prioritu dát a timeoutu a hranice garantovaného času návratu."},
+    "cancellation": {"context": "Potrebuješ zastaviť dvojicu pracovníkov bez straty prijatých položiek a bez predčasného zániku ich údajov.", "priorKnowledge": ("Rozlišuješ timeout, uzavretie fronty a úspešný join.",), "keyIdea": "Požiadavka musí zmeniť predikát a zobudiť čakajúcich, kým až join potvrdí bezpečný koniec používania dát.", "transfer": "Pre každé miesto čakania opíš reakciu na zastavenie a vlastníka dočítania aj konečného uvoľnenia zdrojov."},
     "conditions": {"context": "Pracovník potrebuje počkať na spoločný stav bez aktívneho opakovania neúspešných pokusov o čítanie.", "priorKnowledge": ("Poznáš mutex, životnosť požičaných objektov a úspešný join.",), "keyIdea": "Podmienková premenná oznamuje zmenu, ale o pokračovaní rozhoduje predikát znova overený pod mutexom.", "transfer": "Pri každom čakaní pomenuj predikát, jeho mutex a vlákno zodpovedné za zmenu aj prebudenie."},
     "queues": {"context": "Potrebuješ prenášať položky medzi pracovníkmi bez neobmedzeného rastu pamäte a bez zaseknutia pri ukončovaní.", "priorKnowledge": ("Vieš použiť cnd_wait v slučke a odlišuješ signal od broadcast.",), "keyIdea": "Kapacita a uzavretie patria do spoločného stavu, ktorý musí ukončiť oba druhy čakania pred join.", "transfer": "Pri vlastnej fronte napíš pravidlo prijatia, dočítania, uzavretia aj upratania po čiastočne úspešnom štarte."},
     "threads": {"context": "Potrebuješ odovzdať výpočet inému vláknu bez straty životnosti vstupov a bez súčasného neplatného prístupu k výsledku.", "priorKnowledge": ("Poznáš callback s kontextom a životnosť lokálnych objektov.", "Vieš kontrolovať návratové stavy a hranice aritmetiky."), "keyIdea": "Vlastníctvo dát, dokončenie pracovníka a synchronizácia spoločného stavu sú odlišné zodpovednosti, ktoré treba riešiť spolu.", "transfer": "Pri vlastnej úlohe označ posledné použitie každého požičaného objektu a pravidlo ochrany všetkých súvisiacich polí."},
@@ -1455,6 +1531,8 @@ C_EXERCISE_TOPICS = {
     "atomics": "atomics",
     "conditions": "conditions",
     "queues": "queues",
+    "deadlines": "deadlines",
+    "cancellation": "cancellation",
 }
 
 
@@ -1498,9 +1576,29 @@ C_CHECKPOINT_IDS = {
     "atomics": "c-release-acquire-publication",
     "conditions": "c-condition-predicate",
     "queues": "c-queue-close-drain",
+    "deadlines": "c-timeout-state-priority",
+    "cancellation": "c-cooperative-stop-join",
 }
 
 C_EXAMPLES = [
+    {
+        "key": "timed-queue-states", "page_key": "deadlines", "position": 10,
+        "title": "Položka, koniec alebo timeout",
+        "description": "Jeden okamžitý termín, nezmenený výstup pri odmietnutí a dočítanie prijatej položky.",
+        "source": TIMED_QUEUE_STATES, "stdin": "",
+    },
+    {
+        "key": "timeout-shutdown", "page_key": "cancellation", "position": 10,
+        "title": "Rozhodnutie pracovníka po timeoute",
+        "description": "Timeout iba vráti riadenie; pracovník potom sám uzavrie frontu a main ho pripojí.",
+        "source": TIMEOUT_SHUTDOWN, "stdin": "",
+    },
+    {
+        "key": "cooperative-shutdown", "page_key": "cancellation", "position": 20,
+        "title": "Kooperatívny koniec s dočítaním",
+        "description": "Zastavenie prijímania po treťom odbere, dočítanie fronty a kontrola počtov až po join.",
+        "source": COOPERATIVE_SHUTDOWN, "stdin": "",
+    },
     {
         "key": "condition-gate", "page_key": "conditions", "position": 10,
         "title": "Jednorazová brána s čakaním",

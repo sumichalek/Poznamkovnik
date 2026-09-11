@@ -226,6 +226,7 @@ class TutorialLearningTestCase(unittest.TestCase):
             "callbacks", "portability",
             "threads", "atomics",
             "conditions", "queues",
+            "deadlines", "cancellation",
         }]
         saved = []
         for seed in seeds:
@@ -242,6 +243,7 @@ class TutorialLearningTestCase(unittest.TestCase):
                 "callbacks", "portability",
                 "threads", "atomics",
                 "conditions", "queues",
+                "deadlines", "cancellation",
             } else "a"
             answer = self.database.answer_tutorial_checkpoint(self.user["id"], page["id"], {"optionId": correct})
             self.assertTrue(answer["isCorrect"])

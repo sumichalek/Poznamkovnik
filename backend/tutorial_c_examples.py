@@ -1738,7 +1738,7 @@ static void queue_close(Queue *queue)
 }
 """
 
-QUEUE_OPERATIONS = r"""
+QUEUE_PUSH = r"""
 /* Non-NULL, initialized, live queue. Returns 0 only when closed. */
 static int queue_push(Queue *queue, int value)
 {
@@ -1757,7 +1757,9 @@ static int queue_push(Queue *queue, int value)
     check_sync(mtx_unlock(&queue->mutex), "Cannot unlock queue.\n");
     return 1;
 }
+"""
 
+QUEUE_POP = r"""
 /* Separate writable result. Closed and empty returns 0 without changing it. */
 static int queue_pop(Queue *queue, int *result)
 {
@@ -1778,6 +1780,7 @@ static int queue_pop(Queue *queue, int *result)
 }
 """
 
+QUEUE_OPERATIONS = QUEUE_PUSH + QUEUE_POP
 BOUNDED_QUEUE = QUEUE_SUPPORT + QUEUE_CLOSE + QUEUE_OPERATIONS
 
 QUEUE_DRAIN_MAIN = r"""
@@ -1867,3 +1870,184 @@ int main(void)
 """
 
 PRODUCER_CONSUMER = THREAD_JOIN + BOUNDED_QUEUE + QUEUE_WORKERS
+
+TIMED_QUEUE_TYPES = r"""
+#include <time.h>
+typedef enum { QUEUE_ITEM, QUEUE_END, QUEUE_TIMEOUT } QueueRead;
+"""
+
+TIMED_QUEUE_WAIT = r"""
+/* Caller owns queue->mutex. The same valid TIME_UTC deadline stays alive. */
+static QueueRead wait_for_item_until(Queue *queue, const struct timespec *deadline)
+{
+    while (queue->count == 0 && !queue->closed) {
+        int status = cnd_timedwait(&queue->not_empty, &queue->mutex, deadline);
+        if (status == thrd_timedout) {
+            /* State may have changed while the wait reacquired the mutex. */
+            if (queue->count == 0 && !queue->closed) { return QUEUE_TIMEOUT; }
+        } else {
+            check_sync(status, "Cannot timed-wait for item.\n");
+        }
+    }
+    return queue->count != 0 ? QUEUE_ITEM : QUEUE_END;
+}
+"""
+
+TIMED_QUEUE_POP = r"""
+/* Live queue, valid deadline and separate writable result; neither may be NULL. */
+static QueueRead queue_pop_until(Queue *queue, int *result, const struct timespec *deadline)
+{
+    check_sync(mtx_lock(&queue->mutex), "Cannot lock queue.\n");
+    QueueRead status = wait_for_item_until(queue, deadline);
+    if (status == QUEUE_ITEM) {
+        *result = queue->items[queue->head];
+        queue->head = (queue->head + 1) % QUEUE_CAPACITY;
+        --queue->count;
+        check_sync(cnd_signal(&queue->not_full), "Cannot signal space.\n");
+    }
+    check_sync(mtx_unlock(&queue->mutex), "Cannot unlock queue.\n");
+    return status;
+}
+"""
+
+TIMED_QUEUE = QUEUE_SUPPORT + QUEUE_CLOSE + TIMED_QUEUE_TYPES + TIMED_QUEUE_WAIT + TIMED_QUEUE_POP
+
+TIMED_QUEUE_MAIN = r"""
+int main(void)
+{
+    struct timespec deadline;
+    if (timespec_get(&deadline, TIME_UTC) != TIME_UTC) {
+        fputs("Cannot read clock.\n", stderr);
+        return EXIT_FAILURE;
+    }
+    /* Deliberately immediate expiry: no unchecked arithmetic on time_t. */
+    Queue queue;
+    if (!queue_init(&queue)) { return EXIT_FAILURE; }
+    int value = 77;
+    QueueRead empty = queue_pop_until(&queue, &value, &deadline);
+    int unchanged = value == 77;
+    int accepted = queue_push(&queue, 42);
+    queue_close(&queue);
+    QueueRead item = queue_pop_until(&queue, &value, &deadline);
+    int received = value;
+    value = 77;
+    QueueRead end = queue_pop_until(&queue, &value, &deadline);
+    queue_destroy(&queue);
+    if (printf("timeout=%d unchanged=%d accepted=%d\nitem=%d value=%d\nend=%d unchanged=%d\n",
+               empty == QUEUE_TIMEOUT, unchanged, accepted, item == QUEUE_ITEM, received,
+               end == QUEUE_END, value == 77) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+TIMED_QUEUE_STATES = TIMED_QUEUE + QUEUE_PUSH + TIMED_QUEUE_MAIN
+
+TIMEOUT_WORKER = r"""
+typedef struct { Queue *queue; const struct timespec *deadline; QueueRead status; } TimedJob;
+static int timed_worker(void *context)
+{
+    TimedJob *job = context;
+    int value = 77;
+    job->status = queue_pop_until(job->queue, &value, job->deadline);
+    if (job->status == QUEUE_TIMEOUT) {
+        /* This worker chooses to stop; cnd_timedwait did not stop it. */
+        queue_close(job->queue);
+    }
+    return EXIT_SUCCESS;
+}
+
+int main(void)
+{
+    struct timespec deadline;
+    if (timespec_get(&deadline, TIME_UTC) != TIME_UTC) {
+        fputs("Cannot read clock.\n", stderr);
+        return EXIT_FAILURE;
+    }
+    Queue queue;
+    if (!queue_init(&queue)) { return EXIT_FAILURE; }
+    TimedJob job = {&queue, &deadline, QUEUE_ITEM};
+    thrd_t thread;
+    if (thrd_create(&thread, timed_worker, &job) != thrd_success) {
+        queue_destroy(&queue);
+        return EXIT_FAILURE;
+    }
+    int result = EXIT_FAILURE;
+    join_or_exit(thread, &result);
+    int closed = queue.closed;
+    queue_destroy(&queue);
+    if (result != EXIT_SUCCESS) { return EXIT_FAILURE; }
+    if (printf("timeout=%d closed=%d\n", job.status == QUEUE_TIMEOUT, closed) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+TIMEOUT_SHUTDOWN = THREAD_JOIN + TIMED_QUEUE + TIMEOUT_WORKER
+
+COOPERATIVE_JOBS = r"""
+enum { STOP_AFTER = 3 };
+typedef struct { Queue *queue; unsigned int accepted; bool stopped; } ProducerJob;
+typedef struct { Queue *queue; unsigned int consumed; } DrainJob;
+"""
+
+COOPERATIVE_PRODUCER = r"""
+static int produce_until_closed(void *context)
+{
+    ProducerJob *job = context;
+    for (int value = 1; value <= 12; ++value) {
+        if (!queue_push(job->queue, value)) {
+            job->stopped = true;
+            return EXIT_SUCCESS;
+        }
+        ++job->accepted;
+    }
+    queue_close(job->queue);
+    return EXIT_SUCCESS;
+}
+"""
+
+COOPERATIVE_MAIN = r"""
+static int drain_and_stop(void *context)
+{
+    DrainJob *job = context;
+    int value;
+    while (queue_pop(job->queue, &value)) {
+        ++job->consumed;
+        if (job->consumed == STOP_AFTER) { queue_close(job->queue); }
+    }
+    return EXIT_SUCCESS;
+}
+
+int main(void)
+{
+    Queue queue;
+    if (!queue_init(&queue)) { return EXIT_FAILURE; }
+    ProducerJob producer = {&queue, 0, false};
+    DrainJob consumer = {&queue, 0};
+    thrd_t threads[2];
+    size_t started = 0;
+    int result = EXIT_SUCCESS;
+    if (thrd_create(&threads[0], drain_and_stop, &consumer) == thrd_success) {
+        ++started;
+        if (thrd_create(&threads[1], produce_until_closed, &producer) == thrd_success) {
+            ++started;
+        } else { result = EXIT_FAILURE; }
+    } else { result = EXIT_FAILURE; }
+    if (result != EXIT_SUCCESS) {
+        fputs("Cannot create thread.\n", stderr);
+        queue_close(&queue);
+    }
+    for (size_t i = 0; i < started; ++i) {
+        int worker_result = EXIT_FAILURE;
+        join_or_exit(threads[i], &worker_result);
+        if (worker_result != EXIT_SUCCESS) { result = EXIT_FAILURE; }
+    }
+    queue_destroy(&queue);
+    if (result != EXIT_SUCCESS) { return result; }
+    int drained = producer.accepted == consumer.consumed;
+    int bounded = consumer.consumed >= STOP_AFTER && consumer.consumed <= STOP_AFTER + QUEUE_CAPACITY;
+    if (printf("stopped=%d drained=%d bounded=%d\n", producer.stopped, drained, bounded) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+COOPERATIVE_SHUTDOWN = THREAD_JOIN + BOUNDED_QUEUE + COOPERATIVE_JOBS + COOPERATIVE_PRODUCER + COOPERATIVE_MAIN

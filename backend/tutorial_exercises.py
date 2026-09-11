@@ -12,8 +12,10 @@ import re
 from typing import Any
 
 from backend.tutorial_c_examples import (
-    ATOMIC_SUPPORT, COUNT_POSITIVE, GATE_MAIN, GATE_SUPPORT, LINE_READER,
-    QUEUE_DRAIN_MAIN, QUEUE_OPERATIONS, QUEUE_SUPPORT, THREAD_JOIN, WALK_VALUES,
+    ATOMIC_SUPPORT, BOUNDED_QUEUE, COOPERATIVE_JOBS, COOPERATIVE_MAIN, COUNT_POSITIVE,
+    GATE_MAIN, GATE_SUPPORT, LINE_READER, QUEUE_CLOSE, QUEUE_DRAIN_MAIN,
+    QUEUE_OPERATIONS, QUEUE_PUSH, QUEUE_SUPPORT, THREAD_JOIN,
+    TIMED_QUEUE_MAIN, TIMED_QUEUE_POP, TIMED_QUEUE_TYPES, WALK_VALUES,
 )
 
 
@@ -610,6 +612,49 @@ int main(void)
             "hints": (
                 "Všetky tri kontroly patria pred prvý zápis. Nepretypúvaj hodnotu na úzky typ ešte pred kontrolou rozsahu.",
                 "Horný oktet získaš posunom o 8 doprava, dolný maskou 255. Indexy určuje formát, nie poradie bajtov procesora.",
+            ),
+        }
+    if topic == "deadlines":
+        value = _pick((42, -7, 0, 123), variant)
+        return {
+            "title": "Rozhodni aj po timeoute podľa stavu",
+            "description": "Doplň wait_for_item_until. Pri vstupe už držíš queue->mutex; pomocná funkcia ho sama nezamyká ani neodomyká. Kým je fronta otvorená a prázdna, volaj cnd_timedwait s nezmeneným deadline. Pri thrd_timedout vráť QUEUE_TIMEOUT iba ak stále nie je položka ani uzavretie; iné návraty kontroluj cez check_sync. Po slučke vráť QUEUE_ITEM pri count != 0, inak QUEUE_END. Dáta a deadline nemeň, ostatný kód ponechaj. Test výpisu sám neoveruje všetky prebudenia ani zachovanie pôvodného termínu.",
+            "starterSource": QUEUE_SUPPORT + QUEUE_CLOSE + TIMED_QUEUE_TYPES + r"""
+static QueueRead wait_for_item_until(Queue *queue, const struct timespec *deadline)
+{
+    /* Replace this placeholder with a loop and state checks after timeout. */
+    (void) queue;
+    (void) deadline;
+    return QUEUE_TIMEOUT;
+}
+""" + TIMED_QUEUE_POP + QUEUE_PUSH + TIMED_QUEUE_MAIN.replace("queue_push(&queue, 42)", f"queue_push(&queue, {value})"),
+            "stdin": "",
+            "expectedOutput": f"timeout=1 unchanged=1 accepted=1\nitem=1 value={value}\nend=1 unchanged=1\n",
+            "hints": (
+                "Timeout nie je thrd_error. Skontroluj count a closed ešte pod opäť získaným mutexom.",
+                "Nepoužívaj nové timespec_get v slučke. Dostupná položka má v tomto kontrakte prednosť aj na uzavretej fronte.",
+            ),
+        }
+    if topic == "cancellation":
+        stop_after = _pick((3, 1, 2, 4), variant)
+        return {
+            "title": "Producent rešpektuje odmietnutý push",
+            "description": f"Doplň produce_until_closed pre platný ProducerJob. Posielaj hodnoty 1 až 12. Po úspešnom push zvýš accepted; pri odmietnutí nastav stopped=true a vráť EXIT_SUCCESS bez započítania položky. Ak vložíš všetkých 12, uzavri frontu a tiež vráť úspech. Konzument tu po {stop_after}. položke uzatvára prijímanie a dočíta zvyšok. Ostatné funkcie nemeň. Štartovacia funkcia frontu bezpečne uzavrie a vráti chybu, aby konzument nezostal čakať. Výpis kontroluje rovnosť počtov a rozsah, nie konkrétny rozvrh.",
+            "starterSource": THREAD_JOIN + BOUNDED_QUEUE + COOPERATIVE_JOBS.replace("STOP_AFTER = 3", f"STOP_AFTER = {stop_after}") + r"""
+static int produce_until_closed(void *context)
+{
+    /* Replace this placeholder with counted pushes and cooperative stopping. */
+    (void) queue_push;
+    ProducerJob *job = context;
+    queue_close(job->queue);
+    return EXIT_FAILURE;
+}
+""" + COOPERATIVE_MAIN,
+            "stdin": "",
+            "expectedOutput": "stopped=1 drained=1 bounded=1\n",
+            "hints": (
+                "queue_push vracia 0 iba pri uzavretej fronte. Tento očakávaný koniec nie je zlyhanie pracovníka.",
+                "accepted zvyšuj až za vetvou odmietnutia. Nevypínaj konzumenta ani nemaž už prijaté položky.",
             ),
         }
     if topic == "conditions":

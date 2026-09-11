@@ -266,6 +266,30 @@ TUTORIAL_CHECKPOINTS: dict[str, tuple[dict[str, Any], ...]] = {
             "incorrectFeedback": "qsort potrebuje konzistentné záporné, nulové alebo kladné porovnanie. Konkrétna veľkosť výsledku nerozhoduje, ale znamienkové pretečenie by porušilo pravidlá C.",
         },
         {
+            "id": "c-timeout-state-priority",
+            "prompt": "cnd_timedwait vrátil thrd_timedout, ale po získaní mutexu už fronta obsahuje položku. Čo urobí ukázaný queue_pop_until?",
+            "options": (
+                ("a", "Bez kontroly vráti timeout a automaticky ukončí vlákno."),
+                ("b", "Vráti položku; kontrakt uprednostňuje dostupný stav, nie dôkaz času jej prijatia."),
+                ("c", "Znovu vypočíta celý interval od aktuálneho času a pokračuje v čakaní."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Stav sa overuje aj po timeoute pod mutexom. Ten istý termín zostáva nezmenený a čas prijatia položky sa tu neeviduje.",
+            "incorrectFeedback": "Návrat čakania nie je celý kontrakt fronty. Timeout nezastavuje vlákno a nové prebudenie nemá posúvať pôvodný termín.",
+        },
+        {
+            "id": "c-cooperative-stop-join",
+            "prompt": "Kedy môže vlastník zrušiť frontu po požiadavke na kooperatívne zastavenie?",
+            "options": (
+                ("a", "Hneď po nastavení closed, pretože požiadavka už znamená koniec všetkých pracovníkov."),
+                ("b", "Po prebudení čakajúcich a úspešnom join každého vytvoreného pracovníka, keď už frontu nikto nepoužíva."),
+                ("c", "Po uplynutí odhadovaného času, aj keď join ešte nepotvrdil dokončenie."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Požiadavka, reakcia pracovníka a potvrdené dokončenie sú tri odlišné kroky.",
+            "incorrectFeedback": "Pracovník môže ešte dočítať prijaté položky alebo dokončovať výpočet. Ani príznak, timeout či detach nepotvrdzujú zánik jeho prístupu k dátam.",
+        },
+        {
             "id": "c-condition-predicate",
             "prompt": "Čo urobí konzument po úspešnom návrate z cnd_wait?",
             "options": (
