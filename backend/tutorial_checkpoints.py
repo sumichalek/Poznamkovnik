@@ -241,6 +241,30 @@ TUTORIAL_CHECKPOINTS: dict[str, tuple[dict[str, Any], ...]] = {
             "correctFeedback": "Správne. Hraničné prípady odhaľujú omyly v podmienkach a indexovaní, ktoré bežné dáta ľahko zakryjú.",
             "incorrectFeedback": "Bezvarovný preklad nie je dôkaz správnosti. Pri poli sú prázdny vstup a hranice indexov zvlášť dôležité.",
         },
+        {
+            "id": "c-copy-terminator-capacity",
+            "prompt": "Text má tri bajty pred koncovou nulou. Čo musí platiť, aby sa celý zmestil do cieľa?",
+            "options": (
+                ("a", "Stačí kapacita 3; memmove pridá nulu za skopírované bajty."),
+                ("b", "Kapacita musí byť aspoň 4 a koncová nula musí byť súčasťou kopírovaného rozsahu."),
+                ("c", "Stačí použiť strncpy s limitom 3 a potom vždy volať strlen."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Tri bajty obsahu a jeden bajt ukončenia potrebujú štyri miesta. Bajtová funkcia nepridáva nič nad požadovaný počet.",
+            "incorrectFeedback": "Kapacita zahŕňa koncovú nulu. Ani memmove, ani obmedzenie strncpy samo osebe nevytvorí miesto alebo nezaručí ukončenie.",
+        },
+        {
+            "id": "c-comparator-overflow",
+            "prompt": "Prečo je pri porovnávaní dvoch int v qsort vhodnejšie (a > b) - (a < b) než a - b?",
+            "options": (
+                ("a", "Pretože qsort vyžaduje vždy presne hodnoty -1, 0 a 1."),
+                ("b", "Stačí znamienko výsledku a pri odčítaní samotných dát by mohol int pretiecť."),
+                ("c", "Pretože odčítanie nikdy nevráti nulu pri rovnakých číslach."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Rozdiel dvoch pravdivostných hodnôt je malý a reprezentovateľný; rozdiel krajných dát nemusí byť.",
+            "incorrectFeedback": "qsort potrebuje konzistentné záporné, nulové alebo kladné porovnanie. Konkrétna veľkosť výsledku nerozhoduje, ale znamienkové pretečenie by porušilo pravidlá C.",
+        },
     ),
 }
 

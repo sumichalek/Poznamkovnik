@@ -7,8 +7,10 @@ from backend.tutorial_c_examples import (
     BOUNDARY_TESTS,
     CHECKED_ADD,
     CHECKED_DIVISION,
+    COMPARE_STRINGS,
     CONDITIONAL_BUILD,
     CONST_VIEWS,
+    COPY_TEXT_DEMO,
     DEBUG_POSITIVE,
     FILE_ROUNDTRIP,
     FORMATTED_OUTPUT,
@@ -20,12 +22,15 @@ from backend.tutorial_c_examples import (
     MEASUREMENTS_MAIN,
     MEASUREMENTS_SINGLE_FILE,
     MEASUREMENTS_SOURCE,
+    MOVE_TEXT,
     PARSE_NUMBER,
     PARSE_POSITIVE,
     READ_LINES,
     RESTRICT_COPY,
     SAFE_INDEX,
     SINGLE_EVALUATION,
+    SORT_SEARCH,
+    STRTOL_REFERENCE,
 )
 
 C_LANGUAGE = {
@@ -930,12 +935,59 @@ C_PAGES = [
         "kind": "reference",
         "position": 170,
         "title": "stdlib.h: malloc, free a strtol",
-        "summary": "Alokácia pamäte, prevod textu na číslo a návratové kódy.",
+        "summary": "Vlastníctvo pamäte, kontrolované prevody, triedenie, hľadanie a návratové kódy.",
         "content": {
             "lead": "stdlib.h obsahuje základné nástroje pre dynamickú pamäť, konverzie a riadenie programu.",
-            "sections": [
-                {"title": "malloc a free", "paragraphs": ["void *malloc(size_t size); vráti adresu nového bloku alebo NULL. void free(void *ptr); uvoľní blok z malloc, calloc alebo realloc; free(NULL) je bezpečné."], "bullets": ["Alokuj počet * sizeof *ukazovatel.", "Nepriraď výsledok realloc priamo do jediného ukazovateľa.", "V C výsledok malloc nepretypovávaj."]},
-                {"title": "strtol", "paragraphs": ["long strtol(const char *text, char **end, int base); umožní zistiť, kde prevod skončil. Je vhodnejší než atoi, pretože poskytuje kontrolu chyby a zvyšku textu."]}
+            "blocks": [
+                {"type": "heading", "text": "Rýchly výber podľa úlohy"},
+                {"type": "list", "items": [
+                    "malloc(size): nový blok s neurčeným obsahom. Pred čítaním ho inicializuj; pri neúspechu dostaneš NULL.",
+                    "calloc(count, size): priestor pre count prvkov, každý so size bajtmi, nastavený na nulové bity. Nie je to všeobecná inicializácia ľubovoľného typu na jeho jazykovú nulovú hodnotu.",
+                    "realloc(pointer, size): zmena veľkosti vlastneného bloku; úspech nahrádza pôvodný objekt, neúspech pri nenulovej veľkosti ho zachová.",
+                    "free(pointer): koniec vlastníctva bloku. free(NULL) nič neurobí; ostatné argumenty musia spĺňať pravidlá alokátora.",
+                    "strtol(text, &end, base): prevod číselného začiatku textu na long s kontrolovateľným koncom a rozsahom.",
+                    "qsort(base, count, size, compare): triedenie poľa na mieste. bsearch(key, base, count, size, compare): hľadanie v poli usporiadanom podľa zodpovedajúceho porovnávača."
+                ]},
+                {"type": "heading", "text": "Alokácia: veľkosť, vlastník a obsah"},
+                {"type": "paragraph", "text": "Výraz count * sizeof *values vyjadruje požadovanú veľkosť poľa. Ešte pred násobením však pri nenulovej veľkosti prvku over count <= SIZE_MAX / sizeof *values. Inak by sa neznamienkový súčin mohol pretočiť na malý blok a následný zápis by prekročil jeho hranicu. Pre nulu si urč samostatnú vetvu: napríklad prázdne pole reprezentované NULL a počtom 0, bez volania alokátora."},
+                {"type": "paragraph", "text": "V C sa void * z malloc automaticky prevedie na ukazovateľ na objekt. Dôležitá je hlavička stdlib.h, správna veľkosť a kontrola NULL, nie pretypovanie výsledku. Alokovaná pamäť musí zostať dostupná cez vlastníka až po free. Funkcia free neprijíma adresu lokálneho poľa, reťazcového literálu ani ukazovateľ posunutý doprostred bloku."},
+                {"type": "paragraph", "text": "calloc nastavuje bity, nie konštruktory objektov. Pre pole int tým dostaneš nuly, no všetky nulové bity nemusia predstavovať nulový ukazovateľ alebo desatinnú nulu na každej implementácii. Podobne memset(pointer, 0, bytes) nie je všeobecnou náhradou správnej inicializácie ľubovoľnej štruktúry."},
+                {"type": "heading", "text": "realloc: dve rôzne návratové cesty"},
+                {"type": "code", "title": "Rovnaký overený rast poľa ako v kapitole o pamäti", "language": "c", "source": GROW_BUFFER},
+                {"type": "paragraph", "text": "Pomocná funkcia prijíma adresy premenných vlastníka; tie musia byť platné. Pôvodné *values je NULL alebo živý blok alokátora. Dočasný ukazovateľ temporary zachová pôvodný pri neúspechu. Až po úspechu sa zmení vlastník aj kapacita. Nové prvky po zväčšení nemajú určený obsah, preto ich main pred čítaním doplní. Počet platných prvkov a kapacita sú dve odlišné hodnoty."},
+                {"type": "list", "items": [
+                    "Pri úspechu sa zachová obsah po menšiu z pôvodnej a novej veľkosti. Pamäť sa mohla presunúť.",
+                    "Po úspešnom realloc už nepoužívaj pôvodné ukazovatele do bloku, ani ich neporovnávaj s novým vlastníkom. Potrebnú pozíciu si uchovaj ako index a nový pohľad vytvor z nového bloku.",
+                    "Pri neúspechu s nenulovou veľkosťou starý blok stále patrí volajúcemu a musí sa napokon uvoľniť. Priame priradenie values = realloc(values, bytes) by mohlo stratiť jeho jedinú adresu.",
+                    "Ukážka odmieta requested=0. realloc(pointer, 0) má v C17 osobitné implementačne závislé správanie; prázdny stav rieš výslovným free a nastavením vlastníka na NULL.",
+                    "Pri zmenšení musí volajúci upraviť aj počet platných prvkov, aby nepresahoval novú kapacitu. resize_values samo upravuje iba kapacitu."
+                ]},
+                {"type": "callout", "tone": "warning", "text": "Po free nastav vlastnícku premennú na NULL, ak bude ďalej existovať, ale nepovažuj to za opravu všetkých ostatných odkazov na blok. Zánik objektu sa týka aj jeho aliasov. Zlyhanie alokácie testuj riadeným testovacím alokátorom, nie pokusom vyčerpať pamäť počítača."},
+                {"type": "heading", "text": "strtol: výsledok ešte nie je overený vstup"},
+                {"type": "paragraph", "text": "strtol vracia long, nie int. Pri platnom základe preskočí počiatočné biele znaky, prijme voliteľné znamienko a číta číselný začiatok. Základ 10 znamená desiatkový zápis; základ 0 môže podľa predpony voliť osmičkový alebo šestnástkový zápis. Ak rozhranie žiada bežné desiatkové číslo, použi 10 a nenechávaj predponu meniť jeho význam."},
+                {"type": "list", "items": [
+                    "Pred volaním nastav errno=0 a hneď po ňom zachyť jeho hodnotu. Úspešné volanie nemusí vymazať predchádzajúcu chybu.",
+                    "end == text znamená, že nevzniklo číslo. Samotný návrat 0 to neprezradí, pretože nula môže byť platným údajom.",
+                    "Cez end skontroluj zvyšok textu. Pri „42x“ mohol byť úspešne prečítaný číselný začiatok, hoci celý vstup nie je platné číslo.",
+                    "ERANGE znamená problém rozsahu long; pred prevodom na int osobitne over INT_MIN a INT_MAX.",
+                    "Povoľovanie koncových medzier je pravidlo nášho parsera, nie automatická kontrola strtol. Pracuj iba s platným ukončeným reťazcom."
+                ]},
+                {"type": "code", "title": "Ten istý parser, šesť odlišných vstupov", "language": "c", "source": STRTOL_REFERENCE},
+                {"type": "paragraph", "text": "parse_int z kapitoly Chybové kódy a kontrakty sa používa bez novej implementácie. PARSE_OK=0 zapíše výsledok, PARSE_ARGUMENT=1 odmietne NULL, PARSE_INVALID=2 chybný zápis a PARSE_RANGE=3 rozsah. Pri chybe zostáva 77. Posledný vstup vznikne pridaním desiatkovej nuly za zápis INT_MAX: prekročí rozsah int danej implementácie bez toho, aby samotný program vykonal pretekajúce násobenie."},
+                {"type": "paragraph", "text": "atoi neposkytuje porovnateľné hlásenie rozsahu a konca prevodu. Rovnako zmena na strtoul sama osebe nezakáže záporný zápis: táto funkcia prijíma voliteľné znamienko. Pri nezáporných počtoch preto skontroluj pravidlá zápisu aj rozsah cieľového typu. Parser čísla stále nenahrádza predchádzajúce načítanie celého riadka."},
+                {"type": "heading", "text": "qsort a bsearch: porovnanie je súčasť kontraktu"},
+                {"type": "code", "title": "Triedenie a vyhľadávanie bez pretekajúceho odčítania", "language": "c", "source": SORT_SEARCH},
+                {"type": "paragraph", "text": "Porovnávač dostáva ukazovatele na dva prvky a vracia zápornú hodnotu, nulu alebo kladnú hodnotu. Výraz (a > b) - (a < b) vytvorí -1, 0 alebo 1 bez odčítania samotných dát. Oproti tomu return a - b môže pretiecť napríklad pri INT_MIN a kladnom b. Porovnávač musí dávať konzistentné poradie a počas porovnávania nemení prvky."},
+                {"type": "paragraph", "text": "qsort mení poradie v zapisovateľnom poli a nevracia stav úspechu. Názov nezaručuje konkrétny triediaci algoritmus ani zachovanie pôvodného poradia rovnocenných prvkov. bsearch potrebuje pole usporiadané podľa rovnakého poradia; pri nájdení vracia ukazovateľ do tohto poľa, inak NULL. Pri viacerých rovnocenných prvkoch nie je zaručený prvý z nich."},
+                {"type": "paragraph", "text": "V ukážke vznikne -3 0 2 7 7, kľúč 7 sa nájde a 9 chýba. Výsledok hľadania nevlastní nový blok a nevolá sa naň free. Zanikne s poľom; po ďalšom triedení či presune bloku už nemusí označovať pôvodne hľadaný údaj. Veľkosť prvku je sizeof values[0], počet je count, nie počet bajtov celého poľa."},
+                {"type": "heading", "text": "Ukončenie a ďalšie hranice"},
+                {"type": "list", "items": [
+                    "EXIT_SUCCESS alebo návrat 0 z main oznamuje úspech, EXIT_FAILURE neúspech. Konkrétna číselná hodnota EXIT_FAILURE nie je prenositeľnou konštantou 1.",
+                    "exit zabezpečuje normálne ukončenie vrátane registrovaných funkcií a spracovania otvorených prúdov; abort je abnormálne ukončenie a rovnaké upratanie nezaručuje.",
+                    "abs nie je kontrolovaný prevod na kladnú hodnotu. Ak absolútna hodnota nie je reprezentovateľná ako int, výsledok je nedefinovaný.",
+                    "rand je generátor pseudonáhodných čísel, nie zdroj kryptografických tajomstiev. Výraz rand() % n navyše vyžaduje nenulové n a môže vytvárať nerovnomerné rozdelenie."
+                ]},
+                {"type": "callout", "tone": "info", "text": "Pred použitím funkcie si povedz: kto vlastní objekt, koľko prvkov existuje, čo znamená návrat a čo zostane pri chybe? V cvičení doplníš porovnávač a preveríš aj krajné hodnoty int, aby správne poradie nestálo na náhodnom pretočení odčítania."}
             ]
         }
     },
@@ -945,13 +997,52 @@ C_PAGES = [
         "kind": "reference",
         "position": 165,
         "title": "string.h: dĺžka, porovnanie a kopírovanie",
-        "summary": "strlen, strcmp, strncmp, memcpy a bezpečné hranice polí.",
+        "summary": "Dĺžka a kapacita, úplná zhoda a prefix, kontrolované kopírovanie a prekrývanie oblastí.",
         "content": {
             "lead": "Funkcie z string.h pracujú s poľami. Časť z nich očakáva reťazec ukončený nulovým znakom, časť pracuje s ľubovoľnými bajtami a vždy potrebuje presnú dĺžku.",
-            "sections": [
-                {"title": "Reťazcové funkcie", "bullets": ["strlen(text) vráti počet znakov pred prvým nulovým znakom.", "strcmp(left, right) vráti zápornú, nulovú alebo kladnú hodnotu podľa lexikografického poradia.", "strncmp(left, right, count) porovná najviac count znakov."], "paragraphs": ["Na zistenie zhody kontroluj strcmp(left, right) == 0, nie konkrétnu zápornú alebo kladnú hodnotu."]},
-                {"title": "Kopírovanie bajtov", "paragraphs": ["memcpy(target, source, count) skopíruje presne count bajtov, ale oblasti sa nesmú prekrývať. Pri prekrývaní použi memmove. Ani jedna z funkcií nepridáva nulový znak."], "callout": "strcpy a strcat nepoznajú veľkosť cieľa. Prednostne navrhuj rozhrania, ktoré vždy prijímajú aj kapacitu výstupného poľa."},
-                {"title": "Bezpečné hranice", "paragraphs": ["Ak môže byť text dlhší než cieľové pole, najprv rozhodni, či ho chceš odmietnuť, skrátiť alebo dynamicky alokovať. Nech je toto pravidlo viditeľné v kontrakte funkcie."]}
+            "blocks": [
+                {"type": "heading", "text": "Reťazec a rozsah bajtov nie sú to isté"},
+                {"type": "list", "items": [
+                    "strlen, strcmp, strcpy a strcat pracujú s reťazcami ukončenými nulovým znakom. Nezistia, akú veľkosť objektu im volajúci skutočne odovzdal.",
+                    "memchr, memcmp, memcpy, memmove a memset pracujú s počtom bajtov. Vložená nula pre ne neznamená koniec dát.",
+                    "Kapacita je počet dostupných miest v objekte. Dĺžka textu je počet bajtov pred prvou nulou, bez samotnej nuly.",
+                    "Prázdny reťazec potrebuje jeden bajt s hodnotou 0. Nulová kapacita nie je miesto ani pre prázdny reťazec."
+                ]},
+                {"type": "paragraph", "text": "strlen vracia size_t. Nepočíta Unicode znaky, viditeľné písmená ani šírku na obrazovke: v UTF-8 môže jedno písmeno zaberať viac bajtov. sizeof poľa pozná jeho kapacitu v mieste, kde je objekt poľom; sizeof parametra char * alebo char text[] vo funkcii zistí veľkosť ukazovateľa, nie odovzdaného poľa. Kapacitu preto odovzdaj osobitne."},
+                {"type": "heading", "text": "strcmp a strncmp: zhoda alebo iba prefix"},
+                {"type": "code", "title": "Rovnaký začiatok ešte nie je rovnaký text", "language": "c", "source": COMPARE_STRINGS},
+                {"type": "paragraph", "text": "Pole text má kapacitu 8 a dĺžku 3. strcmp(text, \"C17\") vráti nulu, ale porovnanie celého textu s \"C17 notes\" je záporné. strncmp s limitom 3 vidí iba spoločný začiatok, preto hlási zhodu. Program normalizuje výsledok porovnania na -1, 0 alebo 1; samotné strcmp tieto konkrétne hodnoty nesľubuje."},
+                {"type": "paragraph", "text": "strcmp a strncmp porovnávajú podľa hodnôt unsigned char, nie podľa pravidiel slovenského abecedného radenia. Pre úplnú rovnosť platných reťazcov použi strcmp(...) == 0. Limit v strncmp neoveruje celkovú platnosť dlhšieho textu; obe oblasti musia byť čitateľné až po rozhodujúce porovnanie, skoršiu koncovú nulu alebo stanovený limit."},
+                {"type": "heading", "text": "Kopírovanie musí pomenovať chybovú cestu"},
+                {"type": "paragraph", "text": "strcpy kopíruje aj koncovú nulu, ale nepozná veľkosť cieľa. strcat navyše najprv hľadá koniec existujúceho cieľového reťazca. Obe potrebujú dostatočnú kapacitu a neprekrývajúce sa oblasti. Rozhodni sa vopred, či dlhý text odmietneš, skrátiš alebo preň vytvoríš väčší blok. Nasledujúce rozhranie odmieta a pri chybe necháva celý cieľ nezmenený."},
+                {"type": "code", "title": "Kontrola ukončenia a kapacity pred jediným zápisom", "language": "c", "source": COPY_TEXT_DEMO},
+                {"type": "paragraph", "text": "Kapacitu cieľa aj rozsah zdroja poskytuje volajúci. source_size musí opisovať skutočne čitateľnú oblasť; číslo samo z ľubovoľnej adresy platný objekt nevytvorí. memchr ohraničene vyhľadá nulový bajt. Až keď ho nájde, je bezpečné zavolať strlen. Sú to dva priechody, ale jasne oddeľujú overenie ukončenia od merania dĺžky."},
+                {"type": "paragraph", "text": "Porovnanie length >= capacity odmietne prípad, keď by chýbalo miesto pre koncovú nulu. Nepočíta length + 1 skôr, než je potrebné. Keďže sa nula našla vo vnútri source_size, následné length + 1 sa zmestí aj do size_t. Jediný zápis cez memmove nastane až po všetkých kontrolách a zahŕňa nulu. Preto môže rozhranie povoliť aj prekrývanie zdroja a cieľa."},
+                {"type": "list", "items": [
+                    "COPY_OK=0 znamená úplný skopírovaný reťazec. Kapacita 4 presne stačí na \"C17\" vrátane nuly.",
+                    "COPY_ARGUMENT=1 odmieta NULL namiesto zdroja alebo cieľa, aj pri nulovej kapacite. Nenulové adresy musia spĺňať kontrakt dostupných oblastí.",
+                    "COPY_UNTERMINATED=2 znamená, že v poskytnutom zdrojovom rozsahu nie je nula. Pole {'C', '1', '7'} nie je reťazec.",
+                    "COPY_SPACE=3 znamená, že platný reťazec nemá v cieli dosť miesta. Žiadna jeho skrátená časť sa nezapíše.",
+                    "Poradie chýb je zámerné: NULL, potom ukončenie zdroja, potom kapacita cieľa. Pri dvoch porušeniach rozhranie nevracia náhodne prvé podľa priebehu kopírovania."
+                ]},
+                {"type": "callout", "tone": "warning", "text": "strncpy nie je automaticky bezpečnejšie strcpy. Pri zdroji dlhom aspoň n nemusí zapísať koncovú nulu; pri kratšom doplní nuly až do n zapísaných bajtov. Aj tak potrebuje cieľ s miestom pre n bajtov a nepovoľuje prekrytie. strncat má zase limit počtu pridávaných znakov, nie celkovú kapacitu cieľa."},
+                {"type": "heading", "text": "memcpy verzus memmove: dva smery prekrytia"},
+                {"type": "code", "title": "Vloženie predpony a následné odstránenie", "language": "c", "source": MOVE_TEXT},
+                {"type": "paragraph", "text": "Prvý memmove posunie existujúci text doprava o dva bajty vrátane jeho nuly. memcpy potom doplní predponu z iného, neprekrývajúceho sa poľa. Druhý memmove odstráni predponu posunom doľava. Výstup je najprv > ABCDE a potom ABCDE. Obyčajný cyklus kopírujúci zľava doprava by pri prvom posune prepísal údaje, ktoré ešte len potrebuje čítať."},
+                {"type": "paragraph", "text": "memmove sa správa, akoby údaje najprv odložilo bokom; implementácia nemusí skutočne vytvárať pomocné pole. Nie je to kontrola kapacity. Obe oblasti musia pokrývať presne požadovaný počet bajtov. Nula sa tu prenesie vďaka +1, nie preto, že ju funkcia sama pridáva."},
+                {"type": "paragraph", "text": "Pri pridaní predpony sa priestor kontroluje odčítaním od známej kapacity, až po overení, že sa zmestí samotná predpona s nulou. Všeobecné length + prefix_length + 1 by pri neoverených veľkých hodnotách mohlo pretiecť. Na opačnom konci ukážky je existencia vloženej predpony známy predpoklad; pri cudzom vstupe by sa jej dĺžka a obsah museli najprv overiť."},
+                {"type": "heading", "text": "Hľadanie a porovnávanie bajtov"},
+                {"type": "list", "items": [
+                    "memchr(data, value, count) hľadá prvý zodpovedajúci bajt v rozsahu; výsledok je ukazovateľ dovnútra pôvodného objektu alebo NULL. Nevlastní nový blok.",
+                    "strchr(text, ch) hľadá v platnom reťazci; môže nájsť aj jeho koncovú nulu. strstr hľadá podreťazec. Návratový ukazovateľ stráca platnosť so zdrojovým objektom.",
+                    "memcmp(left, right, count) porovná presne dané rozsahy ako unsigned char a používa sa znamienko výsledku. Nepovažuj ho za všeobecné porovnanie hodnôt struct: výplňové bajty nemusia byť zhodné.",
+                    "memset(target, byte, count) opakuje jeden bajt. memset poľa int hodnotou 1 nevytvorí všeobecne pole celých čísel 1.",
+                    "Nulový počet bajtov všeobecne neoprávňuje poslať NULL do funkcií string.h. Ak tvoje vlastné rozhranie povoľuje prázdny rozsah s NULL, vybav ho bez takého volania."
+                ]},
+                {"type": "heading", "text": "Čo nie je súčasťou sľubu C17"},
+                {"type": "paragraph", "text": "strnlen, strdup či strlcpy môžu byť užitočné rozšírenia prostredia, ale nepatria medzi povinné funkcie ISO C17. Dostupnosť jednej z nich na počítači neznamená dostupnosť na mikrokontroléri. Ani voliteľné rozhrania s príponou _s nie sú univerzálne dostupné. V tejto referencii preto príklady stoja na základných funkciách C17 a vlastnom výslovnom kontrakte."},
+                {"type": "paragraph", "text": "strtok mení odovzdaný text a uchováva stav medzi volaniami. Neposielaj mu reťazcový literál a neber ho ako hotový parser CSV: opakované oddeľovače nepredstavujú zachované prázdne polia a úvodzovky nemajú zvláštny význam. Výber knižničnej funkcie musí zodpovedať formátu, nie iba podobnému názvu operácie."},
+                {"type": "callout", "tone": "info", "text": "Pri kopírovaní over prázdny text, presné zaplnenie, chýbajúcu nulu, nulovú kapacitu a oba smery prekrytia. Pri odmietnutí skontroluj aj pôvodný obsah cieľa, nielen návratový kód. Také testy odlišujú skutočný kontrakt od programu, ktorý iba nespadol."}
             ]
         }
     },
@@ -999,6 +1090,8 @@ C_LEARNING_GOALS = {
     "safety": ("Odlíšiť logickú chybu od nedefinovaného správania.", "Overiť hranicu poľa a rozsah operácie pred jej vykonaním.", "Rozpoznať porušenú životnosť objektu a nezoradené vedľajšie účinky."),
     "errors": ("Navrhnúť návratový stav, ktorý nezamieňa chybu s hodnotou.", "Uvoľniť zdroje aj na chybovej ceste."),
     "testing": ("Zostaviť pomenované hraničné a regresné testy s návratovým stavom.", "Vysvetliť rozdiel medzi assert, kontrolou vstupu a NDEBUG.", "Overiť testy známou chybou a nájsť prvú odchýlku krokovaním v GDB."),
+    "string-reference": ("Vybrať reťazcovú alebo bajtovú funkciu podľa dostupného rozsahu.", "Overiť ukončenie, kapacitu a prekrytie pred kopírovaním."),
+    "stdlib-reference": ("Zachovať vlastníctvo a údaje pri chybe alokácie alebo prevodu.", "Navrhnúť konzistentný porovnávač bez pretekajúceho odčítania."),
 }
 
 
@@ -1047,6 +1140,8 @@ C_EXERCISE_TOPICS = {
     "errors": "errors",
     "safety": "safety",
     "testing": "testing",
+    "string-reference": "string-reference",
+    "stdlib-reference": "stdlib-reference",
 }
 
 
@@ -1080,6 +1175,8 @@ C_CHECKPOINT_IDS = {
     "errors": "c-error-status",
     "safety": "c-check-before-access",
     "testing": "c-boundary-test",
+    "string-reference": "c-copy-terminator-capacity",
+    "stdlib-reference": "c-comparator-overflow",
 }
 
 C_EXAMPLES = [
@@ -1355,18 +1452,42 @@ C_EXAMPLES = [
         "page_key": "stdlib-reference",
         "position": 10,
         "title": "Prevod textu na číslo",
-        "description": "strtol dovolí overiť koniec prevodu aj chybu rozsahu.",
-        "source": "#include <errno.h>\n#include <stdio.h>\n#include <stdlib.h>\n\nint main(void)\n{\n    const char text[] = \"42\";\n    char *end = NULL;\n    long value = 0L;\n\n    errno = 0;\n    value = strtol(text, &end, 10);\n    if (end == text || *end != '\\0' || errno == ERANGE) {\n        fputs(\"Neplatné celé číslo.\\n\", stderr);\n        return 1;\n    }\n\n    printf(\"Hodnota: %ld\\n\", value);\n    return 0;\n}\n",
+        "description": "Šesť prípadov pre spoločný parse_int: číslo, nula, medzery, chybný zvyšok, prázdny text a prekročenie int.",
+        "source": STRTOL_REFERENCE,
         "stdin": "",
+    },
+    {
+        "key": "stdlib-resize-reference", "page_key": "stdlib-reference", "position": 20,
+        "title": "Vlastník po zmene kapacity",
+        "description": "Overený príklad z kapitoly Dynamická pamäť: dočasný ukazovateľ a zachovanie starého bloku pri neúspechu.",
+        "source": GROW_BUFFER, "stdin": "",
+    },
+    {
+        "key": "sort-search-reference", "page_key": "stdlib-reference", "position": 30,
+        "title": "Usporiadaj a vyhľadaj",
+        "description": "qsort a bsearch používajú rovnaké poradie; porovnávač neodčítava hodnoty, ktoré môžu pretiecť.",
+        "source": SORT_SEARCH, "stdin": "",
     },
     {
         "key": "compare-strings",
         "page_key": "string-reference",
         "position": 10,
         "title": "Porovnanie textov",
-        "description": "strcmp vracia nulu vtedy, keď sú oba reťazce rovnaké.",
-        "source": "#include <stdio.h>\n#include <string.h>\n\nint main(void)\n{\n    const char expected[] = \"C17\";\n    const char entered[] = \"C17\";\n\n    if (strcmp(expected, entered) == 0) {\n        puts(\"Texty sú rovnaké.\");\n    } else {\n        puts(\"Texty sa líšia.\");\n    }\n\n    return 0;\n}\n",
+        "description": "Dĺžka verzus kapacita a zhoda prefixu verzus úplná zhoda; výsledok strcmp sa vyhodnocuje podľa znamienka.",
+        "source": COMPARE_STRINGS,
         "stdin": "",
+    },
+    {
+        "key": "copy-text-reference", "page_key": "string-reference", "position": 20,
+        "title": "Celý text alebo nezmenený cieľ",
+        "description": "Ohraničené overenie koncovej nuly, kontrola kapacity a jediný zápis cez memmove až pri úspechu.",
+        "source": COPY_TEXT_DEMO, "stdin": "",
+    },
+    {
+        "key": "move-text-reference", "page_key": "string-reference", "position": 30,
+        "title": "Prekrývajúce sa oblasti v oboch smeroch",
+        "description": "Pridanie a odstránenie predpony s memmove; koncová nula je súčasťou kopírovaného rozsahu.",
+        "source": MOVE_TEXT, "stdin": "",
     },
     {
         "key": "classify-character",

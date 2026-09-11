@@ -732,3 +732,165 @@ int main(void)
     return actual == 1 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 """
+
+COMPARE_STRINGS = r"""#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main(void)
+{
+    const char text[8] = "C17";
+    const char longer[] = "C17 notes";
+    int order = strcmp(text, longer);
+    if (printf("length=%zu capacity=%zu\n", strlen(text), sizeof text) < 0 ||
+        printf("equal=%d prefix=%d full=%d order=%d\n",
+               strcmp(text, "C17") == 0,
+               strncmp(text, longer, strlen(text)) == 0,
+               strcmp(text, longer) == 0, (order > 0) - (order < 0)) < 0 ||
+        fflush(stdout) == EOF) {
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+"""
+
+COPY_TEXT = r"""#include <string.h>
+
+typedef enum { COPY_OK, COPY_ARGUMENT, COPY_UNTERMINATED, COPY_SPACE } CopyStatus;
+
+/* Non-NULL pointers cover capacity writable and source_size readable bytes.
+   Failure leaves the destination unchanged. Overlap is allowed. */
+static CopyStatus copy_text(char *target, size_t capacity,
+                            const char *source, size_t source_size)
+{
+    if (target == NULL || source == NULL) {
+        return COPY_ARGUMENT;
+    }
+    if (source_size == 0 || memchr(source, '\0', source_size) == NULL) {
+        return COPY_UNTERMINATED;
+    }
+    size_t length = strlen(source);
+    if (length >= capacity) {
+        return COPY_SPACE;
+    }
+    memmove(target, source, length + 1);
+    return COPY_OK;
+}
+"""
+
+COPY_TEXT_DEMO = COPY_TEXT + r"""
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    char target[5] = "old";
+    const char raw[] = {'C', '1', '7'};
+    CopyStatus status = copy_text(target, sizeof target, "C17", sizeof "C17");
+    if (printf("short: status=%d text=%s\n", (int) status, target) < 0) {
+        return EXIT_FAILURE;
+    }
+    status = copy_text(target, sizeof target, "longer", sizeof "longer");
+    if (printf("long: status=%d text=%s\n", (int) status, target) < 0) {
+        return EXIT_FAILURE;
+    }
+    status = copy_text(target, sizeof target, raw, sizeof raw);
+    if (printf("raw: status=%d text=%s\n", (int) status, target) < 0 ||
+        fflush(stdout) == EOF) {
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+"""
+
+MOVE_TEXT = r"""#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main(void)
+{
+    char text[12] = "ABCDE";
+    const char prefix[] = "> ";
+    const size_t prefix_length = sizeof prefix - 1;
+    size_t length = strlen(text);
+    if (sizeof prefix > sizeof text || length > sizeof text - sizeof prefix) {
+        fputs("Not enough space.\n", stderr);
+        return EXIT_FAILURE;
+    }
+    memmove(text + prefix_length, text, length + 1);
+    memcpy(text, prefix, prefix_length);
+    if (puts(text) == EOF) {
+        return EXIT_FAILURE;
+    }
+    memmove(text, text + prefix_length, strlen(text + prefix_length) + 1);
+    if (puts(text) == EOF || fflush(stdout) == EOF) {
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+"""
+
+STRTOL_REFERENCE = INT_PARSER + r"""
+#include <stdio.h>
+
+int main(void)
+{
+    char beyond[sizeof(int) * CHAR_BIT + 3];
+    int written = snprintf(beyond, sizeof beyond, "%d0", INT_MAX);
+    if (written < 0 || (size_t) written >= sizeof beyond) {
+        return EXIT_FAILURE;
+    }
+    const struct { const char *name; const char *text; } cases[] = {
+        {"integer", "42"}, {"zero", "0"}, {"spaces", "  -7  "},
+        {"suffix", "42x"}, {"empty", ""}, {"range", beyond}
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        int value = 77;
+        ParseStatus status = parse_int(cases[i].text, &value);
+        if (printf("%s: status=%d value=%d\n", cases[i].name, (int) status, value) < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+COMPARE_INTS = r"""#include <stdlib.h>
+
+/* Arguments point to readable ints. Only the sign of the result matters. */
+static int compare_ints(const void *left, const void *right)
+{
+    int a = *(const int *) left;
+    int b = *(const int *) right;
+    return (a > b) - (a < b);
+}
+"""
+
+SORT_SEARCH = COMPARE_INTS + r"""
+#include <stdio.h>
+
+int main(void)
+{
+    int values[] = {7, -3, 7, 0, 2};
+    const size_t count = sizeof values / sizeof values[0];
+    qsort(values, count, sizeof values[0], compare_ints);
+    for (size_t i = 0; i < count; ++i) {
+        if (printf("%d%s", values[i], i + 1 == count ? "\n" : " ") < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    int key = 7;
+    const int *found = bsearch(&key, values, count, sizeof values[0], compare_ints);
+    if (found == NULL) {
+        fputs("Expected key not found.\n", stderr);
+        return EXIT_FAILURE;
+    }
+    key = 9;
+    const int *missing = bsearch(&key, values, count, sizeof values[0], compare_ints);
+    if (printf("found=%d missing=%d\n", *found, missing == NULL) < 0 ||
+        fflush(stdout) == EOF) {
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+"""

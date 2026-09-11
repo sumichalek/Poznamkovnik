@@ -315,6 +315,113 @@ int main(void)
                 "Rovnosť indexu s count už nie je platná. Jediný zápis *result patrí až za všetky kontroly.",
             ),
         }
+    if topic == "string-reference":
+        capacity = _pick((4, 1, 5, 3), variant)
+        return {
+            "title": "Kopírovanie s dohodnutou chybovou cestou",
+            "description": "Doplň copy_text podľa kontraktu referencie. Najprv odmietni NULL ako COPY_ARGUMENT, potom zdroj bez nuly v source_size bajtoch ako COPY_UNTERMINATED a nedostatočnú kapacitu ako COPY_SPACE. Iba pri úspechu prenes celý text vrátane nuly pomocou memmove a vráť COPY_OK. Pri chybe nemeň cieľ. Číselné stavy sú 0, 1, 2, 3 v poradí enumu. Kapacity a zdrojové rozsahy poskytuje pripravený main; ten nemeň.",
+            "starterSource": r"""#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef enum { COPY_OK, COPY_ARGUMENT, COPY_UNTERMINATED, COPY_SPACE } CopyStatus;
+
+static CopyStatus copy_text(char *target, size_t capacity,
+                            const char *source, size_t source_size)
+{
+    /* Replace this placeholder with validation followed by one memmove. */
+    (void) target;
+    (void) capacity;
+    (void) source;
+    (void) source_size;
+    return COPY_OK;
+}
+
+int main(void)
+{
+    const struct { char source[8]; size_t size; } cases[] = {
+        {"", 1}, {"C17", 4}, {"ABCDE", 6}, {"ABC", 3}, {"C17", 0}
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        char target[8] = "keep";
+        CopyStatus status = copy_text(target, """ + str(capacity) + r""", cases[i].source, cases[i].size);
+        if (printf("%d:%s\n", (int) status, target) < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    char target[8] = "keep";
+    CopyStatus missing_target = copy_text(NULL, 0, "", 1);
+    CopyStatus missing_source = copy_text(target, sizeof target, NULL, 0);
+    if (printf("null-target=%d null-source=%d text=%s\n",
+               (int) missing_target, (int) missing_source, target) < 0 || fflush(stdout) == EOF) {
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+""",
+            "stdin": "",
+            "expectedOutput": "".join(
+                f"0:{text}\n" if len(text) < capacity else "3:keep\n"
+                for text in ("", "C17", "ABCDE")
+            ) + "2:keep\n2:keep\nnull-target=1 null-source=1 text=keep\n",
+            "hints": (
+                "strlen volaj až po úspešnom ohraničenom hľadaní nuly cez memchr. Limit 3 v prípade ABC nezahŕňa nulu uloženú za týmto rozsahom.",
+                "Podmienka length >= capacity necháva miesto pre koncovú nulu. Pri chybe sa vráť bez zápisu do target.",
+            ),
+        }
+    if topic == "stdlib-reference":
+        values = _pick(((3, 1, 3, -2), (0, 5, -1, 5), (9, 7, -2, 0), (2, 2, 1, 3)), variant)
+        return {
+            "title": "Porovnávač bez pretečenia",
+            "description": "Doplň compare_ints pre vzostupné poradie: záporný výsledok pre a < b, nula pre rovnosť a kladný pre a > b. Neodčítavaj priamo a - b. Pripravený main triedi, hľadá a kontroluje znamienka pri INT_MIN a INT_MAX. Tabuľku, qsort, bsearch ani výpisy nemeň. Porovnávač nemusí vracať presne -1 alebo 1; výpis normalizuje iba znamienko.",
+            "starterSource": r"""#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+static int compare_ints(const void *left, const void *right)
+{
+    int a = *(const int *) left;
+    int b = *(const int *) right;
+    /* Replace this placeholder with a comparison that cannot overflow. */
+    (void) a;
+    (void) b;
+    return 0;
+}
+
+int main(void)
+{
+    int values[] = {""" + ", ".join(map(str, values)) + r"""};
+    const size_t count = sizeof values / sizeof values[0];
+    qsort(values, count, sizeof values[0], compare_ints);
+    for (size_t i = 0; i < count; ++i) {
+        if (printf("%d%s", values[i], i + 1 == count ? "\n" : " ") < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    int key = """ + str(values[0]) + r""";
+    int found = bsearch(&key, values, count, sizeof values[0], compare_ints) != NULL;
+    key = 99;
+    int missing = bsearch(&key, values, count, sizeof values[0], compare_ints) == NULL;
+    int low = INT_MIN;
+    int high = INT_MAX;
+    int forward = compare_ints(&low, &high);
+    int reverse = compare_ints(&high, &low);
+    int equal = compare_ints(&high, &high);
+    if (printf("found=%d missing=%d edge=%d reverse=%d equal=%d\n", found, missing,
+               (forward > 0) - (forward < 0), (reverse > 0) - (reverse < 0),
+               (equal > 0) - (equal < 0)) < 0 || fflush(stdout) == EOF) {
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+""",
+            "stdin": "",
+            "expectedOutput": " ".join(map(str, sorted(values))) + "\nfound=1 missing=1 edge=-1 reverse=1 equal=0\n",
+            "hints": (
+                "Porovnania a > b a a < b dávajú hodnoty 0 alebo 1. Ich rozdiel sa do int vždy zmestí.",
+                "Rovnocenné prvky musia dostať nulu. Pretypovanie už pretečeného a - b neopraví porušenie rozsahu.",
+            ),
+        }
     if topic == "testing":
         samples = _pick((
             ((), (0,), (-2, 0, 3), (4,)),

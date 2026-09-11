@@ -63,3 +63,19 @@ Učebnice ostatných jazykov a mikrokontrolérov zostávajú rozpracovanou dlhod
 Technické pravidlá boli skontrolované proti primárnym zdrojom: význam celočíselného delenia a assert v [návrhu WG14 N1570, oddiely 6.5.5 a 7.2](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf), režim pokračovania sanitizéra v [dokumentácii GCC](https://gcc.gnu.org/onlinedocs/gcc/Instrumentation-Options.html), virtuálny adresný priestor v [obmedzeniach ASan](https://clang.llvm.org/docs/AddressSanitizer.html#limitations) a krokovanie v [dokumentácii GDB](https://sourceware.org/gdb/current/onlinedocs/gdb.html/Continuing-and-Stepping.html). N1570 je návrh C11, nie vydanie normy C17; programy sa overovali v režime C17.
 
 Ďalší obsahový blok: rozšíriť rýchlu referenciu C pre string.h a stdlib.h o kontrakty, kapacity, prekrývanie oblastí a testované príklady. Učebnice ako celok zostávajú rozpracované. Mobilná konzola a reálne firmvérové toolchainy naďalej patria do samostatných úloh.
+
+## Referencia C: string.h A stdlib.h 2026-09-11
+
+- Rozšírené dve referenčné stránky pri zachovaní kľúčov, názvov a identifikátorov. string.h pokrýva bajty verzus reťazce, kapacitu, prefixy, ohraničené hľadanie nuly, chyby strncpy/strncat a oba smery prekrytia. stdlib.h dopĺňa vlastníctvo, realloc, kontrolované prevody, bezpečný porovnávač, qsort a bsearch.
+- Šesť spustiteľných ukážok zhodných s výkladom: dve existujúce rozšírené, tri nové programy a opätovné použitie overeného rastu poľa z kapitoly o pamäti. Prevod využíva spoločný INT_PARSER, nie novú implementáciu.
+- Dve nové cvičenia so štyrmi variantmi: kopírovanie so zachovaním cieľa pri chybe a porovnávač odolný proti pretečeniu. Dve kontrolné otázky k miestu pre koncovú nulu a znamienku výsledku porovnávača.
+- Pridaných 10 Python testov. Kopírovanie preverené na 880 kombináciách dĺžky, zdrojového rozsahu a kapacity, na 294 kombináciách pozícií a dĺžok vrátane prekrytia aj kopírovania na rovnaké miesto, pri NULL, vloženej nule a neukončenom poli. Overené presné zaplnenie, odmietnutie krátkeho cieľa a nedotknutý obsah pri chybe.
+- Triedenie a hľadanie overené s INT_MIN/INT_MAX, duplicitami, prázdnym rozsahom, nesprávnymi porovnávačmi a správnym porovnávačom vracajúcim aj iné hodnoty než -1/1. Zámerne chybný rozdiel a - b sa overuje diagnostikou UBSan, nie náhodným číselným výsledkom.
+- npm run check: 160 Python testov úspešných, 4 preskočené pre nedostupné nástroje; 10 frontendových testov úspešných. Zostavené assets bez zmeny; existujúce SQLite ResourceWarning zostávajú mimo tohto obsahového bloku.
+- Po reštarte všetkých šesť príkladov overených cez API aj tlačidlo Spustiť, osem riešení cvičení cez API. Obe referencie skontrolované v Chromium pri 1440/875/390 bez pretekania čítačky či dokumentu a bez JavaScript výnimiek. Opakovaná kontrola úspešne ukončila aj dočasný prehliadač.
+- Test opakovaného nasadenia rozšírený o obe referencie: zachované poznámky, koncepty, postup, odpovede a čas vytvorenia. Aj kontrolný odtlačok používateľského stavu v živej databáze zostal nezmenený.
+- Dočasné snímky a report: /tmp/poznamkovnik-tutorial-reference-verification/. Diagnostika počas písania, CSS, sandbox a firmvérové nástroje sa nemenili.
+
+Kontrakty pamäte, vyhľadávania a kopírovania boli skontrolované proti [WG14 N1570, oddielom 7.22.3, 7.22.5 a 7.24](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf). Tento dokument je návrh C11; príklady sa prekladali v režime C17 a nepoužívajú osobitné správanie realloc s nulovou veľkosťou.
+
+Ďalej: doplniť zostávajúcu referenciu C pre stdio.h a čísla/znaky o snprintf, kontrolu formátov, limity typov a správne argumenty ctype.h. Dlhodobá úloha učebníc zostáva rozpracovaná; mobilnú konzolu a skutočné firmvérové toolchainy riešiť oddelene.
