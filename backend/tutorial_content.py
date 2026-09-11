@@ -1,6 +1,9 @@
 """Vstavaný, používateľovi nezávislý obsah prvej učebnice C."""
 
 from backend.tutorial_c_examples import (
+    ARGUMENT_CASES,
+    ARGUMENT_LIST,
+    ARGUMENT_NUMBER,
     ASSERT_MAXIMUM,
     ATOMIC_COUNTER,
     ATOMIC_WORKERS,
@@ -619,6 +622,49 @@ C_PAGES = [
                 {"type": "paragraph", "text": "Ani dve atomické premenné netvoria automaticky jednu transakciu. Ak musia zostať súčasne konzistentné viaceré hodnoty, napríklad počet a obsah frontu, často je vhodnejší mutex a jasné pravidlo jeho držania. Podrobné algoritmy vlákien a pamäťový model patria do samostatného pokračovania; tu je cieľom správne vybrať nástroj a nepliesť si jeho záruky."},
                 {"type": "heading", "text": "Vyber nástroj podľa problému"},
                 {"type": "paragraph", "text": "Čítanie poľa bez jeho úpravy vyjadri cez const. Prístup k hardvéru rieš podľa dokumentácie vrátane volatile. Neprekrývajúce sa oblasti môže rozhranie sľúbiť cez restrict. Spoločné počítadlo potrebuje atomickú operáciu; viac navzájom závislých zmien môže potrebovať zámok. Pri každej voľbe vysvetli aj to, čo vybraný nástroj nezaručuje."},
+            ],
+        },
+    },
+    {
+        "key": "arguments", "parent_key": "tooling", "kind": "lesson", "position": 132,
+        "title": "Argumenty programu argc a argv",
+        "summary": "Vstup pri spustení, hranice poľa argumentov a kontrolovaný prevod jedného čísla.",
+        "content": {
+            "lead": "Program môže dostať údaje už pri spustení. Funkcia main ich prijme ako počet a pole ukazovateľov na reťazce. Najprv overí počet, potom význam textu; až úspešný prevod vytvorí číslo, s ktorým možno pracovať.",
+            "blocks": [
+                {"type": "heading", "text": "Argument nie je štandardný vstup"},
+                {"type": "paragraph", "text": "Program number má dostať jedno celé číslo. V príkaze ./number -7 je -7 argumentom pri spustení. Text napísaný neskôr do stdin je samostatný prúd dát; nevytvorí ďalší prvok argv. Tieto dva vstupy môže program používať súčasne, ale musí ich výslovne spracovať."},
+                {"type": "heading", "text": "Počet, ukazovatele a koniec poľa"},
+                {"type": "list", "items": [
+                    "int main(int argc, char *argv[]) je štandardný tvar main v hostiteľskom prostredí. V tomto parametri je char *argv[] ekvivalentné char **argv: ukazovateľu na prvý ukazovateľ na znak.",
+                    "argc je nezáporný. Ak je väčší než nula, argv[0] predstavuje meno programu a započítava sa do argc. Meno nemusí byť overená cesta; ak nie je dostupné, reťazec môže byť prázdny. C pripúšťa aj argc == 0.",
+                    "Používateľské argumenty sú argv[1] až argv[argc - 1], ak argc > 1. K argv[1] pristupuj až po kontrole počtu; pri prechode používaj i < argc.",
+                    "argv[argc] je nulový ukazovateľ NULL. Prázdny argument je niečo iné: platný ukazovateľ na reťazec, ktorého prvý znak je '\\0'. Prázdny reťazec sa do počtu argumentov započítava."
+                ]},
+                {"type": "code", "language": "c", "title": "Výpis skutočných argumentov procesu", "source": ARGUMENT_LIST},
+                {"type": "paragraph", "text": "Hranaté zátvorky vo výpise zviditeľnia prázdny argument a medzery vnútri jedného argumentu. Formát printf je pevný; argument sa odovzdáva cez %s, nie ako formátovací reťazec. Funkcia si pole a reťazce iba požičiava, nemení ich a nevolá na ne free. Pri argc == 0 nevypočíta záporný počet používateľských argumentov ani nečíta argv[0]."},
+                {"type": "code", "language": "text", "title": "Príklad spustenia v POSIX shelli a jeho výstup", "source": "./arguments \"dve slova\" \"\"\narguments=2\nargv[1]=[dve slova]\nargv[2]=[]\n"},
+                {"type": "paragraph", "text": "Zoskupenie slov pomocou úvodzoviek robí spúšťacie prostredie, nie jazyk C. Program v tomto príklade dostane dve hodnoty bez obalových úvodzoviek. Presné pravidlá zápisu príkazu sa môžu medzi prostrediami líšiť."},
+                {"type": "heading", "text": "Spustenie v učebnici a vo Vývoji"},
+                {"type": "paragraph", "text": "Malá skúšobňa učebnice odovzdáva iba stdin, nie používateľské argumenty. Prvý príklad v nej preto vypíše arguments=0. Cez otvorenie príkladu vo Vývoji môžeš v poli Parametre spúšťania zadať \"dve slova\" \"\". Do tohto poľa patrí len časť za menom programu, nie ./arguments."},
+                {"type": "paragraph", "text": "Vývoj rozdelí pole parametrov pomocou shlex.split s pravidlami typu POSIX a program spustí zo zoznamu argumentov bez shellu. Úvodzovky zoskupia medzery a \"\" vytvorí prázdny argument. Zápisy $HOME, *.c, $(...) alebo bodkočiarka sa tu nevykonávajú ani nerozvíjajú ako shellové príkazy; sú to dáta. Neuzavreté úvodzovky odmietne už spúšťač."},
+                {"type": "heading", "text": "Jeden argument, tri druhy chyby"},
+                {"type": "paragraph", "text": "Druhý program vyžaduje presne jeden používateľský argument, teda argc == 2. Pomocná funkcia najprv odmietne nesprávny počet a NULL vektor. Až potom číta argv[1] a zavolá rovnaký parse_int ako v lekcii vstupu a výstupu. Platnosť skutočného poľa a ukončených reťazcov je zmluvou volajúceho; samotný ukazovateľ neobsahuje údaj o veľkosti pridelenej pamäte."},
+                {"type": "code", "language": "c", "title": "Presne jedno desiatkové celé číslo", "source": ARGUMENT_NUMBER},
+                {"type": "list", "items": [
+                    "PARSE_ARGUMENT znamená nesprávny počet alebo neplatný ukazovateľ rozhrania. Main vypíše Usage: number INTEGER na stderr a skončí neúspechom.",
+                    "PARSE_INVALID znamená neplatný text: prázdny argument, samotné znamienko alebo zvyšok ako 42x. Parser musí spotrebovať celý text okrem povolených okolitých bielych znakov.",
+                    "PARSE_RANGE znamená syntakticky platné číslo mimo rozsahu int. Kontroluje sa ERANGE po strtol aj INT_MIN a INT_MAX pred zúžením long na int.",
+                    "PARSE_OK zapíše výsledok. Znamienko a okolité biele znaky sú povolené; základ je vždy 10. Nula je platná, 0x10 nie. Pri každej chybe zostane pôvodná hodnota výstupného objektu nezmenená."
+                ]},
+                {"type": "callout", "tone": "warning", "text": "Bez argumentov tento druhý príklad zámerne skončí chybou s návodom Usage: number INTEGER. To je očakávaný výsledok v malej skúšobni, nie chyba prekladu. Vo Vývoji vyskúšaj -7, potom \"\", 42x a 42 9. Hodnota zadaná do stdin chýbajúci argument nenahradí."},
+                {"type": "paragraph", "text": "Záporné číslo -7 je v tomto rozhraní obyčajná hodnota. C samo nepriraďuje význam prepínačom --help alebo --; musel by ho určiť program. Tu také prepínače nemáme. Úspešné main vracia EXIT_SUCCESS, chyby EXIT_FAILURE a diagnostiku oddeľuje od výsledku na stdout."},
+                {"type": "heading", "text": "Hraničné prípady bez zmeny spúšťača"},
+                {"type": "paragraph", "text": "Tretí program vytvorí vlastné malé polia reťazcov a zavolá pomocnú funkciu s výslovne uvedeným počtom. Sú to testovacie vstupy, nie skutočné argumenty procesu a nie prevod stdin na argv. Vďaka tomu možno rovnakú logiku otestovať priamo v malej skúšobni."},
+                {"type": "code", "language": "c", "title": "Platný, chýbajúci, nadbytočný a chybný argument", "source": ARGUMENT_CASES},
+                {"type": "paragraph", "text": "Každý riadok má mať matched=1. Pri platnom vstupe je value=42; pri ostatných zostane kontrolná hodnota 77. Chýbajúci argument má count == 1, prázdny argument count == 2: prvý je chyba počtu, druhý chyba textu. Program vracia neúspech aj pri nezhode, takže správnosť nie je závislá od zapnutých assert."},
+                {"type": "heading", "text": "Prenes kontrakt do vlastného programu"},
+                {"type": "paragraph", "text": "Najprv spíš počet argumentov, povolený tvar každej hodnoty a výstup pri chybe. Kontrolu počtu umiestni pred indexovanie, kontrolu rozsahu pred zúženie typu a zápis výsledku až za všetky kontroly. Over chýbajúci aj nadbytočný vstup, prázdny reťazec, nulu, záporné číslo, hranice typu a nespotrebovaný koniec. Samostatný test pomocnej funkcie doplň aspoň jedným spustením cez skutočné argumenty procesu."}
             ],
         },
     },
@@ -1521,6 +1567,7 @@ C_PAGES = [
 # samotného výkladu, aby sa dali rovnako použiť v čítačke, pri opakovaní aj v
 # budúcom generátore cvičení.
 C_LEARNING_GOALS = {
+    "arguments": ("Rozlíšiť argumenty pri spustení od stdin a skontrolovať hranice argv.", "Prijať presne jedno celé číslo a rozlíšiť chybu počtu, textu a rozsahu bez zmeny výsledku."),
     "program": ("Vysvetliť úlohu main a hlavičkového súboru.", "Preložiť malý program s užitočnými varovaniami."),
     "values": ("Vybrať primeraný základný typ.", "Rozpoznať konverziu, pri ktorej sa môže stratiť hodnota."),
     "operators": ("Čítať podmienku bez spoliehania sa na náhodnú prioritu operátorov.", "Použiť zátvorky na vyjadrenie zámeru."),
@@ -1560,6 +1607,7 @@ C_LEARNING_GOALS = {
 # Tento rámec je úmyselne oddelený od faktického výkladu. Každá lekcia sa tak
 # začína problémom, nadväznosťou a jadrom pojmu, potom smeruje k vlastnej práci.
 C_TEACHING_FRAMES = {
+    "arguments": {"context": "Malý nástroj potrebuje dostať číslo už pri spustení a zrozumiteľne odmietnuť chybný vstup.", "priorKnowledge": ("Poznáš polia, ukazovatele, ukončené reťazce a návratové hodnoty funkcií.", "Poznáš kontrolovaný prevod cez strtol a rozdiel medzi stdout a stderr."), "keyIdea": "Počet over pred prístupom do argv, text a rozsah pred zápisom výsledku.", "transfer": "Navrhni kontrakt argumentov vlastného nástroja a over ho cez pomocnú funkciu aj skutočné spustenie."},
     "recursion": {"context": "Úlohu možno vyriešiť menším prípadom tej istej úlohy, ale treba vedieť, kde volania skončia a ako sa vrátia výsledky.", "priorKnowledge": ("Poznáš parametre, lokálne premenné, návratové hodnoty a podmienky.", "Vieš čítať cyklus a zvyšok po celočíselnom delení."), "keyIdea": "Každé volanie má vlastný lokálny stav a každý rekurzívny krok sa musí priblížiť k základnému prípadu.", "transfer": "Pri vlastnej rekurzii zapíš základný prípad, zmenšujúcu sa mieru a hraničné vstupy skôr než telo funkcie."},
     "producer-groups": {"context": "Viaceré zdroje posielajú dávky do spoločnej malej fronty a potrebujú oznámiť koniec až po dokončení celej skupiny.", "priorKnowledge": ("Poznáš ohraničenú frontu, uzavretie, kooperatívny koniec a úspešný join.",), "keyIdea": "Konzument musí zostať aktívny počas pripájania producentov a bežný koniec celej skupiny vlastní koordinátor.", "transfer": "Pri vlastnej skupine zakresli závislosti čakania, spočítaj úspešné štarty a označ miesto uzavretia na každej chybovej ceste."},
     "deadlines": {"context": "Čakanie na ďalšiu položku má časový termín, ale pri prebudení sa môže zmeniť aj dostupnosť dát.", "priorKnowledge": ("Poznáš slučku nad predikátom, mutex a uzavretie fronty s dočítaním.",), "keyIdea": "Termín sa pri prebudení neposúva a výsledok operácie stále určuje stav pod opäť získaným mutexom.", "transfer": "Pri vlastnom čakaní pomenuj hodiny, prioritu dát a timeoutu a hranice garantovaného času návratu."},
@@ -1592,6 +1640,7 @@ C_TEACHING_FRAMES = {
 }
 
 C_EXERCISE_TOPICS = {
+    "arguments": "arguments",
     "program": "program",
     "values": "values",
     "operators": "operators",
@@ -1638,6 +1687,7 @@ C_VISUALIZATION_IDS = {
 
 
 C_CHECKPOINT_IDS = {
+    "arguments": "c-argument-count-before-access",
     "program": "c-main-entry",
     "values": "c-value-conversion",
     "operators": "c-short-circuit",
@@ -1674,6 +1724,24 @@ C_CHECKPOINT_IDS = {
 }
 
 C_EXAMPLES = [
+    {
+        "key": "argument-list", "page_key": "arguments", "position": 10,
+        "title": "Výpis argumentov pri spustení",
+        "description": "V učebnici vypíše arguments=0. Vlastné argumenty zadaj po otvorení vo Vývoji.",
+        "source": ARGUMENT_LIST, "stdin": "",
+    },
+    {
+        "key": "argument-number", "page_key": "arguments", "position": 20,
+        "title": "Jedno číslo: bez argumentu očakávaná chyba",
+        "description": "Bez argumentov vypíše Usage a skončí neúspechom. Vo Vývoji prijme napríklad -7.",
+        "source": ARGUMENT_NUMBER, "stdin": "",
+    },
+    {
+        "key": "argument-cases", "page_key": "arguments", "position": 30,
+        "title": "Päť testovacích vstupov pre parser",
+        "description": "Vlastné polia argumentov overia počet, text a zachovanie hodnoty pri odmietnutí.",
+        "source": ARGUMENT_CASES, "stdin": "",
+    },
     {
         "key": "recursion-trace", "page_key": "recursion", "position": 10,
         "title": "Volania dovnútra, výsledky späť",

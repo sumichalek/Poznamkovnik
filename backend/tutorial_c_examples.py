@@ -203,6 +203,108 @@ static ParseStatus parse_int(const char text[], int *result)
 }
 """
 
+ARGUMENT_LIST_FUNCTION = r"""#include <stdio.h>
+#include <stdlib.h>
+
+/* argv is borrowed: a valid argument vector with terminated strings. */
+static int show_arguments(int argc, char *argv[])
+{
+    if (argc < 0 || argv == NULL) { return EXIT_FAILURE; }
+    if (printf("arguments=%d\n", argc > 0 ? argc - 1 : 0) < 0) {
+        return EXIT_FAILURE;
+    }
+    for (int i = 1; i < argc; ++i) {
+        if (printf("argv[%d]=[%s]\n", i, argv[i]) < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    return EXIT_SUCCESS;
+}
+"""
+
+ARGUMENT_LIST = ARGUMENT_LIST_FUNCTION + r"""
+int main(int argc, char *argv[])
+{
+    int result = show_arguments(argc, argv);
+    if (fflush(stdout) == EOF) { result = EXIT_FAILURE; }
+    return result;
+}
+"""
+
+ARGUMENT_PARSER = r"""
+/* Borrow a valid argv vector, as supplied to main or by a test fixture.
+   Reject wrong counts before indexing; leave *result unchanged on failure. */
+static ParseStatus parse_number_argument(int argc, char *argv[], int *result)
+{
+    if (argc != 2 || argv == NULL) { return PARSE_ARGUMENT; }
+    return parse_int(argv[1], result);
+}
+"""
+
+ARGUMENT_NUMBER_MAIN = r"""
+#include <stdio.h>
+
+int main(int argc, char *argv[])
+{
+    int number = 77;
+    ParseStatus status = parse_number_argument(argc, argv, &number);
+    if (status != PARSE_OK) {
+        const char *message = status == PARSE_ARGUMENT ? "Usage: number INTEGER\n" :
+            status == PARSE_RANGE ? "Integer out of range.\n" :
+            "Expected one complete decimal integer.\n";
+        fputs(message, stderr);
+        return EXIT_FAILURE;
+    }
+    if (printf("value=%d\n", number) < 0 || fflush(stdout) == EOF) {
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+"""
+
+ARGUMENT_NUMBER = INT_PARSER + ARGUMENT_PARSER + ARGUMENT_NUMBER_MAIN
+
+ARGUMENT_CASES_MAIN = r"""
+#include <stdio.h>
+
+int main(void)
+{
+    /* Explicit fixtures for the helper, not the process's actual arguments. */
+    char *valid[] = {"number", "42", NULL};
+    char *missing[] = {"number", NULL};
+    char *extra[] = {"number", "42", "9", NULL};
+    char *invalid[] = {"number", "42x", NULL};
+    char *empty[] = {"number", "", NULL};
+    const struct {
+        const char *label;
+        int count;
+        char **arguments;
+        ParseStatus status;
+        int value;
+    } cases[] = {
+        {"valid", 2, valid, PARSE_OK, 42},
+        {"missing", 1, missing, PARSE_ARGUMENT, 77},
+        {"extra", 3, extra, PARSE_ARGUMENT, 77},
+        {"invalid", 2, invalid, PARSE_INVALID, 77},
+        {"empty", 2, empty, PARSE_INVALID, 77}
+    };
+    int result = EXIT_SUCCESS;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        int value = 77;
+        ParseStatus status = parse_number_argument(cases[i].count, cases[i].arguments, &value);
+        int matched = status == cases[i].status && value == cases[i].value;
+        if (!matched) { result = EXIT_FAILURE; }
+        if (printf("%s: matched=%d value=%d\n", cases[i].label, matched, value) < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    if (fflush(stdout) == EOF) { result = EXIT_FAILURE; }
+    return result;
+}
+"""
+
+ARGUMENT_CASES = INT_PARSER + ARGUMENT_PARSER + ARGUMENT_CASES_MAIN
+
 PARSE_NUMBER = LINE_READER + "\n" + INT_PARSER + r"""
 #include <stdio.h>
 

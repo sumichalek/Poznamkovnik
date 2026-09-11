@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 from backend.tutorial_c_examples import (
+    ARGUMENT_CASES_MAIN, INT_PARSER,
     ATOMIC_SUPPORT, BOUNDED_QUEUE, COOPERATIVE_JOBS, COOPERATIVE_MAIN, COUNT_POSITIVE,
     GATE_MAIN, GATE_SUPPORT, LINE_READER, QUEUE_CLOSE, QUEUE_DRAIN_MAIN,
     GROUP_MAIN, GROUP_RUN, GROUP_TYPES, GROUP_WORKERS,
@@ -36,6 +37,29 @@ def _pick(values: tuple[Any, ...], variant: int) -> Any:
 
 def _c_practice(topic: str, variant: int) -> dict[str, Any] | None:
     variant = _variant(variant)
+    if topic == "arguments":
+        number = _pick((42, -7, 0, 105), variant)
+        main = ARGUMENT_CASES_MAIN.replace('"42"', f'"{number}"').replace("PARSE_OK, 42", f"PARSE_OK, {number}")
+        return {
+            "title": "Počet skontroluj pred indexovaním",
+            "description": "Doplň iba parse_number_argument: vyžaduj argc == 2 a nenulový argv, inak vráť PARSE_ARGUMENT. Potom odovzdaj argv[1] a result existujúcemu parse_int. Ten rozlíši chybu textu a rozsahu a pri chybe nemení výsledok. Main obsahuje vlastné testovacie polia, nie skutočné argumenty procesu; main ani parse_int nemeň. Hodnotenie porovnáva výsledok testov, nenahrádza kontrolu zdroja.",
+            "starterSource": INT_PARSER + r"""
+static ParseStatus parse_number_argument(int argc, char *argv[], int *result)
+{
+    /* Check the count before indexing; delegate conversion to parse_int. */
+    (void) argc;
+    (void) argv;
+    return parse_int(NULL, result);
+}
+""" + main,
+            "stdin": "",
+            "expectedOutput": f"valid: matched=1 value={number}\nmissing: matched=1 value=77\nextra: matched=1 value=77\ninvalid: matched=1 value=77\nempty: matched=1 value=77\n",
+            "hints": (
+                "Jeden používateľský argument znamená argc == 2, pretože sa počíta aj meno programu.",
+                "Najprv odmietni argc != 2 alebo argv == NULL. Až za touto vetvou smie nasledovať parse_int(argv[1], result).",
+                "Prázdny argument má správny počet, ale neplatný text. Pri odmietnutí nesmieš prepísať kontrolnú hodnotu 77.",
+            ),
+        }
     if topic == "program":
         name = _pick(("Ada", "Marek", "Zora", "Ján"), variant)
         return {

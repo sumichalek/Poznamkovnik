@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend.api import AppContext, AppHandler
+from backend.tutorial_c_examples import ARGUMENT_LIST, ARGUMENT_NUMBER
 
 
 class QuietHandler(AppHandler):
@@ -136,3 +137,49 @@ class DevelopmentRuntimeApiTestCase(unittest.TestCase):
         self.assertTrue(result["compiled"], result)
         self.assertEqual(result["run"]["exitCode"], 0)
         self.assertEqual(result["run"]["stdout"], "runtime ok\n")
+
+    def test_argument_list_keeps_quotes_empty_arguments_and_shell_metacharacters_as_data(self) -> None:
+        runtime = self.context.development_runner.status()["languages"]["c"]
+        if not runtime["available"]:
+            self.skipTest(runtime["message"])
+        project = self.context.database.create_development_project(
+            self.user["id"], {"id": "argument-list", "title": "Argument list", "language": "c", "entryContent": ARGUMENT_LIST}
+        )
+        for arguments, expected in (
+            ('"dve slova" "" %s $HOME *.c ; "$(echo ignored)"',
+             "arguments=7\nargv[1]=[dve slova]\nargv[2]=[]\nargv[3]=[%s]\nargv[4]=[$HOME]\n"
+             "argv[5]=[*.c]\nargv[6]=[;]\nargv[7]=[$(echo ignored)]\n"),
+            ("", "arguments=0\n"),
+        ):
+            status, result = self.request("POST", f"/api/development/projects/{project['id']}/run", {
+                "arguments": arguments, "stdin": "42\n",
+            })
+            self.assertEqual(status, 200)
+            self.assertTrue(result["compiled"], result)
+            self.assertEqual((result["run"]["exitCode"], result["run"]["stdout"], result["run"]["stderr"]), (0, expected, ""))
+        status, result = self.request("POST", f"/api/development/projects/{project['id']}/run", {"arguments": '"unclosed'})
+        self.assertEqual(status, 400)
+        self.assertTrue(result["error"])
+
+    def test_number_argument_through_development_api_distinguishes_input_failures(self) -> None:
+        runtime = self.context.development_runner.status()["languages"]["c"]
+        if not runtime["available"]:
+            self.skipTest(runtime["message"])
+        project = self.context.database.create_development_project(
+            self.user["id"], {"id": "argument-number", "title": "Number argument", "language": "c", "entryContent": ARGUMENT_NUMBER}
+        )
+        for arguments, stdout, stderr in (
+            ("-7", "value=-7\n", ""), ('"  +42  "', "value=42\n", ""),
+            ("", "", "Usage: number INTEGER\n"), ("42 9", "", "Usage: number INTEGER\n"),
+            ('""', "", "Expected one complete decimal integer.\n"),
+            ("42x", "", "Expected one complete decimal integer.\n"),
+            ("9" * 100, "", "Integer out of range.\n"),
+        ):
+            with self.subTest(arguments=arguments):
+                status, result = self.request("POST", f"/api/development/projects/{project['id']}/run", {
+                    "arguments": arguments, "stdin": "999\n",
+                })
+                self.assertEqual(status, 200)
+                self.assertTrue(result["compiled"], result)
+                self.assertEqual(result["run"]["exitCode"] == 0, not stderr, result)
+                self.assertEqual((result["run"]["stdout"], result["run"]["stderr"]), (stdout, stderr))

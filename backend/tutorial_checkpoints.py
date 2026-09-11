@@ -74,6 +74,18 @@ TUTORIAL_CHECKPOINTS: dict[str, tuple[dict[str, Any], ...]] = {
             "incorrectFeedback": "C odovzdáva všetky parametre hodnotou. Na zmenu cudzieho objektu funkcia potrebuje dostať jeho adresu.",
         },
         {
+            "id": "c-argument-count-before-access",
+            "prompt": "Program vyžaduje jedno celé číslo pri spustení. Ktoré poradie kontrol je správne?",
+            "options": (
+                ("a", "Najprv prevedie argv[1] a až potom overí počet argumentov."),
+                ("b", "Najprv vyžaduje argc == 2, potom overí celý text argv[1] aj rozsah typu."),
+                ("c", "Chýbajúci argument a prázdny reťazec sú rovnaké; stačí atoi."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Počet chráni prístup k argv[1]. Prázdny argument sa počíta, ale parser ho odmietne ako neplatný text; nulová číselná hodnota je platná.",
+            "incorrectFeedback": "Meno programu sa započítava do argc. Kontrola počtu musí predchádzať indexovaniu; úspešný prevod vyžaduje celý text a platný rozsah, nie iba číselný začiatok.",
+        },
+        {
             "id": "c-recursion-progress",
             "prompt": "Čo zaručuje postup gcd_recursive(a, b) k základnému prípadu?",
             "options": (

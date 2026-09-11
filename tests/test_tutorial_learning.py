@@ -228,7 +228,7 @@ class TutorialLearningTestCase(unittest.TestCase):
             "conditions", "queues",
             "deadlines", "cancellation",
             "producer-groups",
-            "recursion",
+            "recursion", "arguments",
         }]
         saved = []
         for seed in seeds:
@@ -247,7 +247,7 @@ class TutorialLearningTestCase(unittest.TestCase):
                 "conditions", "queues",
                 "deadlines", "cancellation",
                 "producer-groups",
-                "recursion",
+                "recursion", "arguments",
             } else "a"
             answer = self.database.answer_tutorial_checkpoint(self.user["id"], page["id"], {"optionId": correct})
             self.assertTrue(answer["isCorrect"])
