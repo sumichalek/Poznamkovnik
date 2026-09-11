@@ -266,6 +266,30 @@ TUTORIAL_CHECKPOINTS: dict[str, tuple[dict[str, Any], ...]] = {
             "incorrectFeedback": "qsort potrebuje konzistentné záporné, nulové alebo kladné porovnanie. Konkrétna veľkosť výsledku nerozhoduje, ale znamienkové pretečenie by porušilo pravidlá C.",
         },
         {
+            "id": "c-thread-join-lifetime",
+            "prompt": "Kedy smie main použiť vypočítané maximum z požičaného MaximumJob?",
+            "options": (
+                ("a", "Hneď po úspešnom thrd_create, lebo to znamená dokončenie výpočtu."),
+                ("b", "Po úspešnom thrd_join a overení úspešného návratu pracovníka; dovtedy drží job aj pole živé."),
+                ("c", "Po krátkom spánku alebo po označení maximum ako volatile."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Join potvrdzuje ukončenie a synchronizáciu; návrat pracovníka zvlášť potvrdzuje úspešný výpočet.",
+            "incorrectFeedback": "Vytvorenie nie je dokončenie. Časový odhad ani volatile nenahrádzajú synchronizáciu a potvrdenú životnosť vstupov.",
+        },
+        {
+            "id": "c-release-acquire-publication",
+            "prompt": "Producent raz zapíše obyčajný value a potom publikuje ready=true cez release. Čo dovolí konzumentovi čítať value ešte pred join?",
+            "options": (
+                ("a", "Ľubovoľné relaxed čítanie ready; atomický príznak automaticky chráni celý struct."),
+                ("b", "Acquire načítanie ready, ktoré pozoruje túto publikáciu, pričom value už nikto nemení a schránka stále žije."),
+                ("c", "Neskorší join opraví aj čítanie value vykonané pred kontrolou ready."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Potrebný vzťah vzniká cez pozorovanú release/acquire publikáciu; životnosť a nemennosť payloadu zostávajú súčasťou kontraktu.",
+            "incorrectFeedback": "Relaxed rieši samotný atomický objekt, nie publikovanie okolitých neatomických dát. Neskoršie čakanie neopraví skorší dátový pretek.",
+        },
+        {
             "id": "c-callback-context-lifetime",
             "prompt": "Prečo môže synchrónny walk_values bezpečne používať adresu lokálneho LimitState?",
             "options": (

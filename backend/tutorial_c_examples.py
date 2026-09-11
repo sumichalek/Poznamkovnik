@@ -1329,3 +1329,265 @@ int main(void)
     return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 """
+
+THREAD_JOIN = r"""#if defined(__STDC_NO_THREADS__) && __STDC_NO_THREADS__
+#error "This example requires C threads"
+#endif
+#include <threads.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+static void join_or_exit(thrd_t thread, int *result)
+{
+    if (thrd_join(thread, result) != thrd_success) {
+        /* Without a successful join, borrowed objects may still be in use. */
+        fputs("Cannot join thread.\n", stderr);
+        (void) fflush(stderr);
+        _Exit(EXIT_FAILURE);
+    }
+}
+"""
+
+MAXIMUM_JOB = r"""#include <stddef.h>
+#include <stdlib.h>
+
+typedef struct { const int *values; size_t count; int maximum; } MaximumJob;
+
+/* The owner keeps the job and input alive until the worker has been joined. */
+static int find_maximum(void *context)
+{
+    if (context == NULL) { return EXIT_FAILURE; }
+    MaximumJob *job = context;
+    if (job->values == NULL || job->count == 0) { return EXIT_FAILURE; }
+    int maximum = job->values[0];
+    for (size_t i = 1; i < job->count; ++i) {
+        if (job->values[i] > maximum) { maximum = job->values[i]; }
+    }
+    job->maximum = maximum;
+    return EXIT_SUCCESS;
+}
+"""
+
+THREAD_LIFETIME = THREAD_JOIN + MAXIMUM_JOB + r"""
+int main(void)
+{
+    const int values[] = {3, -2, 9, 1};
+    MaximumJob job = {values, sizeof values / sizeof values[0], 77};
+    thrd_t thread;
+    if (thrd_create(&thread, find_maximum, &job) != thrd_success) {
+        fputs("Cannot create thread.\n", stderr);
+        return EXIT_FAILURE;
+    }
+    int worker_result = EXIT_FAILURE;
+    join_or_exit(thread, &worker_result);
+    if (worker_result != EXIT_SUCCESS) {
+        fputs("Worker failed.\n", stderr);
+        return EXIT_FAILURE;
+    }
+    if (printf("maximum=%d\n", job.maximum) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+MUTEX_TOTALS = r"""#include <limits.h>
+#include <threads.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct { mtx_t mutex; unsigned int count; unsigned int total; } Totals;
+
+/* A non-NULL totals has an initialized mutex; all concurrent access uses it. */
+static int record_total(Totals *totals, unsigned int value)
+{
+    if (totals == NULL || mtx_lock(&totals->mutex) != thrd_success) { return 0; }
+    int ok = totals->count < UINT_MAX && value <= UINT_MAX - totals->total;
+    if (ok) {
+        ++totals->count;
+        totals->total += value;
+    }
+    if (mtx_unlock(&totals->mutex) != thrd_success) {
+        /* Lock ownership is uncertain; do not leave other workers waiting. */
+        fputs("Cannot unlock mutex.\n", stderr);
+        (void) fflush(stderr);
+        _Exit(EXIT_FAILURE);
+    }
+    return ok;
+}
+"""
+
+MUTEX_WORKERS = THREAD_JOIN + MUTEX_TOTALS + r"""
+typedef struct { Totals *totals; unsigned int value; unsigned int iterations; } RecordJob;
+
+static int record_worker(void *context)
+{
+    RecordJob *job = context;
+    for (unsigned int i = 0; i < job->iterations; ++i) {
+        if (!record_total(job->totals, job->value)) { return EXIT_FAILURE; }
+    }
+    return EXIT_SUCCESS;
+}
+
+int main(void)
+{
+    Totals totals;
+    totals.count = 0;
+    totals.total = 0;
+    if (mtx_init(&totals.mutex, mtx_plain) != thrd_success) {
+        fputs("Cannot initialize mutex.\n", stderr);
+        return EXIT_FAILURE;
+    }
+    RecordJob jobs[] = {{&totals, 3, 100}, {&totals, 7, 100}};
+    thrd_t threads[2];
+    size_t started = 0;
+    int result = EXIT_SUCCESS;
+    for (size_t i = 0; i < 2; ++i) {
+        if (thrd_create(&threads[i], record_worker, &jobs[i]) != thrd_success) {
+            fputs("Cannot create thread.\n", stderr);
+            result = EXIT_FAILURE;
+            break;
+        }
+        ++started;
+    }
+    for (size_t i = 0; i < started; ++i) {
+        int worker_result = EXIT_FAILURE;
+        join_or_exit(threads[i], &worker_result);
+        if (worker_result != EXIT_SUCCESS) {
+            fputs("Worker failed.\n", stderr);
+            result = EXIT_FAILURE;
+        }
+    }
+    mtx_destroy(&totals.mutex);
+    if (result != EXIT_SUCCESS) { return result; }
+    if (printf("count=%u total=%u\n", totals.count, totals.total) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+ATOMIC_SUPPORT = r"""#if defined(__STDC_NO_ATOMICS__) && __STDC_NO_ATOMICS__
+#error "This example requires C atomics"
+#endif
+#include <stdatomic.h>
+"""
+
+ATOMIC_WORKERS = THREAD_JOIN + ATOMIC_SUPPORT + r"""
+typedef struct { atomic_uint *counter; unsigned int iterations; } CounterJob;
+
+static int count_worker(void *context)
+{
+    CounterJob *job = context;
+    for (unsigned int i = 0; i < job->iterations; ++i) {
+        atomic_fetch_add_explicit(job->counter, 1U, memory_order_relaxed);
+    }
+    return EXIT_SUCCESS;
+}
+
+int main(void)
+{
+    atomic_uint counter;
+    atomic_init(&counter, 0U);
+    CounterJob job = {&counter, 2000};
+    thrd_t threads[2];
+    size_t started = 0;
+    int result = EXIT_SUCCESS;
+    for (size_t i = 0; i < 2; ++i) {
+        if (thrd_create(&threads[i], count_worker, &job) != thrd_success) {
+            fputs("Cannot create thread.\n", stderr);
+            result = EXIT_FAILURE;
+            break;
+        }
+        ++started;
+    }
+    for (size_t i = 0; i < started; ++i) {
+        int worker_result = EXIT_FAILURE;
+        join_or_exit(threads[i], &worker_result);
+        if (worker_result != EXIT_SUCCESS) {
+            fputs("Worker failed.\n", stderr);
+            result = EXIT_FAILURE;
+        }
+    }
+    if (result != EXIT_SUCCESS) { return result; }
+    unsigned int value = atomic_load_explicit(&counter, memory_order_relaxed);
+    if (printf("count=%u\n", value) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+SPLIT_ATOMIC_UPDATE = ATOMIC_SUPPORT + r"""
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    atomic_uint counter;
+    atomic_init(&counter, 0U);
+    /* One-thread model of two readers followed by two writers, not a data race. */
+    unsigned int first = atomic_load_explicit(&counter, memory_order_relaxed);
+    unsigned int second = atomic_load_explicit(&counter, memory_order_relaxed);
+    atomic_store_explicit(&counter, first + 1U, memory_order_relaxed);
+    atomic_store_explicit(&counter, second + 1U, memory_order_relaxed);
+    unsigned int split = atomic_load_explicit(&counter, memory_order_relaxed);
+    atomic_store_explicit(&counter, 0U, memory_order_relaxed);
+    atomic_fetch_add_explicit(&counter, 1U, memory_order_relaxed);
+    atomic_fetch_add_explicit(&counter, 1U, memory_order_relaxed);
+    unsigned int combined = atomic_load_explicit(&counter, memory_order_relaxed);
+    if (printf("split=%u rmw=%u\n", split, combined) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+ONCE_MAILBOX = ATOMIC_SUPPORT + r"""
+#include <stdbool.h>
+#include <stddef.h>
+
+typedef struct { atomic_bool ready; int value; } Mailbox;
+
+/* Exactly one publication per initialized mailbox; value stays immutable after it. */
+static void publish_once(Mailbox *box, int value)
+{
+    box->value = value;
+    atomic_store_explicit(&box->ready, true, memory_order_release);
+}
+
+/* A live box and a separate writable result; unavailable input preserves *result. */
+static int try_read(Mailbox *box, int *result)
+{
+    if (box == NULL || result == NULL) { return 0; }
+    if (!atomic_load_explicit(&box->ready, memory_order_acquire)) { return 0; }
+    *result = box->value;
+    return 1;
+}
+"""
+
+MAILBOX_PUBLICATION = THREAD_JOIN + ONCE_MAILBOX + r"""
+static int publisher(void *context)
+{
+    publish_once(context, 42);
+    return EXIT_SUCCESS;
+}
+
+int main(void)
+{
+    Mailbox box;
+    atomic_init(&box.ready, false);
+    box.value = 0;
+    int value = 77;
+    int before = try_read(&box, &value);
+    int original = value;
+    thrd_t thread;
+    if (thrd_create(&thread, publisher, &box) != thrd_success) {
+        fputs("Cannot create thread.\n", stderr);
+        return EXIT_FAILURE;
+    }
+    int received = try_read(&box, &value);
+    int worker_result = EXIT_FAILURE;
+    join_or_exit(thread, &worker_result);
+    if (worker_result != EXIT_SUCCESS) {
+        fputs("Worker failed.\n", stderr);
+        return EXIT_FAILURE;
+    }
+    if (!received) { received = try_read(&box, &value); }
+    if (!received) { return EXIT_FAILURE; }
+    if (printf("before=%d value=%d\nreceived=%d value=%d\n", before, original, received, value) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""

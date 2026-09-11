@@ -3,6 +3,7 @@
 from backend.tutorial_c_examples import (
     ASSERT_MAXIMUM,
     ATOMIC_COUNTER,
+    ATOMIC_WORKERS,
     BINARY_ROUNDTRIP,
     BIT_MASKS,
     BOUNDARY_TESTS,
@@ -22,6 +23,7 @@ from backend.tutorial_c_examples import (
     FORMATTED_OUTPUT,
     GROW_BUFFER,
     INTEGER_LIMITS,
+    MAILBOX_PUBLICATION,
     MACRO_EXPANDED,
     MACRO_EXPANSION,
     MACRO_PARENTHESES,
@@ -30,6 +32,7 @@ from backend.tutorial_c_examples import (
     MEASUREMENTS_SINGLE_FILE,
     MEASUREMENTS_SOURCE,
     MOVE_TEXT,
+    MUTEX_WORKERS,
     PARSE_NUMBER,
     PARSE_POSITIVE,
     READ_LINES,
@@ -39,7 +42,9 @@ from backend.tutorial_c_examples import (
     SINGLE_EVALUATION,
     SNPRINTF_MESSAGE,
     SORT_SEARCH,
+    SPLIT_ATOMIC_UPDATE,
     STRTOL_REFERENCE,
+    THREAD_LIFETIME,
     VARIADIC_PASSES,
     WIRE_ROUNDTRIP,
 )
@@ -963,6 +968,86 @@ C_PAGES = [
         }
     },
     {
+        "key": "threads", "parent_key": "tooling", "kind": "lesson", "position": 146,
+        "title": "Vlákna, životnosť dát a mutexy",
+        "summary": "threads.h, vytvorenie a join, požičané dáta, spoločný stav a chybové cesty.",
+        "content": {
+            "lead": "Vlákna zdieľajú pamäť procesu, ale každé vykonáva vlastný sled krokov. Bezpečný program preto potrebuje vedieť nielen kto údaje vlastní, ale aj kedy ich iné vlákno smie čítať a dokedy musí ich vlastník zostať nažive.",
+            "blocks": [
+                {"type": "heading", "text": "Súbežnosť ešte neznamená zrýchlenie"},
+                {"type": "paragraph", "text": "Dve vlákna môžu postupovať prekladaním na jednom jadre alebo paralelne na viacerých jadrách. Poradie ich krokov nie je sľúbené podľa poradia riadkov v main. Malý výpočet maxima tu nie je výkonnostná optimalizácia: slúži na pochopenie odovzdania práce a návratu výsledku."},
+                {"type": "paragraph", "text": "threads.h je v C17 voliteľná súčasť implementácie. __STDC_NO_THREADS__ oznamuje chýbajúcu podporu; samotné -std=c17 nevytvorí chýbajúcu hlavičku či knižnicu. Príklady v tejto skúšobni boli overené so súčasným GCC a systémovou knižnicou bez zmeny limitov sandboxu. Pre iný cieľ prever dostupnosť samostatne."},
+                {"type": "code", "language": "sh", "title": "Samostatné overenie s GCC na Linuxe", "source": "gcc -std=c17 -Wall -Wextra -Wpedantic -pthread main.c -o threads-demo\n./threads-demo"},
+                {"type": "paragraph", "text": "-pthread je voľba nástrojov GCC na podporovaných cieľoch, nie syntax jazyka C. Pri oddelenom preklade a linkovaní ju použi v oboch krokoch podľa požiadaviek cieľa. Skutočnosť, že miestna knižnica umožní tento program zostaviť aj bez nej, nie je prenositeľnou zárukou pre každý systém."},
+                {"type": "heading", "text": "Odovzdaj prácu, nie adresu miznúceho objektu"},
+                {"type": "code", "language": "c", "title": "Výsledok pracovníka až po úspešnom join", "source": THREAD_LIFETIME},
+                {"type": "list", "items": [
+                    "Vstupná funkcia vlákna má podpis int function(void *). thrd_create odovzdá hodnotu ukazovateľa, nie úplnú kópiu objektu MaximumJob alebo jeho poľa.",
+                    "Pred vytvorením vlákna sú všetky vstupy pripravené. Počas jeho práce main nemení job ani pole a nečíta job.maximum. Pracovník zapisuje iba svoj výsledok.",
+                    "Úspešné thrd_join počká na skončenie vlákna a synchronizuje jeho ukončenie s pokračovaním volajúceho. Preto je potom dovolené čítať obyčajný neatomický job.maximum.",
+                    "Návrat thrd_join opisuje úspech čakania. Hodnota uložená do worker_result je iný údaj: návrat pracovníka. Úspešný join ešte neznamená úspešný výpočet."
+                ]},
+                {"type": "paragraph", "text": "Pre 3, -2, 9, 1 program vypíše maximum=9. Pracovník pri NULL, chýbajúcom poli alebo nulovom počte vráti neúspech bez zmeny maximum. Neodvodzuje maximum od nuly, preto správne spracuje aj výlučne záporné čísla. Všetky požičané objekty zostávajú v main živé až za join."},
+                {"type": "callout", "tone": "warning", "text": "Nespúšťaj vlákno s adresou lokálnej premennej funkcie, ktorá hneď skončí, ani s adresou meniaceho sa indexu vytváracieho cyklu. thrd_detach nepredĺži životnosť dát a nepočká na dokončenie. Tento kurz používa join a žiadne odpojené vlákna."},
+                {"type": "heading", "text": "Keď nevieš potvrdiť koniec, nesmieš uvoľniť dáta"},
+                {"type": "paragraph", "text": "Pri zlyhaní thrd_create sa nepoužíva nezískaný identifikátor a nevolá sa naň join. Pri neúspešnom thrd_join však nie je potvrdené, že pracovník skončil. Pomocná join_or_exit preto v tomto malom samostatnom programe vypíše chybu a ukončí celý proces cez _Exit. Nevráti sa k rušeniu požičaných lokálnych objektov."},
+                {"type": "paragraph", "text": "_Exit je zámerná posledná chybová cesta, nie všeobecná stratégia knižničného API. Nevykonáva bežné upratovanie ani obsluhy atexit; hlásenie sa preto ešte pokúšame odoslať cez fflush(stderr). V dlhšie žijúcej aplikácii by bolo treba navrhnúť vlastnenú životnosť a protokol ukončenia. Neznámy stav vlákna nemožno opraviť slepým druhým join alebo free."},
+                {"type": "heading", "text": "Spoločný počet a súčet patria pod jeden mutex"},
+                {"type": "paragraph", "text": "Dve vlákna pridávajú merania do rovnakých štatistík. Invariant je dvojica count a total po celých prijatých meraniach. Ak ich čítač potrebuje počas behu, musí pod tým istým mutexom načítať obe hodnoty naraz. Samostatná ochrana každej premennej by ešte nezabezpečila konzistentnú dvojicu."},
+                {"type": "code", "language": "c", "title": "Dve skupiny meraní, jedna kritická sekcia", "source": MUTEX_WORKERS},
+                {"type": "paragraph", "text": "record_total získa mutex ešte pred čítaním meniteľných polí. Pod zámkom overí kapacitu počítadla aj súčtu a až potom zmení obe polia. Pri odmietnutí rozsahu nemení nič, ale získaný zámok aj tak odomkne. Obe skupiny po sto hodnotách 3 a 7 preto dajú count=200 total=1000 bez závislosti od poradia pracovníkov."},
+                {"type": "paragraph", "text": "Odomknutie a nasledujúce získanie toho istého mutexu vytvárajú synchronizáciu pre chránené údaje. Všetci účastníci musia dodržať rovnaké pravidlo, aj keď iba čítajú. Main číta až po úspešnom pripojení všetkých pracovníkov, preto už pri konečnom výpise nepotrebuje zámok."},
+                {"type": "list", "items": [
+                    "mtx_init prebehne pred vytvorením pracovníkov. Pri jeho chybe sa nespustí žiadne vlákno a neinicializovaný mutex sa neničí.",
+                    "started počíta iba úspešne vytvorené vlákna. Pri chybe druhého vytvorenia sa prvé stále pripojí; čiastočný výsledok sa nevydáva za úspech celého výpočtu.",
+                    "Po chybe pracovníka sa čaká aj na ostatných spustených pracovníkov. Mutex sa ničí až po ich skončení. Jeho nepriehľadný objekt sa nekopíruje cez priradenie ani memcpy.",
+                    "Pri neúspešnom mtx_lock sa nečíta spoločný stav a nič sa neodomyká. Pri neúspešnom mtx_unlock nie je spoľahlivé vlastníctvo zámku; ukážka ukončí proces, aby nenechala ďalšie vlákno čakať bez riešenia."
+                ]},
+                {"type": "heading", "text": "Čomu sa vyhnúť pri ďalšom rozširovaní"},
+                {"type": "paragraph", "text": "mtx_plain nie je rekurzívny: to isté vlákno ho nesmie zamknúť znova bez odomknutia. Pri viacerých mutexoch treba jednotné poradie získavania. Nedrž mutex počas join na vlákno, ktoré ho potrebuje, ani počas neznámeho callbacku. Krátka kritická sekcia uľahčuje pochopenie aj priebeh programu."},
+                {"type": "callout", "tone": "warning", "text": "Dátový pretek je konflikt prístupov z rôznych vlákien, aspoň jeden zápis, aspoň jeden neatomický prístup a chýbajúce potrebné usporiadanie. V C ide o UB, nie iba o občas nesprávne číslo. volatile ani krátky spánok také usporiadanie nevytvoria. Obyčajné spoločné counter++ preto nepoužívame ako spustiteľný chybný príklad."},
+                {"type": "heading", "text": "Over aj cestu, na ktorej vlákno nevzniklo"},
+                {"type": "paragraph", "text": "Testuj výsledok, zachovanie dát pri odmietnutí, počet úspešných vytvorení a zodpovedajúcich join. Simuluj chybu prvého aj druhého vytvorenia, chybu pracovníka a inicializácie mutexu. Opakované natívne behy dopĺňajú tieto testy, ale samy osebe neprejdú všetky možné rozvrhy vlákien."},
+            ],
+        },
+    },
+    {
+        "key": "atomics", "parent_key": "tooling", "kind": "lesson", "position": 147,
+        "title": "Atomické operácie a publikovanie dát",
+        "summary": "Read-modify-write, relaxed počítadlo a jednorazová správa cez release/acquire.",
+        "content": {
+            "lead": "Atomická premenná rieši jednotlivé prístupy bez dátového preteku. Na správny viacvláknový protokol však treba navyše rozhodnúť, ktoré kroky sú jedna operácia, kedy sú dostupné okolité dáta a kto ich môže ďalej meniť.",
+            "blocks": [
+                {"type": "heading", "text": "Dve atomické operácie nie sú jeden atomický krok"},
+                {"type": "code", "language": "c", "title": "Deterministický model strateného zvýšenia bez UB", "source": SPLIT_ATOMIC_UPDATE},
+                {"type": "paragraph", "text": "Program zámerne beží v jednom vlákne a modeluje možné poradie dvoch čitateľov a dvoch zapisovateľov: obaja najprv načítajú 0, potom obaja uložia 1. Výpis split=1 rmw=2 ukazuje logickú chybu zloženého postupu, nie dátový pretek. Aj pri silnejšom seq_cst by boli dve oddelené operácie stále dva kroky."},
+                {"type": "paragraph", "text": "atomic_fetch_add je jedna read-modify-write operácia: získa predchádzajúcu hodnotu a uloží zvýšenú ako jeden nedeliteľný krok v poradí zmien daného objektu. Dve také zvýšenia od nuly zachovajú výsledok 2. Predvolená verzia bez _explicit používa seq_cst; tu poradie uvádzame, aby bolo viditeľné, čo požadujeme."},
+                {"type": "heading", "text": "Skutočné vlákna nad jedným počítadlom"},
+                {"type": "code", "language": "c", "title": "Dvetisíc zvýšení od každého pracovníka", "source": ATOMIC_WORKERS},
+                {"type": "paragraph", "text": "atomic_init prebehne ešte pred vznikom pracovníkov. Každý vykoná 2000 zvýšení a po oboch úspešných join má byť count=4000. Hodnota sa zmestí aj do minimálneho rozsahu unsigned int. Pri zmene počtu vlákien alebo iterácií musíš znovu overiť rozsah: neznamienkové pretečenie je definované, ale spravidla už neznamená správny počet úloh."},
+                {"type": "paragraph", "text": "memory_order_relaxed tu stačí na samotné zvýšenia, pretože počítadlo neoznamuje dostupnosť žiadnych iných dát. Každé zvýšenie je atomické a konečné čítanie nastáva po join všetkých pracovníkov. Relaxed nemení dobu života counter ani nenahrádza kontrolu vytvorenia a pripojenia vlákien."},
+                {"type": "callout", "tone": "warning", "text": "Z hodnoty hotových úloh odčítanej cez relaxed nemožno bez ďalšieho vyvodiť, že smieš čítať ich neatomické výsledky. To je iný protokol než samotné štatistické počítadlo. Dve atomické polia tiež netvoria konzistentnú snímku dvojice; na taký stav často patrí mutex."},
+                {"type": "heading", "text": "Publikácia jednej správy"},
+                {"type": "paragraph", "text": "Mailbox obsahuje obyčajný int value a atomický príznak ready. Vlastník inicializuje schránku pred zdieľaním. Jeden producent zapíše value presne raz a potom ho už nikto nemení. Konzument číta value až po potvrdení publikácie; každý konzument má vlastný výstupný objekt oddelený od schránky."},
+                {"type": "code", "language": "c", "title": "Jednorazová schránka s neblokujúcim pokusom o čítanie", "source": MAILBOX_PUBLICATION},
+                {"type": "list", "items": [
+                    "Producent najprv zapíše value a až potom uloží true do ready s memory_order_release. Poradie týchto dvoch krokov je podstatné.",
+                    "Konzument načíta ready s memory_order_acquire. Ak pozoruje true z tejto publikácie, vzniká potrebná synchronizácia pred čítaním value.",
+                    "Pri false sa value vôbec nečíta a výstupný objekt zostane nezmenený. NULL sa tiež odmietne pred prístupom. try_read sa nepokúša čakať v slučke.",
+                    "Prvé čítanie pred vznikom producenta vráti 0 a nechá 77. Po vzniku vlákna môže prvý pokus uspieť alebo ešte nie. Main vždy vykoná join a v prípade potreby pokus zopakuje, takže konečný výpis je received=1 value=42."
+                ]},
+                {"type": "paragraph", "text": "Dôležitý je pokus pred join: tam prístup k value povoľuje release/acquire, nie čakanie na koniec vlákna. Pri druhom pokuse po úspešnom join už synchronizuje aj samotný join. Preto test, ktorý číta iba po join, nevie sám overiť správnosť pamäťového poradia try_read pre súbežného konzumenta."},
+                {"type": "callout", "tone": "warning", "text": "Samotné slovo acquire alebo release nie je globálna pamäťová bariéra. Konzument musí pozorovať publikáciu na príslušnom atomickom objekte. Relaxed príznak pred join neposkytuje tento vzťah pre obyčajný value. Ani neskorší join spätne neopraví skorší neplatný prístup."},
+                {"type": "heading", "text": "Kontrakt je jednorazový, nie všeobecná fronta"},
+                {"type": "paragraph", "text": "publish_once sa na jednej schránke volá iba raz. Nestačí nastaviť ready späť na false a prepísať value: starý čitateľ už mohol pozorovať true a práve čítať pôvodnú správu. Opakované publikovanie potrebuje ďalší protokol alebo mutex a správu životnosti. Kontrola if (!ready) tiež nevytvorí bezpečnú súťaž viacerých producentov."},
+                {"type": "paragraph", "text": "Atomické objekty inicializuj pred súbežným prístupom. atomic_init nie je operácia na reset počas práce ostatných vlákien. Použité atomické typy nemusia byť lock-free a ich podpora je v C17 voliteľná; pri inom cieli môže byť potrebná podpora knižnice. Tieto príklady nie sú implementáciou hardvérového registra ani kódom obsluhy prerušenia."},
+                {"type": "heading", "text": "Čo test dokazuje a čo už nie"},
+                {"type": "paragraph", "text": "Opakuj reálne behy, no pridaj aj riadené hranice: čítanie pred publikáciou, po nej, NULL a nedotknutý výstup. Model strateného zvýšenia je užitočný práve tým, že nespolieha na náhodný rozvrh. Pri pamäťovom poradí treba skontrolovať aj operácie a ich kontrakt, nielen posledný výpis na jednom procesore."},
+                {"type": "paragraph", "text": "UBSan nenahrádza detektor dátových pretekov. ThreadSanitizer môže pomôcť v podporovanom samostatnom prostredí, ale nenahradí návrh protokolu a nie je zapnutý v tejto skúšobni. Jej časové a pamäťové limity sa kvôli ukážkam nemenia. Spin slučka ani thrd_yield nie sú zárukou dokončenia v určenom čase."},
+            ],
+        },
+    },
+    {
         "key": "reference",
         "parent_key": "",
         "kind": "chapter",
@@ -1227,12 +1312,16 @@ C_LEARNING_GOALS = {
     "stdlib-reference": ("Zachovať vlastníctvo a údaje pri chybe alokácie alebo prevodu.", "Navrhnúť konzistentný porovnávač bez pretekajúceho odčítania."),
     "stdio-reference": ("Odlíšiť chybu formátovania od skrátenia a skontrolovať miesto pre nulu.", "Správne vyhodnotiť počet prenesených prvkov a uzavrieť prúd aj pri chybe."),
     "numeric-reference": ("Zvoliť typ a formát podľa skutočných limitov implementácie.", "Overiť rozsah pred prevodom a dodržať doménu ctype.h bez straty EOF."),
+    "threads": ("Udržať požičané dáta živé až do úspešného join a odlíšiť chybu čakania od chyby pracovníka.", "Chrániť súvisiace hodnoty jedným mutexom aj na chybových cestách."),
+    "atomics": ("Rozlíšiť read-modify-write od dvojice oddelených atomických operácií.", "Odôvodniť relaxed počítadlo a jednorazovú publikáciu cez release/acquire."),
 }
 
 
 # Tento rámec je úmyselne oddelený od faktického výkladu. Každá lekcia sa tak
 # začína problémom, nadväznosťou a jadrom pojmu, potom smeruje k vlastnej práci.
 C_TEACHING_FRAMES = {
+    "threads": {"context": "Potrebuješ odovzdať výpočet inému vláknu bez straty životnosti vstupov a bez súčasného neplatného prístupu k výsledku.", "priorKnowledge": ("Poznáš callback s kontextom a životnosť lokálnych objektov.", "Vieš kontrolovať návratové stavy a hranice aritmetiky."), "keyIdea": "Vlastníctvo dát, dokončenie pracovníka a synchronizácia spoločného stavu sú odlišné zodpovednosti, ktoré treba riešiť spolu.", "transfer": "Pri vlastnej úlohe označ posledné použitie každého požičaného objektu a pravidlo ochrany všetkých súvisiacich polí."},
+    "atomics": {"context": "Počítadlo aj príznak dostupnej správy môžu byť atomické, ale každý z nich oznamuje iný druh informácie.", "priorKnowledge": ("Rozumieš vytvoreniu vlákna, join a ochrane údajov mutexom.",), "keyIdea": "Atomickosť jedného kroku nie je publikovanie okolitej pamäte; pamäťové poradie musí zodpovedať celému protokolu.", "transfer": "Pri atomickej premennej napíš, či chráni iba vlastnú hodnotu alebo má sprístupniť aj ďalšie neatomické údaje."},
     "program": {"context": "Potrebuješ spoľahlivo dostať krátky zdrojový súbor až k spustiteľnému programu a vedieť rozlíšiť chybu prekladu od výsledku behu.", "priorKnowledge": ("Dokážeš čítať krátky textový súbor.",), "keyIdea": "Zdroj, hlavičky, preklad a spustenie sú nadväzujúce kroky; main je dohodnutý vstupný bod programu.", "transfer": "Pri najbližšom programe najprv pomenuj, čo patrí do hlavičky, čo do main a akú informáciu má návratový kód odovzdať prostrediu."},
     "values": {"context": "Program musí odlíšiť počet, meranú veličinu, znak a údaj s presne daným formátom, aj keď všetko napokon leží v pamäti.", "priorKnowledge": ("Rozlíšiš celé číslo, desatinnú hodnotu a jeden znak.",), "keyIdea": "Typ je kontrakt medzi významom hodnoty, jej rozsahom a povolenými operáciami.", "transfer": "Pri vlastnom kóde pomenuj význam každej premennej a pri každej konverzii si over, či sa nestratí informácia."},
     "operators": {"context": "Pri rozhodovaní programu potrebuješ čítať podmienku rovnako presne, ako ju prekladateľ vyhodnotí.", "priorKnowledge": ("Vieš porovnať dve číselné hodnoty.",), "keyIdea": "Zátvorky a krátke medzivýsledky vyjadrujú zámer lepšie než spoliehanie sa na pamäť priorít.", "transfer": "Rozdeľ jednu dlhú podmienku vo vlastnom programe na pomenované otázky a skontroluj poradie pri && a ||."},
@@ -1281,6 +1370,8 @@ C_EXERCISE_TOPICS = {
     "numeric-reference": "numeric-reference",
     "callbacks": "callbacks",
     "portability": "portability",
+    "threads": "threads",
+    "atomics": "atomics",
 }
 
 
@@ -1320,9 +1411,41 @@ C_CHECKPOINT_IDS = {
     "numeric-reference": "c-ctype-input-domain",
     "callbacks": "c-callback-context-lifetime",
     "portability": "c-wire-format-contract",
+    "threads": "c-thread-join-lifetime",
+    "atomics": "c-release-acquire-publication",
 }
 
 C_EXAMPLES = [
+    {
+        "key": "thread-lifetime", "page_key": "threads", "position": 10,
+        "title": "Požičané dáta až do join",
+        "description": "Pracovník vypočíta maximum, vlastník výsledok číta až po potvrdenom skončení.",
+        "source": THREAD_LIFETIME, "stdin": "",
+    },
+    {
+        "key": "mutex-workers", "page_key": "threads", "position": 20,
+        "title": "Počet a súčet pod jedným mutexom",
+        "description": "Dve skupiny meraní so spoločným invariantom a uprataním aj pri čiastočnom zlyhaní štartu.",
+        "source": MUTEX_WORKERS, "stdin": "",
+    },
+    {
+        "key": "split-atomic-update", "page_key": "atomics", "position": 10,
+        "title": "Stratené zvýšenie bez dátového preteku",
+        "description": "Jednovláknový model ukáže rozdiel medzi load/store a read-modify-write.",
+        "source": SPLIT_ATOMIC_UPDATE, "stdin": "",
+    },
+    {
+        "key": "atomic-workers", "page_key": "atomics", "position": 20,
+        "title": "Atomické počítadlo dvoch pracovníkov",
+        "description": "Každý pracovník vykoná 2000 atomických zvýšení; konečné čítanie nasleduje po oboch join.",
+        "source": ATOMIC_WORKERS, "stdin": "",
+    },
+    {
+        "key": "mailbox-publication", "page_key": "atomics", "position": 30,
+        "title": "Jednorazová publikácia správy",
+        "description": "Release/acquire povoľuje čítanie nemenného payloadu aj pred dokončením producenta.",
+        "source": MAILBOX_PUBLICATION, "stdin": "",
+    },
     {
         "key": "macro-parentheses", "page_key": "preprocessor", "position": 20,
         "title": "Makro a zoskupenie výrazu",

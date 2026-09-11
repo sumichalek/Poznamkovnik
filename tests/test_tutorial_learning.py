@@ -224,6 +224,7 @@ class TutorialLearningTestCase(unittest.TestCase):
             "preprocessor", "build", "io", "errors", "safety", "testing", "string-reference", "stdlib-reference",
             "stdio-reference", "numeric-reference",
             "callbacks", "portability",
+            "threads", "atomics",
         }]
         saved = []
         for seed in seeds:
@@ -238,6 +239,7 @@ class TutorialLearningTestCase(unittest.TestCase):
                 "preprocessor", "errors", "safety", "string-reference", "stdlib-reference",
                 "stdio-reference", "numeric-reference",
                 "callbacks", "portability",
+                "threads", "atomics",
             } else "a"
             answer = self.database.answer_tutorial_checkpoint(self.user["id"], page["id"], {"optionId": correct})
             self.assertTrue(answer["isCorrect"])

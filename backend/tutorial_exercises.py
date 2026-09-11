@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from backend.tutorial_c_examples import COUNT_POSITIVE, LINE_READER, WALK_VALUES
+from backend.tutorial_c_examples import ATOMIC_SUPPORT, COUNT_POSITIVE, LINE_READER, THREAD_JOIN, WALK_VALUES
 
 
 MAX_PRACTICE_VARIANT = 10_000
@@ -607,6 +607,110 @@ int main(void)
             "hints": (
                 "Všetky tri kontroly patria pred prvý zápis. Nepretypúvaj hodnotu na úzky typ ešte pred kontrolou rozsahu.",
                 "Horný oktet získaš posunom o 8 doprava, dolný maskou 255. Indexy určuje formát, nie poradie bajtov procesora.",
+            ),
+        }
+    if topic == "threads":
+        values = _pick(((3, -2, 9, 1), (-9, -3, -7, -4), (0, 0, 0, 0), (12, 4, 6, 3)), variant)
+        return {
+            "title": "Výsledok pracovníka v požičanom objekte",
+            "description": "Doplň find_maximum. NULL kontext, NULL pole a nulový počet odmietni cez EXIT_FAILURE bez zápisu. Inak nájdi maximum od prvého prvku, zapíš job->maximum a vráť EXIT_SUCCESS. Job aj pole sú živé do úspešného join; pripravený main ich počas práce nemení a výsledok číta až po pripojení. run_job, vytváranie vlákien a výpisy nemeň. ok=1 znamená úspešného pracovníka, nie číselnú hodnotu thrd_success.",
+            "starterSource": THREAD_JOIN + r"""
+typedef struct { const int *values; size_t count; int maximum; } MaximumJob;
+
+static int find_maximum(void *context)
+{
+    /* Replace this placeholder with validation and a worker-owned result. */
+    (void) context;
+    return EXIT_FAILURE;
+}
+
+static int run_job(MaximumJob *job)
+{
+    thrd_t thread;
+    if (thrd_create(&thread, find_maximum, job) != thrd_success) { return -1; }
+    int result = EXIT_FAILURE;
+    join_or_exit(thread, &result);
+    return result == EXIT_SUCCESS;
+}
+
+int main(void)
+{
+    const int values[] = {""" + ", ".join(map(str, values)) + r"""};
+    const int negative[] = {-8, -2};
+    const int zero[] = {0};
+    MaximumJob jobs[] = {
+        {values, 4, 77}, {negative, 2, 77}, {zero, 1, 77},
+        {values, 0, 77}, {NULL, 1, 77}
+    };
+    for (size_t i = 0; i < sizeof jobs / sizeof jobs[0]; ++i) {
+        int ok = run_job(&jobs[i]);
+        if (ok < 0) { return EXIT_FAILURE; }
+        if (printf("%d:%d\n", ok, jobs[i].maximum) < 0) { return EXIT_FAILURE; }
+    }
+    int missing = run_job(NULL);
+    if (missing < 0 || printf("null=%d\n", missing == 0) < 0) { return EXIT_FAILURE; }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+""",
+            "stdin": "",
+            "expectedOutput": f"1:{max(values)}\n1:-2\n1:0\n0:77\n0:77\nnull=1\n",
+            "hints": (
+                "Z context vytvor MaximumJob * až po kontrole NULL. Prvý prvok čítaj až po kontrole poľa a počtu.",
+                "Začiatok maxima na nule by pokazil záporné vstupy. Jediný výsledný zápis patrí až za úspešný prechod poľa.",
+            ),
+        }
+    if topic == "atomics":
+        value = _pick((42, -7, 0, 123), variant)
+        return {
+            "title": "Čítaj iba publikovanú správu",
+            "description": "Doplň try_read pre jednorazovú schránku. NULL argument odmietni návratom 0. Potom načítaj ready cez atomic_load_explicit s memory_order_acquire; pri false vráť 0 bez čítania value a bez zmeny výsledku. Iba pri true skopíruj value a vráť 1. publish_once ani main nemeň. Tento jednovláknový test kontroluje stavy a výstup, nie všetky rozvrhy: správny výpis sám nedokazuje správne pamäťové poradie.",
+            "starterSource": ATOMIC_SUPPORT + r"""
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct { atomic_bool ready; int value; } Mailbox;
+
+static void publish_once(Mailbox *box, int value)
+{
+    box->value = value;
+    atomic_store_explicit(&box->ready, true, memory_order_release);
+}
+
+static int try_read(Mailbox *box, int *result)
+{
+    /* Replace this placeholder with acquire-before-payload access. */
+    (void) box;
+    (void) result;
+    return 0;
+}
+
+int main(void)
+{
+    const int values[] = {""" + str(value) + r""", -3, 0, 42};
+    for (size_t i = 0; i < sizeof values / sizeof values[0]; ++i) {
+        Mailbox box;
+        atomic_init(&box.ready, false);
+        box.value = 0;
+        int result = 77;
+        int before = try_read(&box, &result);
+        if (printf("before=%d:%d\n", before, result) < 0) { return EXIT_FAILURE; }
+        publish_once(&box, values[i]);
+        int ready = try_read(&box, &result);
+        if (printf("ready=%d:%d\n", ready, result) < 0) { return EXIT_FAILURE; }
+        result = 77;
+        int missing_box = try_read(NULL, &result);
+        int missing_result = try_read(&box, NULL);
+        if (printf("null=%d output=%d value=%d\n", missing_box, missing_result, result) < 0) { return EXIT_FAILURE; }
+    }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+""",
+            "stdin": "",
+            "expectedOutput": "".join(f"before=0:77\nready=1:{item}\nnull=0 output=0 value=77\n" for item in (value, -3, 0, 42)),
+            "hints": (
+                "Kontrola ukazovateľov predchádza načítaniu príznaku. Čítanie value smie byť až vo vetve úspešného acquire.",
+                "Schránka má jediného producenta a po publikácii nemenný payload. Nepridávaj reset ready ani opakovaný zápis value.",
             ),
         }
     if topic == "testing":
