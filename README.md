@@ -15,4 +15,4 @@ Vývoj prebieha v pracovnom Git priečinku. Overený commit dostane označenie v
 
 Pred každou aktualizáciou je povinná nová overená záloha dát aj aplikačných a serverových nastavení. Pri chybe zálohy sa nové vydanie neaktivuje.
 
-Nasadenie a aktualizácie zabezpečuje `scripts/server-update.sh` s príkazmi `init`, `update`, `status`, `verify` a `rollback`. Nástroj overí novú zálohu dát aj nastavení, aktivuje vydanie a skontroluje `/api/health`. Pri neúspešnom štarte obnoví pôvodný stav. Číslo verzie určuje `VERSION`, Python runtime závislosti `requirements.lock`. Prvá inštalácia a všetky príkazy sú opísané v dokumentácii nasadenia.
+Nasadenie a aktualizácie zabezpečuje `scripts/server-update.sh` s príkazmi `init`, `update`, `status`, `verify`, `rollback` a `recover`. Nástroj overí novú zálohu dát aj nastavení, aktivuje vydanie a skontroluje `/api/health`. Pri neúspešnom štarte obnoví pôvodný stav. Číslo verzie určuje `VERSION`, Python runtime závislosti `requirements.lock`. Prvá inštalácia a všetky príkazy sú opísané v dokumentácii nasadenia.

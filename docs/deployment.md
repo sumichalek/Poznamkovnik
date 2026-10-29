@@ -12,7 +12,7 @@ server: releases/v0.57.0/ ← current
            shared/data/
 ```
 
-Git repozitár existuje na GitHube: `git@github.com:sumichalek/Poznamkovnik.git`. Tag vyberá konkrétny otestovaný commit. Príklady používajú verzie `v0.57.0` a `v0.57.1`; pred použitím musí byť príslušný tag skutočne zverejnený. Táto implementácia sama nevytvára commity ani nič neposiela na GitHub.
+Git repozitár existuje na GitHube: `git@github.com:sumichalek/Poznamkovnik.git`. Tag vyberá konkrétny otestovaný commit. Na prvú inštaláciu používaj najmenej `v0.57.1`, ktorá opravuje generovanie služby z vydania `v0.57.0`. Príklady aktualizácie používajú aj `v0.57.2`; pred použitím musí byť príslušný tag skutočne zverejnený. Táto implementácia sama nevytvára commity ani nič neposiela na GitHub.
 
 ```text
 ~/apps/poznamkovnik/
@@ -51,14 +51,14 @@ Vybrané zmeny ulož do commitu vrátane zostavených `assets/` a aktualizované
 python3 scripts/check-release.py HEAD
 ```
 
-Kontrola vytvorí dočasnú kópiu z Gitu, nainštaluje `requirements.lock` do nového virtuálneho prostredia a spustí aplikáciu s prázdnymi skúšobnými dátami na dočasnom lokálnom porte. Overí databázu, verziu, HTTP kontrolu aj zostavený frontend; po skončení skúšobnú inštanciu odstráni. Potrebuje prístup k Python balíkom a možnosť otvoriť lokálny port. Produkčné dáta nepoužíva.
+Kontrola vytvorí dočasnú kópiu z Gitu, nainštaluje `requirements.lock` do nového virtuálneho prostredia, overí vygenerovanú službu parserom `systemd-analyze --user verify` a spustí aplikáciu s prázdnymi skúšobnými dátami na dočasnom lokálnom porte. Overí databázu, verziu, HTTP kontrolu aj zostavený frontend; po skončení skúšobnú inštanciu odstráni. Potrebuje `systemd-analyze`, prístup k Python balíkom a možnosť otvoriť lokálny port. Produkčné dáta nepoužíva.
 
-Pred vytvorením tagu musí byť pracovný strom čistý a číslo tagu musí zodpovedať `VERSION`. Príklad pre verziu `0.57.0`:
+Pred vytvorením tagu musí byť pracovný strom čistý a číslo tagu musí zodpovedať `VERSION`. Príklad pre verziu `0.57.1`:
 
 ```bash
-git tag -a v0.57.0 -m "Poznamkovnik 0.57.0"
+git tag -a v0.57.1 -m "Poznamkovnik 0.57.1"
 git push origin HEAD
-git push origin v0.57.0
+git push origin v0.57.1
 ```
 
 Zverejnené tagy sa neprepisujú. Oprava dostane nové číslo. Domáci server sa zverejnením tagu automaticky neprepne.
@@ -70,9 +70,9 @@ Potrebné sú Python 3.11 alebo novší s `venv` a `pip`, Git, systemd používa
 Po zverejnení prvého tagu načítaj projekt do samostatného pomocného priečinka na serveri:
 
 ```bash
-git clone --branch v0.57.0 --single-branch git@github.com:sumichalek/Poznamkovnik.git "$HOME/poznamkovnik-bootstrap"
+git clone --branch v0.57.1 --single-branch git@github.com:sumichalek/Poznamkovnik.git "$HOME/poznamkovnik-bootstrap"
 cd "$HOME/poznamkovnik-bootstrap"
-./scripts/server-update.sh init v0.57.0
+./scripts/server-update.sh init v0.57.1
 ```
 
 Predvolená inštalácia vznikne v `~/apps/poznamkovnik`, služba sa volá `poznamkovnik.service`, adresa je `127.0.0.1` a port `1111`. Pri prvej inštalácii nástroj pripraví aj systemd unit, overí štart a povolí službu pri štarte používateľskej relácie. Pre beh aj bez prihlásenia musí administrátor povoliť `loginctl enable-linger MENO_UCTU`.
@@ -80,7 +80,7 @@ Predvolená inštalácia vznikne v `~/apps/poznamkovnik`, služba sa volá `pozn
 Nástroj odmietne prevziať už existujúcu službu. Pre ďalšiu inštanciu použi vlastný názov, port a koreň:
 
 ```bash
-./scripts/server-update.sh --root "$HOME/apps/poznamkovnik-test" init v0.57.0 --service poznamkovnik-test.service --port 1112
+./scripts/server-update.sh --root "$HOME/apps/poznamkovnik-test" init v0.57.1 --service poznamkovnik-test.service --port 1112
 ```
 
 Adresa `127.0.0.1` je vhodná pre SSH tunel alebo reverzný proxy. Pre priamy prístup v domácej sieti nastav pri inštalácii `--host` na LAN adresu servera a povoľ zvolený port. Pri vzdialenom prístupe používaj HTTPS na proxy serveri.
@@ -100,7 +100,7 @@ Pri zlyhaní úplne prvej inštalácie sa obnovia dáta a nastavenia, ale v nove
 Na serveri:
 
 ```bash
-"$HOME/apps/poznamkovnik/current/scripts/server-update.sh" update v0.57.1
+"$HOME/apps/poznamkovnik/current/scripts/server-update.sh" update v0.57.2
 ```
 
 Pri vlastnej inštalačnej ceste pridaj `--root` pred podpríkaz. Prepínače a pomoc sa zobrazia cez `--help`.
@@ -153,6 +153,8 @@ Obnova vracia obsah do okamihu vytvorenia vybranej zálohy. Prípadné novšie z
 Pri tvrdom prerušení procesu sa automatická obnova nemusí vykonať. Nástroj ukladá stav operácie; ďalší update pri nedokončenej aktivácii odmietne, aby neprepísal údaje potrebné na obnovu.
 
 Pozri `status` a cestu `snapshot` v `shared/update-state.json`. Ak je záloha hotová, over ju a použi `rollback`. Ak prerušenie nastalo pred dokončením zálohy, aktívne dáta ani odkaz ešte neboli zmenené; po kontrole stavu možno pôvodnú službu spustiť cez `systemctl --user start NAZOV.service`. Pred ďalšou aktualizáciou vyrieš aj záznam nedokončenej operácie. Pri chybe samotnej obnovy ponechaj službu zastavenú a použi zachované zálohy a adresáre obnovy.
+
+Ak zlyhala úplne prvá inštalácia a záloha ešte neobsahuje predchádzajúce Git vydanie, použi z pomocného checkoutu verzie 0.57.1 alebo novšej `./scripts/server-update.sh recover /ABSOLUTNA/CESTA/K/ZALOHE`. Príkaz najprv vytvorí novú zálohu aktuálneho stavu a potom obnoví aj stav bez aktívneho vydania. Inštaláciu môžeš zopakovať príkazom `update v0.57.1`.
 
 Aplikácia zatiaľ používa migrácie v `Database.initialize()`. Automatický návrat obnovuje aj predmigračnú databázu, preto nezávisí od spätnej kompatibility novej schémy so starým kódom. Samostatná evidencia číslovaných migrácií zostáva ďalším rozšírením.
 

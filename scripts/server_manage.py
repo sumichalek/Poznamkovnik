@@ -96,7 +96,8 @@ class UserService:
         return state == "active"
 
     def stop(self) -> None:
-        if self.command("show", "--property=LoadState", "--value") == "not-found":
+        load_state = self.command("show", "--property=LoadState", "--value")
+        if load_state in {"not-found", "bad-setting", "error", "masked"} and not self.active():
             return
         self.command("stop")
         if self.active():
@@ -248,18 +249,26 @@ class Deployment:
         run(python, "-c", "from backend.api import AppContext, AppHandler", cwd=release)
 
     def unit_text(self, config: dict) -> str:
-        def quote(value: object) -> str:
+        def quote(value: object, *, expand_environment: bool = True) -> str:
             text = str(value)
             if "\n" in text or "\r" in text:
                 raise DeploymentError("Cesta obsahuje neplatný znak.")
-            return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$") + '"'
+            text = text.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+            if expand_environment:
+                text = text.replace("$", "$$")
+            return '"' + text + '"'
         current = self.root / "current"
+        # WorkingDirectory is a single path, not an ExecStart argument list.
+        # Its parser retains literal quote characters instead of unquoting them.
+        working_directory = str(current).replace("%", "%%")
+        if "\n" in working_directory or "\r" in working_directory:
+            raise DeploymentError("Cesta obsahuje neplatný znak.")
         return (
             f"{MARKER}\n# Deployment root: {self.root}\n[Unit]\nDescription=Poznamkovnik Git server\nStartLimitIntervalSec=0\n\n"
-            f"[Service]\nType=simple\nWorkingDirectory={quote(current)}\n"
+            f"[Service]\nType=simple\nWorkingDirectory={working_directory}\n"
             f"ExecStart={quote(current / '.venv/bin/python')} {quote(current / 'server.py')} "
             f"--host {quote(config['host'])} --port {config['port']} --data-dir {quote(self.data)}\n"
-            f"Environment=PYTHONUNBUFFERED=1\nEnvironmentFile=-{quote(self.shared / 'config.env')}\n"
+            f"Environment=PYTHONUNBUFFERED=1\nEnvironmentFile={quote('-' + str(self.shared / 'config.env'), expand_environment=False)}\n"
             "Restart=on-failure\nRestartSec=5\nTimeoutStopSec=30\nKillSignal=SIGINT\n\n"
             "[Install]\nWantedBy=default.target\n"
         )
@@ -299,8 +308,8 @@ class Deployment:
             # A failed initial preparation may be retried using update.
             if exists(self.unit_dir / config["service"]):
                 raise DeploymentError("Inštalácia nemá current, ale služba už existuje.")
-        if self.state_path.exists() and read_json(self.state_path).get("status") in {"stopped", "backed_up", "activating", "recovery_required"}:
-            raise DeploymentError("Predošlá operácia sa nedokončila. Pozri status a obnov uvedenú zálohu príkazom rollback.")
+        if self.state_path.exists() and read_json(self.state_path).get("status") in {"stopped", "backed_up", "activating", "recovering", "recovery_required"}:
+            raise DeploymentError("Predošlá operácia sa nedokončila. Pozri status a obnov uvedenú zálohu príkazom recover.")
         if old is not None and old.name == tag:
             print("Toto vydanie už je aktívne.")
             return
@@ -517,6 +526,29 @@ class Deployment:
             self.check_release(previous, manifest["commit"])
             self.activate(previous, config, restore_from=snapshot)
 
+    def recover(self, snapshot: Path) -> None:
+        """Restore even a pre-install snapshot, when no previous release exists."""
+        with self.locked():
+            config = self.config()
+            manifest = self.verify_snapshot(snapshot, config)
+            if manifest["previous"]:
+                previous = Path(manifest["previous"])
+                self.check_release(previous, manifest["commit"])
+                self.activate(previous, config, restore_from=snapshot)
+                return
+            service = self.service(config)
+            service.stop()
+            recovery_snapshot = self.snapshot(config, self.current())
+            self.state("recovering", snapshot=str(recovery_snapshot), restore_from=str(snapshot))
+            try:
+                self.restore(snapshot, config)
+                service.reload()
+            except (Exception, KeyboardInterrupt) as error:
+                self.state("recovery_required", snapshot=str(recovery_snapshot), error=str(error))
+                raise DeploymentError(f"Obnova sa nedokončila; službu nechaj zastavenú. Nová záloha: {recovery_snapshot}") from error
+            self.state("recovered", snapshot=str(recovery_snapshot), restored_from=str(snapshot))
+            print("Stav pred prvou inštaláciou bol obnovený. Novú inštaláciu môžeš zopakovať príkazom update.", flush=True)
+
     def status(self) -> dict:
         config = self.config()
         release = self.current()
@@ -543,6 +575,8 @@ def main() -> int:
     update.add_argument("tag")
     rollback = commands.add_parser("rollback", help="Obnov dáta, nastavenia aj vydanie z technickej zálohy")
     rollback.add_argument("snapshot", type=Path)
+    recover = commands.add_parser("recover", help="Obnov aj zálohu spred neúspešnej prvej inštalácie")
+    recover.add_argument("snapshot", type=Path)
     verify = commands.add_parser("verify", help="Over obsah a kontrolné súčty technickej zálohy")
     verify.add_argument("snapshot", type=Path)
     commands.add_parser("status", help="Aktívna verzia, posledná operácia a dostupné zálohy")
@@ -559,6 +593,8 @@ def main() -> int:
             deployment.update(args.tag)
         elif args.command == "rollback":
             deployment.rollback(args.snapshot)
+        elif args.command == "recover":
+            deployment.recover(args.snapshot)
         elif args.command == "verify":
             deployment.verify_snapshot(args.snapshot, deployment.config())
             print("Záloha dát aj nastavení je v poriadku.")

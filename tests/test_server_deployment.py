@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -11,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.server_manage import Deployment, DeploymentError, read_json, run
+from scripts.server_manage import Deployment, DeploymentError, UserService, read_json, run
 
 
 class FakeService:
@@ -231,3 +234,47 @@ class ServerDeploymentTest(unittest.TestCase):
         external.write_text("changed proxy")
         self.deployment.rollback(snapshot)
         self.assertEqual(external.read_text(), "original proxy")
+
+    def test_recover_preinstall_snapshot_allows_retry_without_losing_failed_state(self):
+        original = Path(read_json(self.deployment.state_path)["snapshot"])
+        backup_count = len(list(self.deployment.backups.iterdir()))
+        self.deployment.recover(original)
+        self.assertIsNone(self.deployment.current())
+        self.assertFalse(self.service.running)
+        self.assertFalse((self.deployment.unit_dir / "test.service").exists())
+        self.assertEqual(read_json(self.deployment.state_path)["status"], "recovered")
+        self.assertEqual(len(list(self.deployment.backups.iterdir())), backup_count + 1)
+        self.assertTrue(list(self.deployment.shared.glob("recovery-*/data-after-update/preferences.json")))
+        self.deployment.update("v9.0.1")
+        self.assertTrue(self.service.running)
+        self.assertEqual(self.deployment.current().name, "v9.0.1")
+
+
+class SystemdServiceTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("systemd-analyze"), "systemd parser nie je dostupný")
+    def test_generated_unit_is_accepted_by_real_systemd_parser(self):
+        with tempfile.TemporaryDirectory(prefix="poznamkovnik-unit-") as temporary:
+            for directory in ("installation", "installation with spaces and %"):
+                with self.subTest(directory=directory):
+                    deployment = Deployment(Path(temporary) / directory)
+                    python = deployment.root / "current/.venv/bin/python"
+                    python.parent.mkdir(parents=True)
+                    python.symlink_to(sys.executable)
+                    unit = Path(temporary) / "poznamkovnik-verify.service"
+                    unit.write_text(deployment.unit_text({"host": "0.0.0.0", "port": 1111}))
+                    result = subprocess.run(
+                        ["systemd-analyze", "--user", "verify", str(unit)], capture_output=True, text=True
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_inactive_invalid_unit_does_not_block_restoration(self):
+        service = UserService("test.service")
+        with patch.object(service, "command", side_effect=["bad-setting", "inactive"]) as command:
+            service.stop()
+        self.assertNotIn(unittest.mock.call("stop"), command.call_args_list)
+
+    def test_active_invalid_unit_must_still_be_stopped(self):
+        service = UserService("test.service")
+        with patch.object(service, "command", side_effect=["bad-setting", "active", "", "inactive"]) as command:
+            service.stop()
+        command.assert_any_call("stop")

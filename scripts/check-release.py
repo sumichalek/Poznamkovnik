@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from urllib.request import ProxyHandler, build_opener
 
-from server_manage import DeploymentError, run, write_json
+from server_manage import Deployment, DeploymentError, run, write_json
 
 
 def check_release(reference: str) -> None:
@@ -37,6 +37,12 @@ def check_release(reference: str) -> None:
         python = str(source / ".venv/bin/python")
         run(python, "-m", "pip", "install", "--disable-pip-version-check", "-r", str(source / "requirements.lock"))
         run(python, "-m", "pip", "check")
+        deployment = Deployment(root / "installation")
+        deployment.root.mkdir()
+        (deployment.root / "current").symlink_to(source)
+        unit = root / "poznamkovnik-release-check.service"
+        unit.write_text(deployment.unit_text({"host": "127.0.0.1", "port": 1111}))
+        run("systemd-analyze", "--user", "verify", str(unit))
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
@@ -60,7 +66,7 @@ def check_release(reference: str) -> None:
                             with opener.open(f"http://127.0.0.1:{port}/assets/app.js", timeout=2) as response:
                                 if response.status != 200 or not response.read(1):
                                     raise DeploymentError("Zostavený frontend nie je dostupný.")
-                            print("OK: uzamknuté závislosti, štart, databáza, HTTP zdravie, verzia aj frontend.")
+                            print("OK: uzamknuté závislosti, systemd služba, štart, databáza, HTTP zdravie, verzia aj frontend.")
                             return
                     except (OSError, ValueError):
                         pass

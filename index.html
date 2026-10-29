@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sk" data-app-version="0.57.0">
+<html lang="sk" data-app-version="0.57.1">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,8 +8,8 @@
       const savedTheme = localStorage.getItem('knowledge-theme') || 'focus';
       document.documentElement.dataset.theme = savedTheme === 'contrast' ? 'contrast-light' : savedTheme;
     </script>
-  <link rel="stylesheet" href="style.css?v=0.57.0" />
-    <link rel="stylesheet" href="assets/app.css?v=0.57.0" />
+  <link rel="stylesheet" href="style.css?v=0.57.1" />
+    <link rel="stylesheet" href="assets/app.css?v=0.57.1" />
   </head>
   <body>
     <main id="login-screen" class="login-screen" aria-labelledby="login-title">
@@ -2029,7 +2029,7 @@
               <div class="settings-account-actions">
                 <button id="logout-button" class="settings-logout-button" type="button">Odhlásiť</button>
               </div>
-              <p id="app-version" class="app-version">Verzia 0.57.0</p>
+              <p id="app-version" class="app-version">Verzia 0.57.1</p>
             </section>
 
             <section id="settings-panel-security" class="settings-section settings-security" role="tabpanel" aria-labelledby="settings-tab-security" data-settings-panel="security" hidden>
@@ -2729,6 +2729,6 @@
         }
       }, true);
     </script>
-  <script type="module" src="assets/app.js?v=0.57.0"></script>
+  <script type="module" src="assets/app.js?v=0.57.1"></script>
   </body>
 </html>
