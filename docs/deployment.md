@@ -12,7 +12,7 @@ server: releases/v0.57.0/ ← current
            shared/data/
 ```
 
-Git repozitár existuje na GitHube: `git@github.com:sumichalek/Poznamkovnik.git`. Tag vyberá konkrétny otestovaný commit. Na prvú inštaláciu používaj najmenej `v0.57.1`, ktorá opravuje generovanie služby z vydania `v0.57.0`. Príklady aktualizácie používajú aj `v0.57.2`; pred použitím musí byť príslušný tag skutočne zverejnený. Táto implementácia sama nevytvára commity ani nič neposiela na GitHub.
+Git repozitár existuje na GitHube: `git@github.com:sumichalek/Poznamkovnik.git`. Tag vyberá konkrétny otestovaný commit. Na prvú inštaláciu používaj najmenej `v0.57.2`, ktorá obsahuje opravu generovania systemd služby aj blokovania zakódovaných súkromných URL. Pred použitím musí byť príslušný tag skutočne zverejnený. Táto implementácia sama nevytvára commity ani nič neposiela na GitHub.
 
 ```text
 ~/apps/poznamkovnik/
@@ -70,9 +70,9 @@ Potrebné sú Python 3.11 alebo novší s `venv` a `pip`, Git, systemd používa
 Po zverejnení prvého tagu načítaj projekt do samostatného pomocného priečinka na serveri:
 
 ```bash
-git clone --branch v0.57.1 --single-branch git@github.com:sumichalek/Poznamkovnik.git "$HOME/poznamkovnik-bootstrap"
+git clone --branch v0.57.2 --single-branch git@github.com:sumichalek/Poznamkovnik.git "$HOME/poznamkovnik-bootstrap"
 cd "$HOME/poznamkovnik-bootstrap"
-./scripts/server-update.sh init v0.57.1
+./scripts/server-update.sh init v0.57.2
 ```
 
 Predvolená inštalácia vznikne v `~/apps/poznamkovnik`, služba sa volá `poznamkovnik.service`, adresa je `127.0.0.1` a port `1111`. Pri prvej inštalácii nástroj pripraví aj systemd unit, overí štart a povolí službu pri štarte používateľskej relácie. Pre beh aj bez prihlásenia musí administrátor povoliť `loginctl enable-linger MENO_UCTU`.
@@ -80,7 +80,7 @@ Predvolená inštalácia vznikne v `~/apps/poznamkovnik`, služba sa volá `pozn
 Nástroj odmietne prevziať už existujúcu službu. Pre ďalšiu inštanciu použi vlastný názov, port a koreň:
 
 ```bash
-./scripts/server-update.sh --root "$HOME/apps/poznamkovnik-test" init v0.57.1 --service poznamkovnik-test.service --port 1112
+./scripts/server-update.sh --root "$HOME/apps/poznamkovnik-test" init v0.57.2 --service poznamkovnik-test.service --port 1112
 ```
 
 Adresa `127.0.0.1` je vhodná pre SSH tunel alebo reverzný proxy. Pre priamy prístup v domácej sieti nastav pri inštalácii `--host` na LAN adresu servera a povoľ zvolený port. Pri vzdialenom prístupe používaj HTTPS na proxy serveri.

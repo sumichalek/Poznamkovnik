@@ -180,3 +180,13 @@ class DocumentWorkshopApiTestCase(unittest.TestCase):
         status, result = self.request("GET", "/api/health")
         self.assertEqual(status, 503)
         self.assertIn("error", result)
+
+    def test_encoded_private_static_paths_are_denied(self) -> None:
+        self.token = ""
+        for method in ("GET", "HEAD"):
+            for path in ("/backend/api.py", "/back%65nd/api.py", "/back%65nd/%ff.py", "/%2egit/HEAD", "/%2elocal/blocked"):
+                with self.subTest(method=method, path=path):
+                    status, _headers, _body = self.raw_request(method, path)
+                    self.assertEqual(status, 404)
+        status, _headers, _body = self.raw_request("GET", "/index.html")
+        self.assertEqual(status, 200)

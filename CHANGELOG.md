@@ -1,5 +1,10 @@
 # Zmeny vo vydaniach
 
+## 0.57.2
+
+- Opravené blokovanie súkromných statických ciest pri percentovom kódovaní URL pre požiadavky GET aj HEAD.
+- Regresný HTTP test overuje, že skryté adresáre a backend zostanú neprístupné aj cez zakódované cesty, pričom verejná stránka funguje.
+
 ## 0.57.1
 
 - Opravená cesta `WorkingDirectory` vo vygenerovanej systemd službe, ktorá blokovala prvý štart vydania 0.57.0.

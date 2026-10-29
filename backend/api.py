@@ -13,7 +13,7 @@ from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
 from typing import Any, BinaryIO
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -198,7 +198,8 @@ class AppHandler(SimpleHTTPRequestHandler):
         return urlsplit(self.path).path.startswith("/api/")
 
     def _is_private_static_path(self) -> bool:
-        path = urlsplit(self.path).path
+        # Match the URL decoding done by SimpleHTTPRequestHandler.translate_path.
+        path = unquote(urlsplit(self.path).path)
         parts = [part for part in Path(path).parts if part not in {"/", "."}]
         blocked = {".git", ".local", "data", "backend", "node_modules", "__pycache__", ".agents", ".codex"}
         return any(part in blocked or part.startswith(".") for part in parts)
