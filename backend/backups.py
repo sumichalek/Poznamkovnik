@@ -213,14 +213,7 @@ class BackupManager:
             "createdAt": created_at,
             "application": "Poznamkovnik",
         }
-        blob_hashes = sorted(
-            {
-                str(row.get("blob_hash", ""))
-                for key in ("sourceFiles", "musicTracks")
-                for row in snapshot.get(key, [])
-                if isinstance(row, dict)
-            }
-        )
+        blob_hashes = sorted(self._snapshot_blob_hashes(snapshot))
         for blob_hash in blob_hashes:
             path_for_blob = self.files.path_for_hash(blob_hash)
             if not path_for_blob.is_file():

@@ -16,6 +16,7 @@ from backend.tutorial_c_examples import (
     ATOMIC_SUPPORT, BOUNDED_QUEUE, COOPERATIVE_JOBS, COOPERATIVE_MAIN, COUNT_POSITIVE,
     GATE_MAIN, GATE_SUPPORT, LINE_READER, QUEUE_CLOSE, QUEUE_DRAIN_MAIN,
     GROUP_MAIN, GROUP_RUN, GROUP_TYPES, GROUP_WORKERS,
+    MATRIX_ACCESS_MAIN, MATRIX_SUPPORT,
     QUEUE_OPERATIONS, QUEUE_PUSH, QUEUE_SUPPORT, THREAD_JOIN,
     TIMED_QUEUE_MAIN, TIMED_QUEUE_POP, TIMED_QUEUE_TYPES, WALK_VALUES,
 )
@@ -37,6 +38,34 @@ def _pick(values: tuple[Any, ...], variant: int) -> Any:
 
 def _c_practice(topic: str, variant: int) -> dict[str, Any] | None:
     variant = _variant(variant)
+    if topic == "multidimensional":
+        first, last = _pick(((3, 9), (-8, -2), (0, 12), (105, -31)), variant)
+        main = MATRIX_ACCESS_MAIN.replace("{3, 1, 4}, {1, 5, 9}", f"{{{first}, 1, 4}}, {{1, 5, {last}}}")
+        main = main.replace("true, 3}", f"true, {first}}}").replace("true, 9}", f"true, {last}}}")
+        return {
+            "title": "Dve hranice pred jedným čítaním",
+            "description": "Doplň iba matrix_get pre riadky šírky MATRIX_COLUMNS. Pri NULL matici alebo výsledku, row >= rows alebo column >= MATRIX_COLUMNS vráť false bez zmeny výsledku. Inak ulož matrix[row][column] cez result a vráť true. Počet rows je údaj volajúceho, nie kapacita zistená funkciou. Main nemeň. Testy porovnávajú výsledky konkrétnych prípadov, nenahrádzajú kontrolu zdroja.",
+            "starterSource": MATRIX_SUPPORT + r"""
+static bool matrix_get(const int matrix[][MATRIX_COLUMNS], size_t rows,
+                       size_t row, size_t column, int *result)
+{
+    /* Validate both indices and pointers before accessing the matrix. */
+    (void) matrix;
+    (void) rows;
+    (void) row;
+    (void) column;
+    (void) result;
+    return false;
+}
+""" + main,
+            "stdin": "",
+            "expectedOutput": f"first: ok=1 value={first} matched=1\nlast: ok=1 value={last} matched=1\nrow: ok=0 value=77 matched=1\ncolumn: ok=0 value=77 matched=1\nempty: ok=0 value=77 matched=1\n",
+            "hints": (
+                "Každý index porovnaj s jeho vlastnou hranicou. Index rovný počtu už nie je platný.",
+                "Všetky chybové vetvy musia skončiť pred matrix[row][column] aj pred zápisom cez result.",
+                "V parametri sa zachová šírka riadka, nie počet riadkov. sizeof matrix tu nedá veľkosť celej matice.",
+            ),
+        }
     if topic == "arguments":
         number = _pick((42, -7, 0, 105), variant)
         main = ARGUMENT_CASES_MAIN.replace('"42"', f'"{number}"').replace("PARSE_OK, 42", f"PARSE_OK, {number}")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import mimetypes
 import re
 import tempfile
@@ -38,6 +39,7 @@ from .radio_schedule import RadioRecordingScheduler
 from .tutorial_exercises import evaluate_tutorial_practice, tutorial_practice_public
 from .source_text import SourceTextIndex
 from .source_tables import SourceTablePreview
+from .version import release_info
 
 
 MAX_MULTIPART_HEADER_BYTES = 64 * 1024
@@ -95,13 +97,16 @@ class AppContext:
     def __init__(self, base_dir: Path, data_dir: Path) -> None:
         self.base_dir = base_dir
         self.data_dir = data_dir
+        self.release = release_info(base_dir)
         self.database = Database(data_dir / "poznamkovnik.sqlite3")
         self.database.initialize()
         self.auth = AuthService(self.database)
         self.files = FileStore(data_dir / "files")
         self.source_text = SourceTextIndex(self.database, self.files)
         self.source_tables = SourceTablePreview(self.database, self.files)
-        self.documents = DocumentWorkshop(data_dir / "documents", self.database, self.files)
+        self.documents = DocumentWorkshop(
+            data_dir / "documents", self.database, self.files, self._index_source_attachments
+        )
         self.backgrounds = BackgroundStore(data_dir / "backgrounds")
         self.backups = BackupManager(data_dir / "backups", self.database, self.files, self.backgrounds)
         self.radio_recordings = RadioRecordingManager(data_dir / "radio-recordings", self.database)
@@ -121,6 +126,10 @@ class AppContext:
         self.firmware_programmer = FirmwareProgrammer(self.firmware_builder)
         self.serial_monitor = SerialMonitor()
         self.language_services = LanguageService()
+
+    def _index_source_attachments(self, user_id: str, source: dict[str, Any]) -> None:
+        for file in self.database.source_text_files(user_id, str(source.get("id") or "")):
+            self.source_text.ensure_file(user_id, file)
 
 
 class AppHandler(SimpleHTTPRequestHandler):
@@ -216,6 +225,21 @@ class AppHandler(SimpleHTTPRequestHandler):
         if len(segments) < 2:
             raise ApiError(HTTPStatus.NOT_FOUND, "Neznáme API.")
         route = segments[1:]
+
+        if route == ["health"] and method == "GET":
+            try:
+                with self.context.database.connect() as connection:
+                    connection.execute("SELECT 1 FROM users LIMIT 1").fetchone()
+                if not self.context.data_dir.is_dir() or not self.context.files.blobs_dir.is_dir():
+                    raise OSError("Úložisko nie je dostupné.")
+            except Exception as error:
+                raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Aplikácia nie je pripravená.") from error
+            return {
+                "status": "ok", **self.context.release,
+                "instance": hashlib.sha256(str(self.context.data_dir.resolve()).encode()).hexdigest()[:24],
+            }
+        if route == ["version"] and method == "GET":
+            return self.context.release
 
         if route == ["auth", "status"] and method == "GET":
             user = self.context.auth.session_user(self._session_token())
@@ -665,6 +689,8 @@ class AppHandler(SimpleHTTPRequestHandler):
             data = self._read_json()
             data.setdefault("id", str(uuid.uuid4()))
             return self.context.database.create_document_project(user["id"], data)
+        if route == ["documents", "runtime"] and method == "GET":
+            return {"ocr": self.context.documents.ocr_status()}
         if route == ["documents", "import"] and method == "POST":
             uploaded = self._read_upload(MAX_DOCUMENT_PROJECT_TRANSFER_BYTES + 512 * 1024)
             try:
@@ -825,6 +851,15 @@ class AppHandler(SimpleHTTPRequestHandler):
             source = self.context.documents.build_source(user_id, project_id, self._read_json())
             return {"source": source}
 
+        if len(route) == 3 and route[2] == "build-jobs" and method == "POST":
+            return {"job": self.context.documents.start_build_job(user_id, project_id, self._read_json())}
+
+        if len(route) == 4 and route[2] == "build-jobs":
+            if method == "GET":
+                return {"job": self.context.documents.build_job(user_id, project_id, route[3])}
+            if method == "DELETE":
+                return {"job": self.context.documents.cancel_build_job(user_id, project_id, route[3])}
+
         if len(route) == 3 and route[2] == "export" and method in {"GET", "HEAD"}:
             archive, filename = self.context.documents.export_project(user_id, project_id)
             try:
@@ -927,7 +962,7 @@ class AppHandler(SimpleHTTPRequestHandler):
         converted_created = False
         try:
             if self.context.documents.requires_conversion(file_info):
-                temporary_pdf = self.context.documents.convert_office_to_pdf(file_info)
+                temporary_pdf = self.context.documents.convert_to_pdf(file_info)
                 with temporary_pdf.open("rb") as converted:
                     processing_info = self.context.files.store_upload(
                         converted,
@@ -1106,6 +1141,12 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         if len(route) == 5 and route[2] == "files" and route[4] == "content" and method == "GET":
             return {"content": self.context.source_text.read_file(user_id, source_id, route[3])}
+
+        if len(route) == 5 and route[2] == "files" and route[4] == "reader-state":
+            if method == "GET":
+                return {"state": self.context.database.source_reader_state(user_id, source_id, route[3])}
+            if method == "PUT":
+                return {"state": self.context.database.save_source_reader_state(user_id, source_id, route[3], self._read_json())}
 
         if len(route) == 5 and route[2] == "files" and route[4] == "table" and method == "GET":
             parameters = parse_qs(urlsplit(self.path).query)

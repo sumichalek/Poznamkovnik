@@ -2,7 +2,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild js/main.js --bundle --format=esm --target=es2022 --minify --loader:.woff2=file --loader:.woff=file --loader:.ttf=file --outfile=assets/app.js",
+    "build": "node scripts/build.mjs",
     "test:frontend": "node --test tests/*.test.mjs",
     "test": "npm run test:frontend && python3 -m unittest discover -s tests -v",
     "check": "npm run build && npm test"

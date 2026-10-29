@@ -51,6 +51,8 @@ let previewSelectedText = '';
 let previewSelectedLocator = '';
 let previewReaderData = null;
 let previewReaderSearchTimer = 0;
+let previewReaderSaveTimer = 0;
+let previewReaderState = { locator: '', scrollOffset: 0, fontSize: 'normal', textWidth: 'normal', bookmarks: [] };
 let previewTableData = null;
 let previewTableRequestId = 0;
 let previewTableSearchTimer = 0;
@@ -72,6 +74,7 @@ let sourceIdleResolvers = [];
 let sourceFileDropDepth = 0;
 let sourceContentSearchTimer = 0;
 let sourceContentRequestId = 0;
+const SOURCE_READER_SETTINGS_KEY = 'poznamkovnik-source-reader-settings';
 let sourceContentResults = [];
 let sourceCollections = [];
 let activeSourceCollectionId = '';
@@ -934,7 +937,7 @@ function renderSourcePreviewReader({ locator = '', query } = {}) {
   locations.forEach((location) => {
     const option = document.createElement('option');
     option.value = location.locator;
-    option.textContent = location.locator;
+    option.textContent = previewReaderState.bookmarks?.includes(location.locator) ? `★ ${location.locator}` : location.locator;
     dom.sourcePreviewReaderLocations.append(option);
   });
   dom.sourcePreviewReaderLocations.hidden = !hasParts;
@@ -963,6 +966,7 @@ function renderSourcePreviewReader({ locator = '', query } = {}) {
   });
 
   previewSelectedLocator = dom.sourcePreviewReaderLocations.value;
+  syncSourceReaderBookmark();
   dom.sourcePreviewReaderStatus.textContent = searchQuery.trim()
     ? readerResultLabel(matches)
     : hasParts
@@ -970,6 +974,75 @@ function renderSourcePreviewReader({ locator = '', query } = {}) {
       : '';
   dom.sourcePreviewReader.hidden = false;
   if (locator) requestAnimationFrame(() => scrollSourcePreviewToLocator(dom.sourcePreviewReaderLocations.value));
+}
+
+function applySourceReaderSettings() {
+  let settings = {};
+  try { settings = JSON.parse(localStorage.getItem(SOURCE_READER_SETTINGS_KEY) || '{}'); } catch { settings = {}; }
+  const size = ['small', 'normal', 'large', 'xlarge'].includes(previewReaderState.fontSize)
+    ? previewReaderState.fontSize : (['small', 'normal', 'large', 'xlarge'].includes(settings.size) ? settings.size : 'normal');
+  const width = ['narrow', 'normal', 'wide'].includes(previewReaderState.textWidth)
+    ? previewReaderState.textWidth : (['narrow', 'normal', 'wide'].includes(settings.width) ? settings.width : 'normal');
+  dom.sourcePreviewReaderSize.value = size;
+  dom.sourcePreviewReaderWidth.value = width;
+  dom.sourcePreviewReader.dataset.readerSize = size;
+  dom.sourcePreviewReader.dataset.readerWidth = width;
+}
+
+function saveSourceReaderSettings() {
+  const settings = { size: dom.sourcePreviewReaderSize.value, width: dom.sourcePreviewReaderWidth.value };
+  localStorage.setItem(SOURCE_READER_SETTINGS_KEY, JSON.stringify(settings));
+  previewReaderState.fontSize = settings.size;
+  previewReaderState.textWidth = settings.width;
+  applySourceReaderSettings();
+  scheduleSourceReaderStateSave();
+}
+
+function readerPositionKey() {
+  return previewSourceId && previewFileId ? `poznamkovnik-reader-position:${previewSourceId}:${previewFileId}` : '';
+}
+
+function restoreSourceReaderPosition() {
+  const key = readerPositionKey();
+  if (!key) return;
+  const position = Number(previewReaderState.scrollOffset || localStorage.getItem(key) || 0);
+  if (Number.isFinite(position) && position > 0) requestAnimationFrame(() => { dom.sourcePreviewText.scrollTop = position; });
+}
+
+function syncSourceReaderBookmark() {
+  const marked = Boolean(previewSelectedLocator && previewReaderState.bookmarks?.includes(previewSelectedLocator));
+  dom.sourcePreviewReaderBookmark.classList.toggle('is-active', marked);
+  dom.sourcePreviewReaderBookmark.title = marked ? 'Odstrániť záložku kapitoly' : 'Pridať záložku kapitoly';
+  dom.sourcePreviewReaderBookmark.setAttribute('aria-label', dom.sourcePreviewReaderBookmark.title);
+}
+
+function scheduleSourceReaderStateSave() {
+  window.clearTimeout(previewReaderSaveTimer);
+  const sourceId = previewSourceId;
+  const fileId = previewFileId;
+  if (!sourceId || !fileId) return;
+  previewReaderSaveTimer = window.setTimeout(() => {
+    const body = {
+      locator: previewSelectedLocator,
+      scrollOffset: Math.round(dom.sourcePreviewText.scrollTop),
+      fontSize: dom.sourcePreviewReaderSize.value,
+      textWidth: dom.sourcePreviewReaderWidth.value,
+      bookmarks: previewReaderState.bookmarks || []
+    };
+    void apiRequest(`/sources/${encodeURIComponent(sourceId)}/files/${encodeURIComponent(fileId)}/reader-state`, {
+      method: 'PUT', body
+    });
+  }, 350);
+}
+
+function toggleSourceReaderBookmark() {
+  if (!previewSelectedLocator) return;
+  const bookmarks = new Set(previewReaderState.bookmarks || []);
+  if (bookmarks.has(previewSelectedLocator)) bookmarks.delete(previewSelectedLocator);
+  else bookmarks.add(previewSelectedLocator);
+  previewReaderState.bookmarks = [...bookmarks];
+  renderSourcePreviewReader({ locator: previewSelectedLocator });
+  scheduleSourceReaderStateSave();
 }
 
 function refreshSourcePreviewReaderSearch() {
@@ -1423,9 +1496,11 @@ async function openSourceFile(file, locator = '', query = '') {
     dom.sourcePreviewReader.hidden = false;
     dom.sourcePreviewText.textContent = 'Načítavam text...';
     try {
-      const response = await apiRequest(
-        `/sources/${encodeURIComponent(selectedSource.id)}/files/${encodeURIComponent(file.id)}/content`
-      );
+      const base = `/sources/${encodeURIComponent(selectedSource.id)}/files/${encodeURIComponent(file.id)}`;
+      const [response, saved] = await Promise.all([
+        apiRequest(`${base}/content`),
+        apiRequest(`${base}/reader-state`).catch(() => ({ state: {} }))
+      ]);
       if (requestId !== previewRequestId || !isSourcePreviewOpen()) return;
       const content = response.content || {};
       if (content.textIndexStatus !== 'ready' || !String(content.content || '').trim()) {
@@ -1433,8 +1508,11 @@ async function openSourceFile(file, locator = '', query = '') {
         return;
       }
       previewReaderData = content;
-      previewSelectedLocator = locator;
-      renderSourcePreviewReader({ locator, query });
+      previewReaderState = { locator: '', scrollOffset: 0, fontSize: 'normal', textWidth: 'normal', bookmarks: [], ...(saved.state || {}) };
+      previewSelectedLocator = locator || previewReaderState.locator || '';
+      applySourceReaderSettings();
+      renderSourcePreviewReader({ locator: previewSelectedLocator, query });
+      restoreSourceReaderPosition();
     } catch (error) {
       if (requestId === previewRequestId) {
         showSourcePreviewFallback(error?.message || 'Textový náhľad sa nepodarilo načítať. Súbor môžeš otvoriť v novom okne alebo stiahnuť.');
@@ -2684,6 +2762,7 @@ export async function refreshElementSourceLinks() {
 }
 
 export function initializeSources() {
+  applySourceReaderSettings();
   syncSourceReturnButton();
   installDialogBackdropClose(dom.sourceMetadataDialog, closeSourceMetadataDialog);
   initializeSourceTransfer({
@@ -2724,10 +2803,20 @@ export function initializeSources() {
   dom.sourcePreviewReaderLocations.addEventListener('change', () => {
     previewSelectedLocator = dom.sourcePreviewReaderLocations.value;
     scrollSourcePreviewToLocator(previewSelectedLocator);
+    scheduleSourceReaderStateSave();
   });
   dom.sourcePreviewReaderQuery.addEventListener('input', scheduleSourcePreviewReaderSearch);
   dom.sourcePreviewReaderQuery.addEventListener('search', refreshSourcePreviewReaderSearch);
   dom.sourcePreviewReaderSearchButton.addEventListener('click', refreshSourcePreviewReaderSearch);
+  dom.sourcePreviewReaderSize.addEventListener('change', saveSourceReaderSettings);
+  dom.sourcePreviewReaderWidth.addEventListener('change', saveSourceReaderSettings);
+  dom.sourcePreviewReaderBookmark.addEventListener('click', toggleSourceReaderBookmark);
+  dom.sourcePreviewText.addEventListener('scroll', () => {
+    const key = readerPositionKey();
+    if (key) localStorage.setItem(key, String(Math.round(dom.sourcePreviewText.scrollTop)));
+    previewReaderState.scrollOffset = Math.round(dom.sourcePreviewText.scrollTop);
+    scheduleSourceReaderStateSave();
+  }, { passive: true });
   dom.sourcePreviewTableSheets.addEventListener('change', () => {
     const file = selectedSource?.files?.find((entry) => entry.id === previewFileId);
     if (file) void loadSourcePreviewTable(file, { sheet: dom.sourcePreviewTableSheets.value, offset: 0 });

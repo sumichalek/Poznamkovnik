@@ -1,5 +1,110 @@
 """C17 programs shared by the lesson text and its runnable examples."""
 
+MATRIX_SUPPORT = r"""#include <stdbool.h>
+#include <stddef.h>
+
+enum { MATRIX_COLUMNS = 3 };
+"""
+
+MATRIX_WALK = MATRIX_SUPPORT + r"""
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    const int matrix[][MATRIX_COLUMNS] = {{3, 1, 4}, {1, 5, 9}};
+    const size_t rows = sizeof matrix / sizeof matrix[0];
+    const size_t columns = sizeof matrix[0] / sizeof matrix[0][0];
+    if (printf("rows=%zu columns=%zu\n", rows, columns) < 0) {
+        return EXIT_FAILURE;
+    }
+    for (size_t row = 0; row < rows; ++row) {
+        for (size_t column = 0; column < columns; ++column) {
+            if (printf("[%zu][%zu]=%d\n", row, column, matrix[row][column]) < 0) {
+                return EXIT_FAILURE;
+            }
+        }
+    }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
+MATRIX_GET = r"""
+/* Borrow rows complete rows of MATRIX_COLUMNS const ints.
+   A non-NULL result must point to a writable int.
+   A rejected request leaves *result unchanged; no storage is owned here. */
+static bool matrix_get(const int matrix[][MATRIX_COLUMNS], size_t rows,
+                       size_t row, size_t column, int *result)
+{
+    if (matrix == NULL || result == NULL || row >= rows || column >= MATRIX_COLUMNS) {
+        return false;
+    }
+    *result = matrix[row][column];
+    return true;
+}
+"""
+
+MATRIX_ACCESS_MAIN = r"""
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    const int matrix[][MATRIX_COLUMNS] = {{3, 1, 4}, {1, 5, 9}};
+    const size_t rows = sizeof matrix / sizeof matrix[0];
+    const struct {
+        const char *label;
+        size_t rows, row, column;
+        bool ok;
+        int value;
+    } cases[] = {
+        {"first", rows, 0, 0, true, 3},
+        {"last", rows, rows - 1, MATRIX_COLUMNS - 1, true, 9},
+        {"row", rows, rows, 0, false, 77},
+        {"column", rows, 0, MATRIX_COLUMNS, false, 77},
+        {"empty", 0, 0, 0, false, 77}
+    };
+    int result = EXIT_SUCCESS;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        int value = 77;
+        bool ok = matrix_get(matrix, cases[i].rows, cases[i].row, cases[i].column, &value);
+        int matched = ok == cases[i].ok && value == cases[i].value;
+        if (!matched) { result = EXIT_FAILURE; }
+        if (printf("%s: ok=%d value=%d matched=%d\n", cases[i].label, ok, value, matched) < 0) {
+            return EXIT_FAILURE;
+        }
+    }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : result;
+}
+"""
+
+MATRIX_ACCESS = MATRIX_SUPPORT + MATRIX_GET + MATRIX_ACCESS_MAIN
+
+MATRIX_DECLARATIONS = MATRIX_SUPPORT + r"""
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    int matrix[2][MATRIX_COLUMNS] = {{1, 2, 3}, {4, 5, 6}};
+    int other = 9;
+    int (*row)[MATRIX_COLUMNS] = matrix;
+    int *cells[3] = {&matrix[1][2], &matrix[0][0], &other};
+    int **cell = cells;
+
+    row[1][0] = 40;
+    *cell[0] = 60;
+    if (printf("matrix[1]: %d %d %d\n", matrix[1][0], matrix[1][1], matrix[1][2]) < 0 ||
+        printf("selected: %d %d %d\n", *cells[0], *cells[1], *cells[2]) < 0 ||
+        printf("row-elements=%zu pointer-count=%zu\n",
+               sizeof *row / sizeof (*row)[0], sizeof cells / sizeof cells[0]) < 0 ||
+        printf("row-step=%d cell-step=%d\n", row + 1 == &matrix[1], cell + 1 == &cells[1]) < 0) {
+        return EXIT_FAILURE;
+    }
+    return fflush(stdout) == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+"""
+
 RECURSION_SUM = r"""#include <stdio.h>
 #include <stdlib.h>
 

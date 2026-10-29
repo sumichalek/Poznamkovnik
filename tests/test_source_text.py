@@ -82,7 +82,7 @@ class SourceTextIndexTestCase(unittest.TestCase):
 
         epub_results = self.index.search_source(self.user["id"], self.source["id"], "hladatelny")
         self.assertEqual(epub_results["results"][0]["fileId"], "epub-file")
-        self.assertEqual(epub_results["results"][0]["locator"], "Kapitola 1")
+        self.assertEqual(epub_results["results"][0]["locator"], "EPUB kapitola")
 
         pdf_results = self.index.search_source(self.user["id"], self.source["id"], "overenim")
         self.assertEqual(pdf_results["results"][0]["fileId"], "pdf-file")
@@ -91,7 +91,7 @@ class SourceTextIndexTestCase(unittest.TestCase):
         reader = self.index.read_file(self.user["id"], self.source["id"], "epub-file")
         self.assertEqual(reader["textIndexStatus"], "ready")
         self.assertIn("EPUB kapitola", reader["content"])
-        self.assertEqual(reader["locations"][0]["locator"], "Kapitola 1")
+        self.assertEqual(reader["locations"][0]["locator"], "EPUB kapitola")
 
     def test_indexed_attachment_content_is_available_in_global_search(self) -> None:
         self._add("global-file", "manual.txt", "Jedinečné hľadateľné spojenie pre globálny katalóg.".encode(), "text/plain")

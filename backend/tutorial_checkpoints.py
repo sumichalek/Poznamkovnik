@@ -74,6 +74,18 @@ TUTORIAL_CHECKPOINTS: dict[str, tuple[dict[str, Any], ...]] = {
             "incorrectFeedback": "C odovzdáva všetky parametre hodnotou. Na zmenu cudzieho objektu funkcia potrebuje dostať jeho adresu.",
         },
         {
+            "id": "c-matrix-row-type",
+            "prompt": "Aký typ má parameter zapísaný ako int matrix[][3] a čo znamená matrix + 1?",
+            "options": (
+                ("a", "int **; posun prejde na ďalší ukazovateľ uložený v matici."),
+                ("b", "int (*)[3]; posun prejde na ďalší celý riadok troch int."),
+                ("c", "int *; posun prejde na ďalšie jednotlivé int bez ohľadu na riadky."),
+            ),
+            "correctOptionId": "b",
+            "correctFeedback": "Správne. Na ukazovateľ sa upraví vonkajšia úroveň poľa. Tvar riadka zostane v type, počet dostupných riadkov musí určiť kontrakt.",
+            "incorrectFeedback": "Matica obsahuje riadky hodnôt, nie uložené adresy riadkov. Parameter smeruje na pole troch int; int ** patrí k inej reprezentácii.",
+        },
+        {
             "id": "c-argument-count-before-access",
             "prompt": "Program vyžaduje jedno celé číslo pri spustení. Ktoré poradie kontrol je správne?",
             "options": (

@@ -307,6 +307,7 @@ BACKUP_RECORD_LIMITS = {
     "podcastFeeds": 5_000,
     "podcastEpisodes": 100_000,
     "sourceAnnotations": 50_000,
+    "sourceReaderStates": 50_000,
     "librarySources": 50_000,
     "elementSources": 50_000,
     "tasks": 20_000,
@@ -473,6 +474,18 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS source_file_text_status_idx
                     ON source_file_text(extraction_status, indexed_at DESC);
+
+                CREATE TABLE IF NOT EXISTS source_reader_state (
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    source_file_id TEXT NOT NULL REFERENCES source_files(id) ON DELETE CASCADE,
+                    locator TEXT NOT NULL DEFAULT '',
+                    scroll_offset INTEGER NOT NULL DEFAULT 0,
+                    font_size TEXT NOT NULL DEFAULT 'normal',
+                    text_width TEXT NOT NULL DEFAULT 'normal',
+                    bookmarks_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, source_file_id)
+                );
 
                 CREATE TABLE IF NOT EXISTS document_projects (
                     id TEXT PRIMARY KEY,
@@ -4487,6 +4500,17 @@ class Database:
                     WHERE s.user_id = ? ORDER BY sa.created_at
                     """
                 ),
+                "sourceReaderStates": rows(
+                    """
+                    SELECT state.source_file_id, state.locator, state.scroll_offset, state.font_size,
+                           state.text_width, state.bookmarks_json, state.updated_at
+                    FROM source_reader_state state
+                    JOIN source_files file ON file.id = state.source_file_id
+                    JOIN sources source ON source.id = file.source_id
+                    WHERE state.user_id = ? AND source.user_id = ? ORDER BY state.updated_at
+                    """,
+                    (user_id, user_id),
+                ),
                 "librarySources": rows(
                     """
                     SELECT ls.library_id, ls.source_id, ls.added_at, ls.note
@@ -4654,6 +4678,7 @@ class Database:
             "documentProjects",
             "documentInputs",
             "documentPages",
+            "sourceReaderStates",
         }
         records = {
             key: self._backup_records(snapshot.get(key, [] if key in optional_backup_keys else None), key)
@@ -4772,6 +4797,34 @@ class Database:
                 }
             )
         source_file_ids = self._backup_unique_ids(source_files, "súborov")
+
+        source_reader_states = []
+        seen_reader_files: set[str] = set()
+        for row in records["sourceReaderStates"]:
+            source_file_id = self._clean_id(row.get("source_file_id"))
+            if source_file_id not in source_file_ids or source_file_id in seen_reader_files:
+                continue
+            try:
+                scroll_offset = min(100_000_000, max(0, int(row.get("scroll_offset", 0))))
+                raw_bookmarks = json.loads(str(row.get("bookmarks_json") or "[]"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                scroll_offset, raw_bookmarks = 0, []
+            bookmarks = list(dict.fromkeys(
+                self._clean_text(item, 300) for item in raw_bookmarks
+                if isinstance(raw_bookmarks, list) and self._clean_text(item, 300)
+            ))[:100]
+            font_size = self._backup_text(row, "font_size", 20)
+            text_width = self._backup_text(row, "text_width", 20)
+            source_reader_states.append({
+                "source_file_id": source_file_id,
+                "locator": self._backup_text(row, "locator", 300),
+                "scroll_offset": scroll_offset,
+                "font_size": font_size if font_size in {"small", "normal", "large", "xlarge"} else "normal",
+                "text_width": text_width if text_width in {"narrow", "normal", "wide"} else "normal",
+                "bookmarks_json": json.dumps(bookmarks, ensure_ascii=False, separators=(",", ":")),
+                "updated_at": self._timestamp(row.get("updated_at")),
+            })
+            seen_reader_files.add(source_file_id)
 
         document_projects = [
             {
@@ -5644,6 +5697,15 @@ class Database:
             connection.executemany(
                 "INSERT INTO source_files(id, source_id, blob_hash, original_name, mime_type, size_bytes, created_at) VALUES (:id, :source_id, :blob_hash, :original_name, :mime_type, :size_bytes, :created_at)",
                 source_files,
+            )
+            connection.executemany(
+                """INSERT INTO source_reader_state(
+                       user_id, source_file_id, locator, scroll_offset, font_size, text_width, bookmarks_json, updated_at
+                   ) VALUES (
+                       :user_id, :source_file_id, :locator, :scroll_offset, :font_size, :text_width,
+                       :bookmarks_json, :updated_at
+                   )""",
+                [{**row, "user_id": user_id} for row in source_reader_states],
             )
             connection.executemany(
                 """
@@ -7696,6 +7758,69 @@ class Database:
             "textIndexError": row["extraction_error"],
             "textIndexedAt": row["indexed_at"],
         }
+
+    def source_reader_state(self, user_id: str, source_id: str, file_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            owned = connection.execute(
+                """SELECT 1 FROM source_files sf JOIN sources s ON s.id = sf.source_id
+                   WHERE s.user_id = ? AND sf.source_id = ? AND sf.id = ?""",
+                (user_id, source_id, file_id),
+            ).fetchone()
+            if not owned:
+                raise KeyError("Príloha neexistuje.")
+            row = connection.execute(
+                "SELECT * FROM source_reader_state WHERE user_id = ? AND source_file_id = ?",
+                (user_id, file_id),
+            ).fetchone()
+        if not row:
+            return {"locator": "", "scrollOffset": 0, "fontSize": "normal", "textWidth": "normal", "bookmarks": []}
+        try:
+            bookmarks = json.loads(row["bookmarks_json"] or "[]")
+        except json.JSONDecodeError:
+            bookmarks = []
+        return {
+            "locator": str(row["locator"] or ""),
+            "scrollOffset": max(0, int(row["scroll_offset"] or 0)),
+            "fontSize": str(row["font_size"] or "normal"),
+            "textWidth": str(row["text_width"] or "normal"),
+            "bookmarks": bookmarks if isinstance(bookmarks, list) else [],
+        }
+
+    def save_source_reader_state(self, user_id: str, source_id: str, file_id: str, data: Any) -> dict[str, Any]:
+        values = data if isinstance(data, dict) else {}
+        locator = self._clean_text(values.get("locator"), 300)
+        try:
+            offset = min(100_000_000, max(0, int(values.get("scrollOffset", 0))))
+        except (TypeError, ValueError):
+            offset = 0
+        font_size = self._clean_text(values.get("fontSize"), 20)
+        text_width = self._clean_text(values.get("textWidth"), 20)
+        if font_size not in {"small", "normal", "large", "xlarge"}:
+            font_size = "normal"
+        if text_width not in {"narrow", "normal", "wide"}:
+            text_width = "normal"
+        raw_bookmarks = values.get("bookmarks") if isinstance(values.get("bookmarks"), list) else []
+        bookmarks = list(dict.fromkeys(self._clean_text(item, 300) for item in raw_bookmarks if self._clean_text(item, 300)))[:100]
+        with self.connect() as connection:
+            owned = connection.execute(
+                """SELECT 1 FROM source_files sf JOIN sources s ON s.id = sf.source_id
+                   WHERE s.user_id = ? AND sf.source_id = ? AND sf.id = ?""",
+                (user_id, source_id, file_id),
+            ).fetchone()
+            if not owned:
+                raise KeyError("Príloha neexistuje.")
+            connection.execute(
+                """INSERT INTO source_reader_state(
+                       user_id, source_file_id, locator, scroll_offset, font_size, text_width, bookmarks_json, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, source_file_id) DO UPDATE SET
+                       locator=excluded.locator, scroll_offset=excluded.scroll_offset,
+                       font_size=excluded.font_size, text_width=excluded.text_width,
+                       bookmarks_json=excluded.bookmarks_json, updated_at=excluded.updated_at""",
+                (user_id, file_id, locator, offset, font_size, text_width,
+                 json.dumps(bookmarks, ensure_ascii=False, separators=(",", ":")), now_iso()),
+            )
+        return self.source_reader_state(user_id, source_id, file_id)
 
     def search_source_file_text(
         self,

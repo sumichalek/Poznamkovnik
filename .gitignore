@@ -1,4 +1,6 @@
 node_modules/
+.venv/
+.release.json
 .vscode/
 .DS_Store
 __pycache__/

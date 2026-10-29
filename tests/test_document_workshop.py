@@ -3,11 +3,14 @@ from __future__ import annotations
 import io
 import shutil
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from pypdf import PdfReader, PdfWriter
+from PIL import Image
 
 from backend.auth import AuthService
 from backend.database import Database
@@ -61,6 +64,121 @@ class DocumentWorkshopTestCase(unittest.TestCase):
             },
         )
         return source, [page["id"] for page in detail["pages"]]
+
+    def _epub_upload(self) -> dict[str, object]:
+        data = io.BytesIO()
+        cover = io.BytesIO()
+        Image.new("RGB", (80, 120), (48, 110, 92)).save(cover, format="PNG")
+        with zipfile.ZipFile(data, "w") as archive:
+            archive.writestr("mimetype", "application/epub+zip")
+            archive.writestr(
+                "META-INF/container.xml",
+                '<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+                '<rootfiles><rootfile full-path="OPS/book.opf" media-type="application/oebps-package+xml"/>'
+                '</rootfiles></container>',
+            )
+            archive.writestr(
+                "OPS/book.opf",
+                '<package xmlns="http://www.idpf.org/2007/opf"><manifest>'
+                '<item id="one" href="one.xhtml" media-type="application/xhtml+xml"/>'
+                '<item id="two" href="two.xhtml" media-type="application/xhtml+xml"/>'
+                '<item id="cover" href="cover.png" media-type="image/png"/>'
+                '</manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>',
+            )
+            archive.writestr("OPS/one.xhtml", "<html><body><h1>Prvá kapitola</h1><img src='cover.png'/><p>Text knihy.</p></body></html>")
+            archive.writestr("OPS/two.xhtml", "<html><body><h1>Druhá kapitola</h1><p>Pokračovanie.</p></body></html>")
+            archive.writestr("OPS/cover.png", cover.getvalue())
+        data.seek(0)
+        return self.files.store_upload(data, "kniha.epub", "application/epub+zip")
+
+    def test_epub_is_typeset_as_pdf_and_original_is_retained_in_project(self) -> None:
+        project = self.database.create_document_project(
+            self.user["id"], {"id": "epub-project", "title": "Elektronická kniha"}
+        )
+        uploaded = self._epub_upload()
+        self.assertTrue(self.workshop.supports(uploaded))
+        self.assertTrue(self.workshop.requires_conversion(uploaded))
+        stage = self.workshop.prepare_input(
+            self.user["id"], project["project"]["id"], uploaded, 20 * 1024 * 1024
+        )
+        self.assertEqual(stage["originalName"], "kniha.epub")
+        self.assertEqual(stage["mimeType"], "application/pdf")
+        self.assertTrue(stage["converted"])
+        detail = self.workshop.confirm_prepared_input(
+            self.user["id"], project["project"]["id"], stage["id"], list(range(stage["pageCount"]))
+        )
+        self.assertEqual(detail["inputs"][0]["originalMimeType"], "application/epub+zip")
+        converted = self.files.path_for_hash(detail["inputs"][0]["blobHash"])
+        pages = PdfReader(str(converted)).pages
+        text = "\n".join(page.extract_text() or "" for page in pages)
+        self.assertIn("Prvá kapitola", text)
+        self.assertIn("Druhá kapitola", text)
+        self.assertTrue(any(page.images for page in pages))
+
+    def test_ocr_status_is_explicit_even_when_optional_tools_are_missing(self) -> None:
+        status = self.workshop.ocr_status()
+        self.assertIsInstance(status["available"], bool)
+        self.assertIsInstance(status["languages"], list)
+        self.assertTrue(status["message"])
+
+    def test_reader_state_is_stored_per_user_and_attachment(self) -> None:
+        source, _ = self._source_pdf()
+        saved = self.database.save_source_reader_state(
+            self.user["id"], source["id"], "input-file",
+            {"locator": "Kapitola 2", "scrollOffset": 810, "fontSize": "large",
+             "textWidth": "narrow", "bookmarks": ["Kapitola 1", "Kapitola 2"]},
+        )
+        self.assertEqual(saved["locator"], "Kapitola 2")
+        self.assertEqual(saved["scrollOffset"], 810)
+        self.assertEqual(saved["fontSize"], "large")
+        self.assertEqual(saved["textWidth"], "narrow")
+        self.assertEqual(saved["bookmarks"], ["Kapitola 1", "Kapitola 2"])
+
+        snapshot = self.database.backup_snapshot(self.user["id"])
+        self.assertEqual(snapshot["sourceReaderStates"][0]["source_file_id"], "input-file")
+        self.database.restore_backup_snapshot(self.user["id"], snapshot)
+        restored = self.database.source_reader_state(self.user["id"], source["id"], "input-file")
+        self.assertEqual(restored, saved)
+
+    def test_built_source_is_immediately_sent_to_text_index(self) -> None:
+        self._source_pdf()
+        indexed: list[tuple[str, str]] = []
+        self.workshop.source_indexer = lambda user_id, source: indexed.append((user_id, source["id"]))
+        output = self.workshop.build_source(
+            self.user["id"], "project-test", {"title": "Indexovaný výstup", "ocrMode": "off"}
+        )
+        self.assertEqual(indexed, [(self.user["id"], output["id"])])
+
+    def test_background_build_job_reports_completion(self) -> None:
+        self._source_pdf()
+        job = self.workshop.start_build_job(
+            self.user["id"], "project-test", {"title": "Výstup úlohy", "ocrMode": "off"}
+        )
+        deadline = time.monotonic() + 5
+        while job["status"] not in {"completed", "failed", "cancelled"} and time.monotonic() < deadline:
+            time.sleep(0.02)
+            job = self.workshop.build_job(self.user["id"], "project-test", job["id"])
+        self.assertEqual(job["status"], "completed", job)
+        self.assertEqual(job["source"]["title"], "Výstup úlohy")
+
+    def test_background_build_job_can_be_cancelled(self) -> None:
+        project = self.database.create_document_project(
+            self.user["id"], {"id": "cancel-project", "title": "Zrušenie"}
+        )
+
+        def wait_for_cancel(user_id: str, project_id: str, settings: dict[str, object]) -> dict[str, object]:
+            event = settings["_cancelEvent"]
+            self.assertTrue(event.wait(2))
+            raise ValueError("cancelled")
+
+        with patch.object(self.workshop, "build_source", side_effect=wait_for_cancel):
+            job = self.workshop.start_build_job(self.user["id"], project["project"]["id"], {})
+            self.workshop.cancel_build_job(self.user["id"], project["project"]["id"], job["id"])
+            deadline = time.monotonic() + 3
+            while job["status"] not in {"completed", "failed", "cancelled"} and time.monotonic() < deadline:
+                time.sleep(0.02)
+                job = self.workshop.build_job(self.user["id"], project["project"]["id"], job["id"])
+        self.assertEqual(job["status"], "cancelled")
 
     def test_selected_pages_preserve_project_order_and_create_source_link(self) -> None:
         source, page_ids = self._source_pdf()

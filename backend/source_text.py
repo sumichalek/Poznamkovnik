@@ -29,20 +29,31 @@ class _HtmlTextParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
+        self.heading_parts: list[str] = []
+        self._heading_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in {"h1", "h2", "h3", "title"}:
+            self._heading_depth += 1
         if tag.lower() in self._BREAK_TAGS:
             self.parts.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in {"h1", "h2", "h3", "title"} and self._heading_depth:
+            self._heading_depth -= 1
         if tag.lower() in self._BREAK_TAGS:
             self.parts.append("\n")
 
     def handle_data(self, data: str) -> None:
         self.parts.append(data)
+        if self._heading_depth and not self.heading_parts:
+            self.heading_parts.append(data)
 
     def text(self) -> str:
         return _normalise_text("".join(self.parts))
+
+    def heading(self) -> str:
+        return _normalise_text("".join(self.heading_parts))[:300]
 
 
 def _normalise_text(value: str) -> str:
@@ -223,7 +234,7 @@ class SourceTextIndex:
                 start = offset
                 parts.append(text)
                 offset += len(text)
-                locations.append({"locator": f"Kapitola {number}", "start": start, "end": offset})
+                locations.append({"locator": parser.heading() or f"Kapitola {number}", "start": start, "end": offset})
         if not parts:
             raise UnsupportedSourceText("EPUB neobsahuje čitateľný text.")
         return "".join(parts), locations

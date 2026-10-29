@@ -8842,7 +8842,7 @@ body.is-source-preview-resizing .source-preview-resize-handle::after {
 
 .source-preview-reader-tools {
   display: grid;
-  grid-template-columns: minmax(132px, 0.7fr) minmax(0, 1.3fr) auto;
+  grid-template-columns: minmax(132px, 0.7fr) auto minmax(0, 1.3fr) auto;
   align-items: center;
   gap: var(--space-2);
   border-bottom: 1px solid var(--line);
@@ -8860,6 +8860,15 @@ body.is-source-preview-resizing .source-preview-resize-handle::after {
   color: var(--text);
   font: inherit;
   padding: var(--space-2) var(--space-3);
+}
+
+.source-preview-reader-display {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.source-preview-reader-display select {
+  max-width: 132px;
 }
 
 .source-preview-reader-search {
@@ -8884,6 +8893,13 @@ body.is-source-preview-resizing .source-preview-resize-handle::after {
   font: 0.88rem/1.65 ui-sans-serif, system-ui, sans-serif;
   min-height: 0;
 }
+
+.source-preview-reader[data-reader-size="small"] .source-preview-text { font-size: 0.78rem; }
+.source-preview-reader[data-reader-size="large"] .source-preview-text { font-size: 1rem; }
+.source-preview-reader[data-reader-size="xlarge"] .source-preview-text { font-size: 1.14rem; }
+.source-preview-reader[data-reader-width="narrow"] .source-preview-reader-section { max-width: 42rem; margin-inline: auto; }
+.source-preview-reader[data-reader-width="normal"] .source-preview-reader-section { max-width: 62rem; margin-inline: auto; }
+.source-preview-reader[data-reader-width="wide"] .source-preview-reader-section { max-width: none; }
 
 .source-preview-reader-section {
   scroll-margin-top: var(--space-4);

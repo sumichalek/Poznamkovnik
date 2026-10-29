@@ -8,15 +8,23 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
+import posixpath
+from html import escape
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Callable
 
 from PIL import Image, UnidentifiedImageError
 from pypdf import PageObject, PdfReader, PdfWriter, Transformation
 from reportlab.pdfgen.canvas import Canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import Image as FlowableImage, PageBreak, Paragraph, SimpleDocTemplate, Spacer
+
+from .source_text import _HtmlTextParser, _decode_text
 
 from .database import Database, ValidationError
 from .files import FileStore
@@ -26,8 +34,10 @@ SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/tiff", 
 SUPPORTED_OFFICE_EXTENSIONS = {
     ".csv", ".doc", ".docx", ".ods", ".odt", ".odp", ".ppt", ".pptx", ".rtf", ".txt", ".xls", ".xlsx"
 }
+SUPPORTED_EPUB_EXTENSIONS = {".epub"}
 MAX_DOCUMENT_PAGES = 500
 OFFICE_CONVERSION_TIMEOUT_SECONDS = 60
+OCR_TIMEOUT_SECONDS = 10 * 60
 STAGED_INPUT_MAX_AGE_SECONDS = 24 * 60 * 60
 DOCUMENT_PROJECT_TRANSFER_FORMAT = "poznamkovnik-document-project"
 DOCUMENT_PROJECT_TRANSFER_VERSION = 1
@@ -43,16 +53,25 @@ A4_PAGE_SIZES = {
 class DocumentWorkshop:
     """Creates a new PDF from immutable source attachments or uploaded images/PDFs."""
 
-    def __init__(self, root: Path, database: Database, files: FileStore) -> None:
+    def __init__(
+        self,
+        root: Path,
+        database: Database,
+        files: FileStore,
+        source_indexer: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> None:
         self.root = root
         self.database = database
         self.files = files
+        self.source_indexer = source_indexer
         self.thumbnails_dir = root / "thumbnails"
         self.previews_dir = root / "previews"
         self.stages_dir = root / "stages"
         self.thumbnails_dir.mkdir(parents=True, exist_ok=True)
         self.previews_dir.mkdir(parents=True, exist_ok=True)
         self.stages_dir.mkdir(parents=True, exist_ok=True)
+        self._build_jobs: dict[str, dict[str, Any]] = {}
+        self._build_jobs_lock = threading.Lock()
 
     @staticmethod
     def supports(file_info: dict[str, Any]) -> bool:
@@ -63,12 +82,277 @@ class DocumentWorkshop:
             or filename.endswith(".pdf")
             or mime_type in SUPPORTED_IMAGE_TYPES
             or Path(filename).suffix in SUPPORTED_OFFICE_EXTENSIONS
+            or mime_type == "application/epub+zip"
+            or Path(filename).suffix in SUPPORTED_EPUB_EXTENSIONS
         )
 
     @staticmethod
     def requires_conversion(file_info: dict[str, Any]) -> bool:
         filename = str(file_info.get("original_name") or file_info.get("originalName") or "").lower()
-        return Path(filename).suffix in SUPPORTED_OFFICE_EXTENSIONS
+        return Path(filename).suffix in SUPPORTED_OFFICE_EXTENSIONS | SUPPORTED_EPUB_EXTENSIONS
+
+    @staticmethod
+    def _is_epub(file_info: dict[str, Any]) -> bool:
+        mime_type = str(file_info.get("mime_type") or file_info.get("mimeType") or "").lower()
+        filename = str(file_info.get("original_name") or file_info.get("originalName") or "").lower()
+        return mime_type == "application/epub+zip" or Path(filename).suffix == ".epub"
+
+    def convert_to_pdf(self, file_info: dict[str, Any]) -> Path:
+        if self._is_epub(file_info):
+            return self.convert_epub_to_pdf(file_info)
+        return self.convert_office_to_pdf(file_info)
+
+    def convert_epub_to_pdf(self, file_info: dict[str, Any]) -> Path:
+        """Typeset an EPUB spine into a stable internal PDF while retaining the original EPUB."""
+        blob_hash = str(file_info.get("blob_hash") or file_info.get("blobHash") or "")
+        source = self.files.path_for_hash(blob_hash)
+        if not source.is_file():
+            raise ValidationError("Obsah vybraného EPUB sa nenašiel.")
+        destination = self.files.tmp_dir / f"{uuid.uuid4().hex}.pdf"
+        completed = False
+        try:
+            with zipfile.ZipFile(source) as archive:
+                entries = archive.infolist()
+                if len(entries) > 10_000 or sum(item.file_size for item in entries) > 768 * 1024 * 1024:
+                    raise ValidationError("EPUB je po rozbalení príliš veľký.")
+                try:
+                    from xml.etree import ElementTree
+                    container = ElementTree.fromstring(archive.read("META-INF/container.xml"))
+                    rootfile = container.find(".//{*}rootfile")
+                    root_name = str(rootfile.get("full-path")) if rootfile is not None else ""
+                    package = ElementTree.fromstring(archive.read(root_name))
+                except (KeyError, ElementTree.ParseError, AttributeError) as error:
+                    raise ValidationError("EPUB nemá čitateľnú štruktúru knihy.") from error
+                package_dir = posixpath.dirname(root_name)
+                manifest = {
+                    str(item.get("id") or ""): str(item.get("href") or "")
+                    for item in package.findall(".//{*}manifest/{*}item")
+                }
+                spine = [str(item.get("idref") or "") for item in package.findall(".//{*}spine/{*}itemref")]
+                chapters: list[tuple[str, list[bytes]]] = []
+                for item_id in spine[:500]:
+                    href = manifest.get(item_id, "")
+                    if not href:
+                        continue
+                    entry = posixpath.normpath(posixpath.join(package_dir, href.split("#", 1)[0]))
+                    if entry.startswith("../") or entry.startswith("/"):
+                        continue
+                    try:
+                        raw_chapter = archive.read(entry)
+                        decoded_chapter = _decode_text(raw_chapter)
+                        parser = _HtmlTextParser()
+                        parser.feed(decoded_chapter)
+                    except KeyError:
+                        continue
+                    text = parser.text().strip()
+                    if text:
+                        images: list[bytes] = []
+                        chapter_dir = posixpath.dirname(entry)
+                        for match in re.finditer(r"<img\b[^>]*\bsrc\s*=\s*['\"]([^'\"]+)['\"]", decoded_chapter, re.I):
+                            image_entry = posixpath.normpath(posixpath.join(chapter_dir, match.group(1).split("#", 1)[0]))
+                            if image_entry.startswith("../") or image_entry.startswith("/"):
+                                continue
+                            try:
+                                payload = archive.read(image_entry)
+                                if 0 < len(payload) <= 20 * 1024 * 1024:
+                                    with Image.open(io.BytesIO(payload)) as candidate:
+                                        candidate.verify()
+                                    images.append(payload)
+                            except (KeyError, OSError, UnidentifiedImageError):
+                                continue
+                        chapters.append((text, images))
+            if not chapters:
+                raise ValidationError("EPUB neobsahuje čitateľné kapitoly.")
+            styles = getSampleStyleSheet()
+            story: list[Any] = []
+            for chapter_index, (chapter, chapter_images) in enumerate(chapters):
+                if chapter_index:
+                    story.append(PageBreak())
+                paragraphs = [part.strip() for part in re.split(r"\n\s*\n|\n", chapter) if part.strip()]
+                for paragraph_index, paragraph in enumerate(paragraphs):
+                    style = styles["Heading2"] if paragraph_index == 0 and len(paragraph) < 180 else styles["BodyText"]
+                    story.append(Paragraph(escape(paragraph).replace("\n", "<br/>"), style))
+                    story.append(Spacer(1, 8))
+                for payload in chapter_images:
+                    image_stream = io.BytesIO(payload)
+                    illustration = FlowableImage(image_stream)
+                    scale = min(1.0, 480 / max(1.0, illustration.imageWidth), 620 / max(1.0, illustration.imageHeight))
+                    illustration.drawWidth *= scale
+                    illustration.drawHeight *= scale
+                    story.extend((Spacer(1, 10), illustration, Spacer(1, 10)))
+            SimpleDocTemplate(
+                str(destination), pagesize=A4, rightMargin=48, leftMargin=48, topMargin=54, bottomMargin=54,
+                title=str(file_info.get("original_name") or file_info.get("originalName") or "EPUB"),
+            ).build(story)
+            completed = True
+            return destination
+        except zipfile.BadZipFile as error:
+            raise ValidationError("Vybraný súbor nie je čitateľný EPUB.") from error
+        except OSError as error:
+            raise ValidationError("EPUB sa nepodarilo pripraviť na prevod.") from error
+        finally:
+            if not completed or (destination.exists() and destination.stat().st_size == 0):
+                destination.unlink(missing_ok=True)
+
+    @staticmethod
+    def ocr_status() -> dict[str, Any]:
+        executable = shutil.which("ocrmypdf")
+        tesseract = shutil.which("tesseract")
+        languages: list[str] = []
+        if tesseract:
+            try:
+                result = subprocess.run(
+                    [tesseract, "--list-langs"], capture_output=True, text=True, timeout=10, check=False
+                )
+                languages = [line.strip() for line in result.stdout.splitlines()[1:] if line.strip()]
+            except (OSError, subprocess.TimeoutExpired):
+                languages = []
+        available = bool(executable and tesseract)
+        return {
+            "available": available,
+            "languages": languages,
+            "message": "OCR je pripravené." if available else "OCR vyžaduje lokálne nástroje OCRmyPDF a Tesseract.",
+        }
+
+    def apply_ocr(
+        self, source: Path, mode: str, languages: Any, *, cancel_event: threading.Event | None = None
+    ) -> None:
+        if mode == "off":
+            return
+        if mode not in {"auto", "force"}:
+            raise ValidationError("Režim OCR nie je platný.")
+        status = self.ocr_status()
+        if not status["available"]:
+            raise ValidationError(str(status["message"]))
+        requested = [str(item).strip() for item in languages] if isinstance(languages, list) else ["slk", "eng"]
+        installed = set(status["languages"])
+        selected = [item for item in requested if item and item in installed][:8]
+        if not selected:
+            fallback = "eng" if "eng" in installed else next(iter(installed), "")
+            selected = [fallback] if fallback else []
+        if not selected:
+            raise ValidationError("Tesseract nemá nainštalovaný žiadny jazyk OCR.")
+        destination = self.files.tmp_dir / f"{uuid.uuid4().hex}-ocr.pdf"
+        command = [
+            str(shutil.which("ocrmypdf")), "--output-type", "pdf", "--deskew", "--rotate-pages",
+            "--language", "+".join(selected), "--skip-text" if mode == "auto" else "--force-ocr",
+            str(source), str(destination),
+        ]
+        try:
+            with tempfile.TemporaryFile() as error_output:
+                process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=error_output)
+                started = time.monotonic()
+                while process.poll() is None:
+                    if cancel_event and cancel_event.wait(0.2):
+                        process.terminate()
+                        try:
+                            process.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=3)
+                        raise ValidationError("OCR bolo zrušené.")
+                    if time.monotonic() - started > OCR_TIMEOUT_SECONDS:
+                        process.kill()
+                        process.wait(timeout=3)
+                        raise ValidationError("OCR trvalo príliš dlho a bolo zastavené.")
+                    if not cancel_event:
+                        time.sleep(0.2)
+                if process.returncode:
+                    error_output.seek(0)
+                    raise subprocess.CalledProcessError(
+                        process.returncode, command, stderr=error_output.read()
+                    )
+            if not destination.is_file() or destination.stat().st_size == 0:
+                raise ValidationError("OCR nevytvorilo čitateľné PDF.")
+            destination.replace(source)
+        except subprocess.CalledProcessError as error:
+            message = error.stderr.decode("utf-8", errors="replace").strip()[-800:]
+            raise ValidationError(f"OCR sa nepodarilo dokončiť. {message}".strip()) from error
+        finally:
+            destination.unlink(missing_ok=True)
+
+    def start_build_job(self, user_id: str, project_id: str, data: Any) -> dict[str, Any]:
+        settings = dict(data) if isinstance(data, dict) else {"title": str(data or "")}
+        job_id = uuid.uuid4().hex
+        cancel_event = threading.Event()
+        job = {
+            "id": job_id, "userId": user_id, "projectId": project_id, "status": "queued",
+            "phase": "Čaká na spracovanie", "progress": 0, "error": "", "source": None,
+            "cancelEvent": cancel_event, "createdAt": time.time(),
+        }
+        with self._build_jobs_lock:
+            expiry = time.time() - 24 * 60 * 60
+            self._build_jobs = {
+                key: value for key, value in self._build_jobs.items()
+                if value["status"] in {"queued", "running", "cancelling"} or value["createdAt"] >= expiry
+            }
+            active = sum(
+                1 for item in self._build_jobs.values()
+                if item["userId"] == user_id and item["status"] in {"queued", "running", "cancelling"}
+            )
+            if active >= 2:
+                raise ValidationError("Naraz môžu bežať najviac dve úlohy vytvorenia dokumentu.")
+            self._build_jobs[job_id] = job
+        threading.Thread(
+            target=self._run_build_job, args=(job_id, user_id, project_id, settings),
+            name=f"document-build-{job_id[:8]}", daemon=True,
+        ).start()
+        return self.build_job(user_id, project_id, job_id)
+
+    def _run_build_job(self, job_id: str, user_id: str, project_id: str, settings: dict[str, Any]) -> None:
+        with self._build_jobs_lock:
+            job = self._build_jobs[job_id]
+            job.update(status="running", phase="Skladám výsledné PDF", progress=10)
+            cancel_event = job["cancelEvent"]
+        try:
+            settings["_cancelEvent"] = cancel_event
+            settings["_phaseCallback"] = lambda phase: self._set_build_job_phase(job_id, phase)
+            source = self.build_source(user_id, project_id, settings)
+            with self._build_jobs_lock:
+                job = self._build_jobs[job_id]
+                if cancel_event.is_set():
+                    job.update(status="cancelled", phase="Zrušené", progress=0)
+                else:
+                    job.update(status="completed", phase="Hotovo", progress=100, source=source)
+        except Exception as error:
+            with self._build_jobs_lock:
+                job = self._build_jobs[job_id]
+                cancelled = cancel_event.is_set()
+                job.update(
+                    status="cancelled" if cancelled else "failed",
+                    phase="Zrušené" if cancelled else "Spracovanie zlyhalo",
+                    progress=0,
+                    error="" if cancelled else str(error),
+                )
+
+    def _set_build_job_phase(self, job_id: str, phase: str) -> None:
+        progress = 20
+        if phase.startswith("Rozpoznávam"):
+            progress = 45
+        elif phase.startswith("Ukladám"):
+            progress = 90
+        with self._build_jobs_lock:
+            if job_id in self._build_jobs:
+                self._build_jobs[job_id].update(phase=phase, progress=progress)
+
+    def build_job(self, user_id: str, project_id: str, job_id: str) -> dict[str, Any]:
+        with self._build_jobs_lock:
+            job = self._build_jobs.get(job_id)
+            if not job or job["userId"] != user_id or job["projectId"] != project_id:
+                raise KeyError("Úloha vytvorenia dokumentu neexistuje.")
+            return {key: job[key] for key in ("id", "status", "phase", "progress", "error", "source")}
+
+    def cancel_build_job(self, user_id: str, project_id: str, job_id: str) -> dict[str, Any]:
+        with self._build_jobs_lock:
+            job = self._build_jobs.get(job_id)
+            if not job or job["userId"] != user_id or job["projectId"] != project_id:
+                raise KeyError("Úloha vytvorenia dokumentu neexistuje.")
+            if job["status"] in {"queued", "running"}:
+                job["status"] = "cancelling"
+                job["phase"] = "Zastavujem OCR"
+                job["progress"] = 0
+                job["cancelEvent"].set()
+        return self.build_job(user_id, project_id, job_id)
 
     def convert_office_to_pdf(self, file_info: dict[str, Any]) -> Path:
         """Convert a supported office file into an isolated temporary PDF with LibreOffice."""
@@ -189,7 +473,7 @@ class DocumentWorkshop:
             if not self.supports(file_info):
                 raise ValidationError("Dielňa podporuje PDF, obrázky a vybrané kancelárske dokumenty.")
             if self.requires_conversion(file_info):
-                temporary_pdf = self.convert_office_to_pdf(file_info)
+                temporary_pdf = self.convert_to_pdf(file_info)
                 with temporary_pdf.open("rb") as converted:
                     processing_info = self.files.store_upload(
                         converted,
@@ -399,7 +683,21 @@ class DocumentWorkshop:
         temporary = self.files.tmp_dir / f"{uuid.uuid4().hex}.pdf"
         source_id = str(uuid.uuid4())
         try:
+            phase_callback = settings.get("_phaseCallback")
+            if callable(phase_callback):
+                phase_callback("Skladám výsledné PDF")
             self._write_pdf(output_detail, temporary)
+            ocr_mode = str(settings.get("ocrMode") or "off")
+            if callable(phase_callback) and ocr_mode != "off":
+                phase_callback("Rozpoznávam text a vytváram textovú vrstvu")
+            self.apply_ocr(
+                temporary, ocr_mode, settings.get("ocrLanguages"), cancel_event=settings.get("_cancelEvent")
+            )
+            cancel_event = settings.get("_cancelEvent")
+            if cancel_event is not None and cancel_event.is_set():
+                raise ValidationError("OCR bolo zrušené.")
+            if callable(phase_callback):
+                phase_callback("Ukladám výsledný zdroj")
             filename = f"{self._filename(output_title)}.pdf"
             with temporary.open("rb") as output:
                 file_info = self.files.store_upload(output, filename, "application/pdf")
@@ -425,6 +723,7 @@ class DocumentWorkshop:
                                 "imageDpi": detail["project"].get("imageDpi", 144),
                                 "pageNumberPosition": detail["project"].get("pageNumberPosition", "none"),
                                 "pageNumberStart": detail["project"].get("pageNumberStart", 1),
+                                "ocrMode": ocr_mode,
                                 "inputs": [
                                     {
                                         "name": item["originalName"],
@@ -438,6 +737,12 @@ class DocumentWorkshop:
                     },
                 )
                 result = self.database.add_source_file(user_id, source["id"], str(uuid.uuid4()), file_info)
+                if self.source_indexer is not None:
+                    try:
+                        self.source_indexer(user_id, result)
+                    except Exception:
+                        # The generated PDF is still valid if optional text indexing fails.
+                        pass
                 source_ids = {str(page.get("sourceId") or "") for page in pages}
                 for input_source_id in source_ids - {"", result["id"]}:
                     try:

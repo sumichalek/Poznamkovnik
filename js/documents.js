@@ -30,6 +30,7 @@ let documentPreviewPointerId = null;
 let documentPreviewInlineSize = 0;
 let documentBuildPageIds = [];
 let documentBuildInFlight = false;
+let activeDocumentBuildJobId = '';
 let projectTransferInFlight = false;
 const imageExtensions = new Set(['.gif', '.jpeg', '.jpg', '.png', '.tif', '.tiff', '.webp']);
 const imageMimeTypes = new Set(['image/gif', 'image/jpeg', 'image/png', 'image/tiff', 'image/webp']);
@@ -176,7 +177,7 @@ function supportedFile(file) {
   const name = String(file?.originalName || '').toLowerCase();
   const mime = String(file?.mimeType || '').toLowerCase();
   const extension = name.slice(name.lastIndexOf('.'));
-  return mime === 'application/pdf' || extension === '.pdf' || imageMimeTypes.has(mime) || imageExtensions.has(extension) || officeExtensions.has(extension);
+  return mime === 'application/pdf' || extension === '.pdf' || mime === 'application/epub+zip' || extension === '.epub' || imageMimeTypes.has(mime) || imageExtensions.has(extension) || officeExtensions.has(extension);
 }
 
 function isFileDrag(event) {
@@ -190,7 +191,7 @@ function setWorkspaceFileDropActive(active) {
 
 function needsConversion(file) {
   const name = String(file?.originalName || '').toLowerCase();
-  return officeExtensions.has(name.slice(name.lastIndexOf('.')));
+  return officeExtensions.has(name.slice(name.lastIndexOf('.'))) || name.endsWith('.epub');
 }
 
 function projectSummary(project) {
@@ -827,6 +828,21 @@ function openDocumentBuildDialog({ pageIds = [] } = {}) {
   dom.documentBuildSourceTitle.value = buildingSelection ? `${baseTitle} – výber strán` : baseTitle;
   dom.documentBuildSourceDescription.value = '';
   dom.documentBuildSourceTags.value = '';
+  dom.documentBuildOcrMode.value = 'off';
+  dom.documentBuildOcrLanguages.value = 'slk,eng';
+  dom.documentBuildOcrLanguages.disabled = true;
+  dom.documentBuildOcrMode.disabled = true;
+  dom.documentBuildOcrStatus.textContent = 'Overujem dostupnosť lokálneho OCR...';
+  void apiRequest('/documents/runtime').then((runtime) => {
+    const ocr = runtime.ocr || {};
+    dom.documentBuildOcrMode.disabled = !ocr.available;
+    dom.documentBuildOcrLanguages.disabled = !ocr.available;
+    dom.documentBuildOcrStatus.textContent = ocr.message || 'OCR nie je dostupné.';
+  }).catch((error) => {
+    dom.documentBuildOcrMode.disabled = true;
+    dom.documentBuildOcrLanguages.disabled = true;
+    dom.documentBuildOcrStatus.textContent = error.message || 'Dostupnosť OCR sa nepodarilo overiť.';
+  });
   dom.documentBuildOpenSource.checked = false;
   dom.documentBuildSourceTitle.setCustomValidity('');
   dom.documentBuildSubmit.disabled = false;
@@ -1347,15 +1363,39 @@ async function buildSource(data) {
   updatePageSelectionUi();
   setStatus(pageIds.length ? 'Vytváram zdroj z vybraných strán...' : 'Vytváram nový PDF zdroj...');
   try {
-    const result = await apiRequest(`/documents/${encodeURIComponent(activeProjectId)}/build`, {
-      method: 'POST',
-      body: {
-        title: cleanTitle,
-        description: String(data?.description || '').trim(),
-        tags: Array.isArray(data?.tags) ? data.tags : [],
-        ...(pageIds.length ? { pageIds } : {}),
+    const projectId = activeProjectId;
+    const body = {
+      title: cleanTitle,
+      description: String(data?.description || '').trim(),
+      tags: Array.isArray(data?.tags) ? data.tags : [],
+      ocrMode: String(data?.ocrMode || 'off'),
+      ocrLanguages: Array.isArray(data?.ocrLanguages) ? data.ocrLanguages : ['slk', 'eng'],
+      ...(pageIds.length ? { pageIds } : {}),
+    };
+    let result;
+    if (body.ocrMode === 'off') {
+      result = await apiRequest(`/documents/${encodeURIComponent(projectId)}/build`, {
+        method: 'POST', body
+      });
+    } else {
+      const started = await apiRequest(`/documents/${encodeURIComponent(projectId)}/build-jobs`, {
+        method: 'POST', body
+      });
+      activeDocumentBuildJobId = started.job.id;
+      dom.documentBuildCancelJob.hidden = false;
+      let job = started.job;
+      while (!['completed', 'failed', 'cancelled'].includes(job.status)) {
+        setStatus(`${job.phase || 'Spracúvam OCR...'}${Number.isFinite(job.progress) ? ` · ${job.progress} %` : ''}`);
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        const update = await apiRequest(
+          `/documents/${encodeURIComponent(projectId)}/build-jobs/${encodeURIComponent(activeDocumentBuildJobId)}`
+        );
+        job = update.job;
       }
-    });
+      if (job.status === 'cancelled') throw new Error('OCR bolo zrušené.');
+      if (job.status === 'failed') throw new Error(job.error || 'OCR sa nepodarilo dokončiť.');
+      result = { source: job.source };
+    }
     const source = result.source;
     setStatus(pageIds.length
       ? `Zdroj „${source.title}“ je vytvorený z ${pageIds.length} ${pageNumberWord(pageIds.length)}.`
@@ -1365,9 +1405,25 @@ async function buildSource(data) {
     setStatus(error.message || 'PDF zdroj sa nepodarilo vytvoriť.', { error: true });
     throw error;
   } finally {
+    activeDocumentBuildJobId = '';
+    dom.documentBuildCancelJob.hidden = true;
     documentBuildInFlight = false;
     setProjectControls();
     updatePageSelectionUi();
+  }
+}
+
+async function cancelDocumentBuildJob() {
+  if (!activeDocumentBuildJobId || !activeProjectId) return;
+  dom.documentBuildCancelJob.disabled = true;
+  setStatus('Zastavujem OCR...');
+  try {
+    await apiRequest(
+      `/documents/${encodeURIComponent(activeProjectId)}/build-jobs/${encodeURIComponent(activeDocumentBuildJobId)}`,
+      { method: 'DELETE' }
+    );
+  } finally {
+    dom.documentBuildCancelJob.disabled = false;
   }
 }
 
@@ -1388,6 +1444,8 @@ async function submitDocumentBuild(event) {
       title,
       description: dom.documentBuildSourceDescription.value,
       tags: documentBuildTags(),
+      ocrMode: dom.documentBuildOcrMode.value,
+      ocrLanguages: dom.documentBuildOcrLanguages.value.split(',').filter(Boolean),
       pageIds,
     });
     closeDocumentBuildDialog();
@@ -1532,6 +1590,7 @@ export function initializeDocuments() {
   dom.documentBuildButton.addEventListener('click', openDocumentBuildDialog);
   dom.documentBuildClose.addEventListener('click', closeDocumentBuildDialog);
   dom.documentBuildForm.addEventListener('submit', (event) => void submitDocumentBuild(event));
+  dom.documentBuildCancelJob.addEventListener('click', () => void cancelDocumentBuildJob());
   dom.documentBuildDialog.addEventListener('close', () => {
     dom.documentBuildSourceTitle.setCustomValidity('');
     documentBuildPageIds = [];

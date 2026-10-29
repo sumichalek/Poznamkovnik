@@ -1,4 +1,4 @@
-export const APP_VERSION = '0.56.53';
+export const APP_VERSION = __APP_VERSION__;
 
 export const HORIZONTAL_EDITOR_MIN_WIDTH = 1120;
 export const HORIZONTAL_EDITOR_MIN_RATIO = 1.15;

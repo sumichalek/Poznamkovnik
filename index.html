@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sk" data-app-version="0.56.27">
+<html lang="sk" data-app-version="0.57.0">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,8 +8,8 @@
       const savedTheme = localStorage.getItem('knowledge-theme') || 'focus';
       document.documentElement.dataset.theme = savedTheme === 'contrast' ? 'contrast-light' : savedTheme;
     </script>
-  <link rel="stylesheet" href="style.css?v=0.56.27" />
-    <link rel="stylesheet" href="assets/app.css?v=0.56.27" />
+  <link rel="stylesheet" href="style.css?v=0.57.0" />
+    <link rel="stylesheet" href="assets/app.css?v=0.57.0" />
   </head>
   <body>
     <main id="login-screen" class="login-screen" aria-labelledby="login-title">
@@ -496,6 +496,20 @@
             <section id="source-preview-reader" class="source-preview-reader" aria-label="Čítanie textovej prílohy" hidden>
               <header class="source-preview-reader-tools">
                 <select id="source-preview-reader-locations" aria-label="Prejsť na časť dokumentu" hidden></select>
+                <div class="source-preview-reader-display" aria-label="Nastavenie čítania">
+                  <select id="source-preview-reader-size" aria-label="Veľkosť písma">
+                    <option value="small">Menšie písmo</option>
+                    <option value="normal" selected>Bežné písmo</option>
+                    <option value="large">Väčšie písmo</option>
+                    <option value="xlarge">Veľké písmo</option>
+                  </select>
+                  <select id="source-preview-reader-width" aria-label="Šírka textu">
+                    <option value="narrow">Úzky text</option>
+                    <option value="normal" selected>Bežná šírka</option>
+                    <option value="wide">Široký text</option>
+                  </select>
+                  <button id="source-preview-reader-bookmark" class="panel-icon-button" type="button" aria-label="Pridať záložku kapitoly" title="Pridať záložku kapitoly"><span data-app-icon="book-open"></span></button>
+                </div>
                 <div class="source-preview-reader-search">
                   <input id="source-preview-reader-query" type="search" maxlength="400" placeholder="Hľadať v otvorenej prílohe" aria-label="Hľadať v otvorenej prílohe" />
                   <button id="source-preview-reader-search-button" class="panel-icon-button" type="button" aria-label="Hľadať v otvorenej prílohe" title="Hľadať v otvorenej prílohe"><span data-app-icon="search"></span></button>
@@ -673,7 +687,7 @@
                 <div class="document-inputs-actions">
                   <div class="documents-upload-controls">
                     <button id="document-upload-button" class="panel-icon-button" type="button" aria-label="Pridať dokument, PDF alebo obrázky z počítača" title="Pridať dokument, PDF alebo obrázky z počítača" disabled><span data-app-icon="upload"></span></button>
-                    <input id="document-upload-input" type="file" accept="application/pdf,image/jpeg,image/png,image/webp,image/tiff,image/gif,.pdf,.jpg,.jpeg,.png,.webp,.tif,.tiff,.gif,.doc,.docx,.odt,.rtf,.txt,.xls,.xlsx,.ods,.csv,.ppt,.pptx,.odp" multiple hidden />
+                    <input id="document-upload-input" type="file" accept="application/pdf,application/epub+zip,image/jpeg,image/png,image/webp,image/tiff,image/gif,.pdf,.epub,.jpg,.jpeg,.png,.webp,.tif,.tiff,.gif,.doc,.docx,.odt,.rtf,.txt,.xls,.xlsx,.ods,.csv,.ppt,.pptx,.odp" multiple hidden />
                   </div>
                   <button id="document-source-toggle" class="panel-icon-button" type="button" aria-controls="document-inputs-source-picker" aria-expanded="false" aria-label="Pridať prílohu existujúceho zdroja" title="Pridať prílohu existujúceho zdroja" disabled><span data-app-icon="paperclip"></span></button>
                   <button id="document-inputs-toggle" class="panel-icon-button document-inputs-toggle" type="button" aria-controls="document-inputs-list" aria-expanded="true" aria-label="Zbaliť vstupy projektu" title="Zbaliť vstupy projektu"><span data-app-icon="chevron-down"></span></button>
@@ -826,11 +840,29 @@
             <span>Štítky</span>
             <input id="document-build-source-tags" class="tag-input" type="text" list="tag-suggestions" maxlength="480" placeholder="napr. manuál, spracované" />
           </label>
+          <label>
+            <span>Rozpoznávanie textu</span>
+            <select id="document-build-ocr-mode">
+              <option value="off">Bez OCR</option>
+              <option value="auto">Automaticky pre naskenované strany</option>
+              <option value="force">Vynútiť pre všetky strany</option>
+            </select>
+            <small id="document-build-ocr-status">Dostupnosť OCR sa overí pri použití.</small>
+          </label>
+          <label>
+            <span>Jazyky OCR</span>
+            <select id="document-build-ocr-languages" disabled>
+              <option value="slk,eng">Slovenčina + angličtina</option>
+              <option value="slk">Slovenčina</option>
+              <option value="eng">Angličtina</option>
+            </select>
+          </label>
           <label class="document-build-open-source">
             <input id="document-build-open-source" type="checkbox" />
             <span>Po vytvorení otvoriť zdroj</span>
           </label>
           <footer>
+            <button id="document-build-cancel-job" class="panel-icon-button danger" type="button" aria-label="Zrušiť prebiehajúce OCR" title="Zrušiť prebiehajúce OCR" hidden><span data-app-icon="close"></span></button>
             <button id="document-build-submit" class="panel-icon-button accent" type="submit" aria-label="Vytvoriť zdroj PDF" title="Vytvoriť zdroj PDF"><span data-app-icon="save"></span></button>
           </footer>
         </form>
@@ -1997,7 +2029,7 @@
               <div class="settings-account-actions">
                 <button id="logout-button" class="settings-logout-button" type="button">Odhlásiť</button>
               </div>
-              <p id="app-version" class="app-version">Verzia 0.56.27</p>
+              <p id="app-version" class="app-version">Verzia 0.57.0</p>
             </section>
 
             <section id="settings-panel-security" class="settings-section settings-security" role="tabpanel" aria-labelledby="settings-tab-security" data-settings-panel="security" hidden>
@@ -2697,6 +2729,6 @@
         }
       }, true);
     </script>
-  <script type="module" src="assets/app.js?v=0.56.27"></script>
+  <script type="module" src="assets/app.js?v=0.57.0"></script>
   </body>
 </html>

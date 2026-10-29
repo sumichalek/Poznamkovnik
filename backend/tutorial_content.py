@@ -31,6 +31,9 @@ from backend.tutorial_c_examples import (
     GROUP_FINISH,
     INTEGER_LIMITS,
     MAILBOX_PUBLICATION,
+    MATRIX_ACCESS,
+    MATRIX_DECLARATIONS,
+    MATRIX_WALK,
     MACRO_EXPANDED,
     MACRO_EXPANSION,
     MACRO_PARENTHESES,
@@ -354,6 +357,50 @@ C_PAGES = [
                 {"type": "paragraph", "text": "Vyber jeden cyklus nad poľom. Povedz si, čo označuje index pred prvým priechodom, čo po každom priechode a prečo sa nikdy nedostane na hodnotu count pri prístupe do poľa. Ak túto odpoveď nevieš vysloviť, doplň názov count alebo rozdeľ výpočet na kratšie kroky."}
             ]
         }
+    },
+    {
+        "key": "multidimensional", "parent_key": "data", "kind": "lesson", "position": 77,
+        "title": "Viacrozmerné polia a čítanie deklarácií",
+        "summary": "Matica ako pole riadkov, hranice oboch indexov a rozdiel medzi poľom ukazovateľov a ukazovateľom na pole.",
+        "content": {
+            "lead": "Tabuľka má riadky a stĺpce. V C ju môžeme uložiť ako pole, ktorého každý prvok je ďalším poľom. Pri odovzdávaní takejto matice funkcii zostáva tvar jedného riadka súčasťou typu; počet dostupných riadkov je samostatný údaj.",
+            "blocks": [
+                {"type": "heading", "text": "Dva indexy, dve samostatné hranice"},
+                {"type": "paragraph", "text": "Predstav si dve merania troch veličín. Deklarácia int matrix[2][3] vytvorí dva riadky, každý s tromi hodnotami int. Výraz matrix[1][2] vyberie druhý riadok a v ňom tretiu hodnotu. Najprv musí platiť row < 2, potom column < 3. Celkový počet šesť nenahrádza ani jednu z týchto hraníc."},
+                {"type": "code", "language": "text", "title": "Tvar matice a poradie hodnôt", "source": "                 column 0   column 1   column 2\nrow 0                3          1          4\nrow 1                1          5          9\n\nmatrix       -> prvy riadok\nmatrix[0]    -> prva hodnota prveho riadka\nmatrix[1][2] == 9\n"},
+                {"type": "paragraph", "text": "V pamäti nasledujú celé riadky za sebou; v riadku sú hodnoty vedľa seba. Posledný index sa pri prirodzenom prechode mení najrýchlejšie. To však nedáva povolenie písať matrix[0][3] namiesto matrix[1][0]: prvý zápis prekračuje hranicu vnútorného poľa. Ani ukazovateľ na prvé int nepoužívaj ako skratku na prechádzanie cez konce riadkov."},
+                {"type": "heading", "text": "Počty zisti tam, kde máš skutočné pole"},
+                {"type": "code", "language": "c", "title": "Vnorené cykly nad obdĺžnikovou maticou", "source": MATRIX_WALK},
+                {"type": "paragraph", "text": "Prvá hranica [] sa tu odvodí z dvoch inicializovaných riadkov. MATRIX_COLUMNS je pomenovaná celočíselná konštanta enum s hodnotou 3. sizeof matrix meria celú maticu, sizeof matrix[0] jeden riadok a sizeof matrix[0][0] jedno int. Podiely preto dajú dva riadky a tri stĺpce bez predpokladu, že int má štyri bajty."},
+                {"type": "paragraph", "text": "Program vypíše rows=2 columns=3 a potom šesť dvojíc indexov: [0][0], [0][1], [0][2], [1][0], [1][1], [1][2]. Obdĺžniková matica je užitočný test: zámena riadkov a stĺpcov sa na štvorcovej matici môže skryť. Pri vnorenom cykle si vždy priraď ku každému indexu jeho vlastný počet."},
+                {"type": "paragraph", "text": "Pri inicializácii používaj vnorené zložené zátvorky, aby bolo vidieť hranice riadkov. V inicializovanom poli sa neuvedené prvky doplnia nulami; obyčajné lokálne pole bez inicializátora týmto pravidlom inicializované nie je. Pole sa nedá neskôr celé priradiť výrazom matrix = other; hodnoty treba preniesť vhodnou operáciou s jasnými rozmermi."},
+                {"type": "heading", "text": "Funkcia dostáva ukazovateľ na riadok"},
+                {"type": "paragraph", "text": "Pri odovzdaní matice sa na ukazovateľ upraví iba vonkajšia úroveň poľa. Parameter const int matrix[][3] preto znamená const int (*matrix)[3], nie const int **. Výraz matrix + 1 prejde na ďalší riadok troch int. Šírka riadka je potrebná na tento posun; počet dostupných riadkov musí funkcia dostať alebo poznať zo svojho kontraktu."},
+                {"type": "code", "language": "text", "title": "Rovnaký parameter zapísaný dvoma spôsobmi", "source": "const int matrix[][3]    -> const int (*matrix)[3]\n\nsizeof matrix           -> vo funkcii velkost ukazovatela\nsizeof *matrix          -> velkost jedneho riadka\n\nmatrix[row][column]     -> najprv riadok, potom jeho prvok\n"},
+                {"type": "paragraph", "text": "Druhý program číta jednu hodnotu cez matrix_get. rows označuje počet sprístupnených riadkov, row a column vybranú pozíciu. Volajúci zodpovedá za platnú pamäť, pravdivý počet riadkov a meniteľný objekt int označený výsledkovým ukazovateľom. Funkcia nedokáže z ukazovateľa zistiť skutočnú kapacitu, ale dokáže odmietnuť NULL a indexy mimo oznámených hraníc ešte pred prístupom."},
+                {"type": "paragraph", "text": "Pomocná tabuľka cases zoskupuje údaje jedného testu do záznamu struct: názov, rozmery, indexy a očakávaný výsledok. Zápis cases[i].row vyberá položku row z i-teho záznamu. Tu tabuľka iba opakuje rovnaký test s rôznymi vstupmi; samotné štruktúry podrobne rozoberá neskoršia lekcia struct, enum a typedef. Pri prvom čítaní sleduj najmä funkciu matrix_get a päť riadkov vstupných údajov."},
+                {"type": "code", "language": "c", "title": "Kontrolovaný prístup a zachovaný výsledok pri chybe", "source": MATRIX_ACCESS},
+                {"type": "paragraph", "text": "Prvý a posledný prvok vrátia true a hodnoty 3 a 9. Index riadka rovný rows aj stĺpca rovný MATRIX_COLUMNS sa odmietnu. rows == 0 znamená pohľad bez dostupných riadkov, nie deklaráciu poľa s nulovou veľkosťou; čítanie sa odmietne bez dotyku prvkov. Pri každej chybe zostane hodnota výstupu 77. matched=1 v každom riadku znamená zhodu s očakávaním a nezhoda zmení aj návratový stav programu."},
+                {"type": "callout", "tone": "warning", "text": "V C17 používame v čítacej ukážke const už pri deklarácii celej matice. Prevod int (*)[3] na const int (*)[3] nie je obyčajné pridanie const ako pri int * na const int *. Pri vlastnej meniteľnej matici zlaď typ rozhrania so vstupom; varovanie nevypínaj pretypovaním. Tieto príklady sa overujú ako C17, nie C23."},
+                {"type": "heading", "text": "Zátvorky menia to, čo je poľom"},
+                {"type": "list", "items": [
+                    "int *cells[3]: začni pri cells, pripoj [3], potom *. Cells je pole troch ukazovateľov na int.",
+                    "int (*row)[3]: zátvorky najprv spájajú * s row. Row je ukazovateľ na pole troch int.",
+                    "int **cell: cell je ukazovateľ na ukazovateľ na int. Môže smerovať na prvý prvok poľa cells, pretože tento prvok je ukazovateľ.",
+                    "typedef int Row[3]; zavádza meno pre typ riadka. Row *row potom pomenúva rovnaký druh ukazovateľa ako int (*row)[3]; typedef nie je nový druh pamäte."
+                ]},
+                {"type": "paragraph", "text": "Začni od deklarovaného mena a rešpektuj zátvorky. Bez nich sa [] viaže k menu pred *. Neodhaduj typ podľa samotného počtu hviezdičiek. Aj const int * a int *const majú odlišný význam: prvý obmedzuje zmenu hodnoty cez ukazovateľ, druhý zmenu samotného ukazovateľa."},
+                {"type": "code", "language": "c", "title": "Riadok matice oproti výberu jednotlivých buniek", "source": MATRIX_DECLARATIONS},
+                {"type": "paragraph", "text": "Row smeruje na prvý celý riadok matice. Zápis row[1][0] zmení prvú hodnotu druhého riadka na 40. Cells obsahuje tri samostatné adresy: poslednú bunku matice, prvú bunku a nezávislý objekt other. Cell smeruje do tohto poľa adries; *cell[0] zmení poslednú bunku na 60. Výpis druhého riadka je preto 40 5 60 a výberu 60 1 9."},
+                {"type": "paragraph", "text": "Oba posuny vo výpise dajú zhodu 1, ale označujú iné objekty: row + 1 ďalší riadok, cell + 1 ďalší ukazovateľ v cells. sizeof *row meria riadok, nie adresu. Všetky vybrané bunky stále patria pôvodným objektom; pole adries ich nekopíruje ani nepreberá vlastníctvo. Ak sa cieľový objekt skončí, jeho uložená adresa ho neudrží nažive."},
+                {"type": "callout", "tone": "warning", "text": "Skutočná matica nie je pole ukazovateľov. Odovzdať ju funkcii s int ** je typová chyba; pretypovanie nevytvorí chýbajúce objekty ukazovateľov. Ani riadok šírky 4 nie je riadok šírky 3. Obe nezhody má odhaliť prekladač, nie pokusné spustenie."},
+                {"type": "heading", "text": "Iné tvary potrebujú iný kontrakt"},
+                {"type": "paragraph", "text": "Pole ukazovateľov môže odkazovať aj na samostatné riadky rôznych dĺžok. Vtedy musíš niesť dĺžku každého riadka, overovať jeho ukazovateľ a určiť vlastníctvo zvlášť. Nie je to totožná reprezentácia s pevnou obdĺžnikovou maticou. Nulové dĺžky opisuj počtom dostupných prvkov, nie neštandardnými nulovými poľami."},
+                {"type": "paragraph", "text": "Rozmery známe až počas behu môžu viesť k VLA alebo k samostatnému dynamickému úložisku. Podpora VLA je v C17 voliteľná a rozmery vyžadujú ďalšie kontroly. Tento blok používa pevný kladný počet stĺpcov; všeobecné prideľovanie, výpočet veľkostí a uvoľňovanie matíc tu neimplementujeme."},
+                {"type": "heading", "text": "Prenes tvar do rozhrania"},
+                {"type": "paragraph", "text": "Pred vlastnou funkciou napíš, či prijíma celé riadky alebo zoznam adries. Pomenuj počet riadkov, šírku, povolené prázdne vstupy a platnosť výstupu pri chybe. Otestuj obdĺžnikovú maticu, prvý a posledný prvok a obidva indexy presne na hranici. Pri zmene deklarácie si vyslov celý typ a nechaj prekladač kontrolovať jeho zhodu bez umlčujúcich castov."}
+            ],
+        },
     },
     {
         "key": "strings",
@@ -1567,6 +1614,7 @@ C_PAGES = [
 # samotného výkladu, aby sa dali rovnako použiť v čítačke, pri opakovaní aj v
 # budúcom generátore cvičení.
 C_LEARNING_GOALS = {
+    "multidimensional": ("Prejsť maticu s oddelenou kontrolou riadkov a stĺpcov a správne ju odovzdať funkcii.", "Rozlíšiť pole ukazovateľov, ukazovateľ na riadok a dvojitý ukazovateľ podľa deklarácie aj použitia."),
     "arguments": ("Rozlíšiť argumenty pri spustení od stdin a skontrolovať hranice argv.", "Prijať presne jedno celé číslo a rozlíšiť chybu počtu, textu a rozsahu bez zmeny výsledku."),
     "program": ("Vysvetliť úlohu main a hlavičkového súboru.", "Preložiť malý program s užitočnými varovaniami."),
     "values": ("Vybrať primeraný základný typ.", "Rozpoznať konverziu, pri ktorej sa môže stratiť hodnota."),
@@ -1607,6 +1655,7 @@ C_LEARNING_GOALS = {
 # Tento rámec je úmyselne oddelený od faktického výkladu. Každá lekcia sa tak
 # začína problémom, nadväznosťou a jadrom pojmu, potom smeruje k vlastnej práci.
 C_TEACHING_FRAMES = {
+    "multidimensional": {"context": "Tabuľka meraní má dva rozmery a funkcia musí poznať tvar riadka aj hranice prístupu.", "priorKnowledge": ("Poznáš jednorozmerné polia, sizeof a indexovanie od nuly.", "Rozlišuješ adresu, dereferencovanie, const a výstupný parameter."), "keyIdea": "Matica je pole riadkov; počet dostupných riadkov a typ jedného riadka sú dve odlišné časti kontraktu.", "transfer": "Vyber reprezentáciu tabuľky podľa tvaru dát a over oba indexy pred prístupom."},
     "arguments": {"context": "Malý nástroj potrebuje dostať číslo už pri spustení a zrozumiteľne odmietnuť chybný vstup.", "priorKnowledge": ("Poznáš polia, ukazovatele, ukončené reťazce a návratové hodnoty funkcií.", "Poznáš kontrolovaný prevod cez strtol a rozdiel medzi stdout a stderr."), "keyIdea": "Počet over pred prístupom do argv, text a rozsah pred zápisom výsledku.", "transfer": "Navrhni kontrakt argumentov vlastného nástroja a over ho cez pomocnú funkciu aj skutočné spustenie."},
     "recursion": {"context": "Úlohu možno vyriešiť menším prípadom tej istej úlohy, ale treba vedieť, kde volania skončia a ako sa vrátia výsledky.", "priorKnowledge": ("Poznáš parametre, lokálne premenné, návratové hodnoty a podmienky.", "Vieš čítať cyklus a zvyšok po celočíselnom delení."), "keyIdea": "Každé volanie má vlastný lokálny stav a každý rekurzívny krok sa musí priblížiť k základnému prípadu.", "transfer": "Pri vlastnej rekurzii zapíš základný prípad, zmenšujúcu sa mieru a hraničné vstupy skôr než telo funkcie."},
     "producer-groups": {"context": "Viaceré zdroje posielajú dávky do spoločnej malej fronty a potrebujú oznámiť koniec až po dokončení celej skupiny.", "priorKnowledge": ("Poznáš ohraničenú frontu, uzavretie, kooperatívny koniec a úspešný join.",), "keyIdea": "Konzument musí zostať aktívny počas pripájania producentov a bežný koniec celej skupiny vlastní koordinátor.", "transfer": "Pri vlastnej skupine zakresli závislosti čakania, spočítaj úspešné štarty a označ miesto uzavretia na každej chybovej ceste."},
@@ -1640,6 +1689,7 @@ C_TEACHING_FRAMES = {
 }
 
 C_EXERCISE_TOPICS = {
+    "multidimensional": "multidimensional",
     "arguments": "arguments",
     "program": "program",
     "values": "values",
@@ -1687,6 +1737,7 @@ C_VISUALIZATION_IDS = {
 
 
 C_CHECKPOINT_IDS = {
+    "multidimensional": "c-matrix-row-type",
     "arguments": "c-argument-count-before-access",
     "program": "c-main-entry",
     "values": "c-value-conversion",
@@ -1724,6 +1775,24 @@ C_CHECKPOINT_IDS = {
 }
 
 C_EXAMPLES = [
+    {
+        "key": "matrix-walk", "page_key": "multidimensional", "position": 10,
+        "title": "Dva riadky, tri stĺpce",
+        "description": "Vnorené cykly používajú samostatné počty odvodené zo skutočného poľa.",
+        "source": MATRIX_WALK, "stdin": "",
+    },
+    {
+        "key": "matrix-access", "page_key": "multidimensional", "position": 20,
+        "title": "Prístup k bunke s kontrolou hraníc",
+        "description": "Prvý a posledný prvok, oba chybné indexy a nulový počet dostupných riadkov.",
+        "source": MATRIX_ACCESS, "stdin": "",
+    },
+    {
+        "key": "matrix-declarations", "page_key": "multidimensional", "position": 30,
+        "title": "Ukazovateľ na riadok a pole adries",
+        "description": "Dve reprezentácie, rozdielny krok ukazovateľa a zmeny pôvodných objektov.",
+        "source": MATRIX_DECLARATIONS, "stdin": "",
+    },
     {
         "key": "argument-list", "page_key": "arguments", "position": 10,
         "title": "Výpis argumentov pri spustení",
