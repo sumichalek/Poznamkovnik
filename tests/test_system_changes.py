@@ -1,0 +1,252 @@
+from __future__ import annotations
+
+import contextlib
+import copy
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from scripts.server_manage import DeploymentError
+from scripts.system_changes import SystemChanges, SystemOperations
+
+
+class FakeOperations:
+    def __init__(self):
+        self.linger_value = False
+        self.rules = []
+        self.units = []
+        self.actions = []
+        self.backups = []
+        self.fail_firewall = False
+
+    def linger(self, user): return self.linger_value
+    def dependent_units(self, user, uid): return list(self.units)
+    def firewall_rules(self): return copy.deepcopy(self.rules)
+
+    def set_linger(self, user, enabled):
+        self.actions.append(("linger", user, enabled))
+        self.linger_value = enabled
+
+    def backup(self, action, user):
+        self.backups.append((action, user))
+        return "/fixture-system-backup/" + str(len(self.backups))
+
+    def firewall(self, rule, *, remove=False):
+        if self.fail_firewall:
+            raise DeploymentError("fixture UFW failure")
+        self.actions.append(("firewall", copy.deepcopy(rule), remove))
+        if remove:
+            self.rules.remove(rule)
+        else:
+            self.rules.append(copy.deepcopy(rule))
+
+
+class SystemChangesTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="poznamkovnik-system-test-")
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        self.root = self.base / "installation"
+        (self.root / "shared").mkdir(parents=True)
+        self.identity = "a" * 32
+        self.config = {"installation_id": self.identity, "installation_root": str(self.root),
+                       "service": "fixture.service", "port": 19111, "host": "127.0.0.1"}
+        self.config_path = self.root / "shared/server.json"
+        self.config_path.write_text(json.dumps(self.config))
+        self.uid = os.getuid()
+        self.ops = FakeOperations()
+        self.registry = self.base / "root-only-receipts"
+        self.changes = SystemChanges(self.registry, operations=self.ops, owner_uid=os.getuid())
+        self.profile = self.changes.profile(self.root, self.uid)
+        self.output = contextlib.redirect_stdout(io.StringIO())
+        self.output.__enter__()
+        self.addCleanup(self.output.__exit__, None, None, None)
+
+    def cleanup(self, **kwargs):
+        self.changes.cleanup(self.identity, self.uid, approval=lambda prompt: True, **kwargs)
+
+    def test_missing_receipt_plan_and_cleanup_change_nothing(self):
+        self.cleanup(plan_only=True)
+        self.cleanup()
+        self.assertFalse(self.registry.exists())
+        self.assertEqual(self.ops.actions, [])
+        self.assertEqual(self.ops.backups, [])
+
+    def test_existing_linger_is_never_adopted(self):
+        self.ops.linger_value = True
+        self.changes.apply_linger(self.profile)
+        self.cleanup()
+        self.assertTrue(self.ops.linger_value)
+        self.assertEqual(self.ops.actions, [])
+        self.assertFalse(self.changes.load(self.identity, self.uid)["changes"]["linger"]["changed"])
+
+    def test_owned_linger_is_removed_only_without_other_enabled_units(self):
+        self.changes.apply_linger(self.profile)
+        self.ops.units = ["ssh-agent.socket", "other.timer"]
+        self.cleanup()
+        self.assertTrue(self.ops.linger_value)
+        self.ops.units = []
+        self.cleanup()
+        self.assertFalse(self.ops.linger_value)
+        self.assertEqual(len(self.ops.backups), 2)
+
+    def test_reapplying_linger_keeps_original_ownership(self):
+        self.changes.apply_linger(self.profile)
+        self.changes.apply_linger(self.profile)
+        self.assertEqual(len(self.ops.backups), 1)
+        self.cleanup()
+        self.assertFalse(self.ops.linger_value)
+
+    def test_linger_is_rechecked_after_user_confirmation(self):
+        self.changes.apply_linger(self.profile)
+        def approval(prompt):
+            self.ops.units = ["newly-enabled.service"]
+            return True
+        with self.assertRaisesRegex(DeploymentError, "pribudla"):
+            self.changes.cleanup(self.identity, self.uid, approval=approval)
+        self.assertTrue(self.ops.linger_value)
+
+    def test_deferred_receipt_can_be_cleaned_after_app_root_is_gone(self):
+        self.changes.apply_linger(self.profile)
+        self.ops.units = ["second-instance.service"]
+        self.cleanup()
+        shutil.rmtree(self.root)
+        self.ops.units = []
+        self.cleanup()
+        self.assertFalse(self.ops.linger_value)
+
+    def test_existing_firewall_rule_is_not_relabelled_or_removed(self):
+        original = {"port": 19111, "network": "192.168.0.0/24", "comment": "another application"}
+        self.ops.rules = [copy.deepcopy(original)]
+        self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        self.cleanup()
+        self.assertEqual(self.ops.rules, [original])
+        self.assertEqual(self.ops.actions, [])
+
+    def test_only_exact_owned_rule_is_removed_and_other_ports_survive(self):
+        dns = {"port": 53, "network": "192.168.0.0/24", "comment": "Pi-hole"}
+        ssh = {"port": 22, "network": "192.168.0.0/24", "comment": "SSH"}
+        self.ops.rules = [dns, ssh]
+        self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        self.assertEqual(len(self.ops.rules), 3)
+        self.cleanup()
+        self.assertEqual(self.ops.rules, [dns, ssh])
+        self.assertEqual(len(self.ops.backups), 2)
+
+    def test_modified_or_duplicate_owned_rule_is_left_alone(self):
+        self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        self.ops.rules[0]["port"] = 19112
+        self.cleanup()
+        self.assertEqual(self.ops.rules[0]["port"], 19112)
+        self.ops.rules[0]["port"] = 19111
+        self.ops.rules.append(copy.deepcopy(self.ops.rules[0]))
+        self.cleanup()
+        self.assertEqual(len(self.ops.rules), 2)
+        self.assertEqual(len(self.ops.actions), 1)
+
+    def test_firewall_change_during_confirmation_aborts_cleanup(self):
+        self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        def approval(prompt):
+            self.ops.rules.append({"unknown": "new unrelated rule"})
+            return True
+        with self.assertRaisesRegex(DeploymentError, "firewall zmenil"):
+            self.changes.cleanup(self.identity, self.uid, approval=approval)
+        self.assertEqual(len(self.ops.actions), 1)
+
+    def test_failed_application_never_proves_ownership(self):
+        self.ops.fail_firewall = True
+        with self.assertRaises(DeploymentError):
+            self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        receipt = self.changes.load(self.identity, self.uid)
+        self.assertEqual(receipt["changes"]["firewall"]["status"], "pending")
+        self.assertFalse(receipt["changes"]["firewall"]["changed"])
+        self.ops.fail_firewall = False
+        self.cleanup()
+        self.assertEqual(self.ops.actions, [])
+
+    def test_decline_and_plan_do_not_modify_system_or_receipt(self):
+        self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        receipt = self.registry / f"{self.identity}.json"
+        before = receipt.read_bytes()
+        self.cleanup(plan_only=True)
+        self.changes.cleanup(self.identity, self.uid, approval=lambda prompt: False)
+        self.assertEqual(receipt.read_bytes(), before)
+        self.assertEqual(len(self.ops.actions), 1)
+
+    def test_receipts_cannot_cross_users_roots_or_installation_ids(self):
+        self.changes.apply_linger(self.profile)
+        with self.assertRaises(DeploymentError):
+            self.changes.load(self.identity, self.uid + 1)
+        altered = dict(self.profile, root=str(self.base / "another-installation"))
+        with self.assertRaises(DeploymentError):
+            self.changes.apply_linger(altered)
+        self.config["installation_root"] = str(self.base / "wrong")
+        self.config_path.write_text(json.dumps(self.config))
+        with self.assertRaises(DeploymentError):
+            self.changes.profile(self.root, self.uid)
+
+    def test_untrusted_registry_and_symlinked_receipt_are_refused(self):
+        self.changes.apply_linger(self.profile)
+        self.registry.chmod(0o777)
+        with self.assertRaises(DeploymentError): self.cleanup()
+        self.registry.chmod(0o700)
+        path = self.registry / f"{self.identity}.json"
+        outside = self.base / "outside-receipt"
+        path.rename(outside)
+        path.symlink_to(outside)
+        with self.assertRaises(DeploymentError): self.cleanup()
+        self.assertTrue(self.ops.linger_value)
+
+    def test_firewall_rejects_entire_internet_and_inactive_ufw(self):
+        for network in ("0.0.0.0/0", "::/0", "not-a-network"):
+            with self.subTest(network=network), self.assertRaises(DeploymentError):
+                self.changes.apply_firewall(self.profile, network)
+        self.ops.rules = None
+        with self.assertRaisesRegex(DeploymentError, "nie je aktívny"):
+            self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        self.assertEqual(self.ops.actions, [])
+
+    def test_status_parser_keeps_unknown_rules_and_exact_comments(self):
+        text = "Status: active\n[ 1] 19111/tcp ALLOW IN 192.168.0.0/24 # Poznamkovnik " + self.identity + "\n[ 2] DNS ALLOW IN Anywhere # Pi-hole\n"
+        with patch("scripts.system_changes.Path.is_file", return_value=True), patch("scripts.system_changes.run", return_value=text):
+            rules = SystemOperations().firewall_rules()
+        self.assertEqual(rules[0], {"port": 19111, "network": "192.168.0.0/24", "comment": "Poznamkovnik " + self.identity})
+        self.assertIn("unknown", rules[1])
+
+    def test_active_unenabled_units_also_block_linger_cleanup(self):
+        enabled = "ssh-agent.socket enabled enabled\n"
+        active = "dbus.service loaded active running Session bus\nmanual.service loaded active running User app\n"
+        with patch("scripts.system_changes.run", side_effect=[enabled, active]):
+            units = SystemOperations().dependent_units("fixture", 1000)
+        self.assertEqual(units, ["manual.service", "ssh-agent.socket"])
+
+    def test_host_source_is_normalized_so_existing_rule_is_not_adopted(self):
+        text = "Status: active\n[ 1] 19111/tcp ALLOW IN 192.168.0.7 # old rule\n"
+        with patch("scripts.system_changes.Path.is_file", return_value=True), patch("scripts.system_changes.run", return_value=text):
+            self.ops.rules = SystemOperations().firewall_rules()
+        self.changes.apply_firewall(self.profile, "192.168.0.7/32")
+        self.assertEqual(self.ops.actions, [])
+
+    def test_ambiguous_profile_rule_cannot_be_relabelled(self):
+        self.ops.rules = [{"unknown": "[ 1] CustomApp ALLOW IN 192.168.0.0/24 # existing app"}]
+        with self.assertRaisesRegex(DeploymentError, "nepreznačilo"):
+            self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        self.assertEqual(self.ops.actions, [])
+
+    def test_unrelated_profile_with_different_source_is_left_untouched(self):
+        unknown = {"unknown": "[ 1] OpenSSH ALLOW IN Anywhere # SSH"}
+        self.ops.rules = [unknown]
+        self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        self.cleanup()
+        self.assertEqual(self.ops.rules, [unknown])
+
+
+if __name__ == "__main__":
+    unittest.main()

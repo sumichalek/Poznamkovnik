@@ -2,6 +2,15 @@
 
 ## 0.57.2
 
+- Lokálne pripravený interaktívny Bash sprievodca s režimom plánovania bez zmien a samostatnými potvrdeniami prípravy, zálohy a aktivácie.
+- Sprievodca ponúka stav/diagnostiku a výber zálohy na obnovu, opakuje chybné vstupy a oddeľuje rozšírené nastavenia.
+- Kontrola cesty, oprávnení, miesta, voľného portu a čítania konkrétneho Git tagu pred vykonaním; URL s vloženým heslom alebo tokenom sa odmietajú.
+- Návody na privátny Git s read-only deploy key, samostatnú obsluhu a obnovu bez prístupu agenta; DNS a Pi-hole sa automaticky nemenia.
+- Všeobecný interaktívny odinštalátor s plánom bez zmien; predvolene zachová účty, dáta a všetky zálohy, výslovné úplné vymazanie vyžaduje napísanie presného koreňa.
+- Linger a UFW majú root doklady vlastníctva; existujúce, zdieľané a pozmenené nastavenia sa neodoberajú naslepo. Systémové balíky ani SSH kľúče sa automaticky nemažú.
+- Zachovanie Git zdroja v konfigurácii umožní opätovnú inštaláciu po odstránení kódu; rozpracované odinštalovanie blokuje aktualizáciu, kým sa bezpečne nedokončí.
+- Testy zahŕňajú celý cyklus aktualizácie, obnovy, odinštalovania a opätovnej inštalácie, zachovanie účtov, ochranu pred cudzou službou, odkazmi a pripojenými diskami.
+- Priame meniace príkazy predvolene vyžadujú terminál a potvrdenia; automatizáciu povoľuje iba explicitné `--yes`.
 - Opravené blokovanie súkromných statických ciest pri percentovom kódovaní URL pre požiadavky GET aj HEAD.
 - Regresný HTTP test overuje, že skryté adresáre a backend zostanú neprístupné aj cez zakódované cesty, pričom verejná stránka funguje.
 

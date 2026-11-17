@@ -2,19 +2,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import pty
+import select
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.server_manage import Deployment, DeploymentError, UserService, read_json, run
+from scripts.server_manage import Deployment, DeploymentCancelled, DeploymentError, UserService, read_json, run
+from scripts.server_uninstall import Uninstaller
 
 
 class FakeService:
@@ -57,6 +62,11 @@ class FakeService:
         link = self.deployment.unit_dir / "default.target.wants" / config["service"]
         link.parent.mkdir(exist_ok=True)
         link.symlink_to(self.deployment.unit_dir / config["service"])
+
+    def disable(self):
+        config = self.deployment.config()
+        link = self.deployment.unit_dir / "default.target.wants" / config["service"]
+        link.unlink(missing_ok=True)
 
 
 class ServerDeploymentTest(unittest.TestCase):
@@ -248,6 +258,233 @@ class ServerDeploymentTest(unittest.TestCase):
         self.deployment.update("v9.0.1")
         self.assertTrue(self.service.running)
         self.assertEqual(self.deployment.current().name, "v9.0.1")
+
+    def test_operator_can_cancel_before_preparation(self):
+        stops = self.service.stops
+        self.deployment.approval = lambda stage, description: False
+        with patch.object(self.deployment, "prepare") as prepare:
+            with self.assertRaises(DeploymentCancelled):
+                self.deployment.update("v9.0.1")
+        prepare.assert_not_called()
+        self.assertEqual(self.service.stops, stops)
+        self.assertTrue(self.service.running)
+
+    def test_operator_can_cancel_before_service_stop(self):
+        stops = self.service.stops
+        count = len(list(self.deployment.backups.iterdir()))
+        self.deployment.approval = lambda stage, description: stage != "stop_backup"
+        with self.assertRaises(DeploymentCancelled):
+            self.deployment.update("v9.0.1")
+        self.assertEqual(self.service.stops, stops)
+        self.assertEqual(len(list(self.deployment.backups.iterdir())), count)
+        self.assertEqual(self.deployment.current().name, "v9.0.0")
+        self.assertTrue(self.service.running)
+
+    def test_operator_can_keep_verified_backup_without_activating(self):
+        self.deployment.approval = lambda stage, description: stage != "activate"
+        with patch.object(self.deployment, "restore", wraps=self.deployment.restore) as restore:
+            with self.assertRaises(DeploymentCancelled):
+                self.deployment.update("v9.0.1")
+        restore.assert_not_called()
+        state = read_json(self.deployment.state_path)
+        self.assertEqual(state["status"], "cancelled")
+        self.deployment.verify_snapshot(Path(state["snapshot"]), self.deployment.config())
+        self.assertEqual(self.deployment.current().name, "v9.0.0")
+        self.assertTrue(self.service.running)
+
+    def test_cancelled_recovery_restarts_unchanged_existing_service(self):
+        source = Path(read_json(self.deployment.state_path)["snapshot"])
+        self.deployment.approval = lambda stage, description: stage != "activate"
+        with self.assertRaises(DeploymentCancelled):
+            self.deployment.recover(source)
+        self.assertEqual(self.deployment.current().name, "v9.0.0")
+        self.assertTrue(self.service.running)
+        self.assertTrue((self.deployment.data / "preferences.json").exists())
+
+    def test_first_install_can_leave_autostart_disabled(self):
+        source = Path(read_json(self.deployment.state_path)["snapshot"])
+        self.deployment.recover(source)
+        config = self.deployment.config()
+        config["autostart"] = False
+        self.deployment.config_path.write_text(json.dumps(config))
+        with patch.object(self.service, "enable") as enable:
+            self.deployment.update("v9.0.1")
+        enable.assert_not_called()
+        self.assertTrue(self.service.running)
+        self.assertFalse((self.deployment.unit_dir / "default.target.wants/test.service").exists())
+
+    def uninstaller(self, approval=None):
+        return Uninstaller(self.deployment.root, service=self.service, unit_dir=self.deployment.unit_dir, approval=approval)
+
+    def test_full_lifecycle_update_restore_uninstall_reinstall_and_restore_again(self):
+        deployment = self.deployment
+        with closing(sqlite3.connect(deployment.data / "poznamkovnik.sqlite3")) as connection, connection:
+            connection.execute("CREATE TABLE users (name TEXT)")
+            connection.execute("INSERT INTO users VALUES ('fixture-account')")
+        deployment.update("v9.0.1")
+        snapshot = Path(read_json(deployment.state_path)["snapshot"])
+        (deployment.data / "preferences.json").write_text("new settings")
+        deployment.recover(snapshot)
+        self.assertEqual(deployment.current().name, "v9.0.0")
+        backup_count = len(list(deployment.backups.iterdir()))
+        identity = deployment.config()["installation_id"]
+
+        self.uninstaller().uninstall()
+        self.assertFalse(self.service.running)
+        self.assertFalse(deployment.repository.exists())
+        self.assertFalse(deployment.releases.exists())
+        self.assertIsNone(deployment.current())
+        self.assertFalse((deployment.unit_dir / "test.service").exists())
+        self.assertEqual(read_json(deployment.state_path)["status"], "uninstalled")
+        deployment.verify_snapshot(snapshot, deployment.config())
+        self.assertEqual((deployment.data / "preferences.json").read_text(), '{"font": "large"}')
+        self.assertEqual(len(list(deployment.backups.iterdir())), backup_count)
+
+        # Retained origin permits a real Git clone and reconstruction of the needed release.
+        deployment.update("v9.0.0")
+        self.assertEqual(deployment.config()["installation_id"], identity)
+        self.assertTrue(self.service.running)
+        self.assertEqual(len(list(deployment.backups.iterdir())), backup_count + 1)
+        deployment.recover(snapshot)
+        with closing(sqlite3.connect(deployment.data / "poznamkovnik.sqlite3")) as connection:
+            self.assertEqual(connection.execute("SELECT name FROM users").fetchone()[0], "fixture-account")
+
+    def test_uninstall_purge_only_removes_validated_installation_root(self):
+        unrelated = self.base / "unrelated.txt"
+        unrelated.write_text("keep")
+        self.uninstaller().uninstall(delete_data=True)
+        self.assertFalse(self.deployment.root.exists())
+        self.assertFalse(self.service.running)
+        self.assertEqual(unrelated.read_text(), "keep")
+        self.assertTrue(self.source.exists())
+
+    def test_uninstall_cancel_changes_nothing(self):
+        stops = self.service.stops
+        state = self.deployment.state_path.read_bytes()
+        index = Path(run("git", "-C", str(self.deployment.current()), "rev-parse", "--git-path", "index"))
+        index_mtime = index.stat().st_mtime_ns
+        with self.assertRaises(DeploymentCancelled):
+            self.uninstaller(approval=lambda plan: False).uninstall()
+        self.assertEqual(self.service.stops, stops)
+        self.assertTrue(self.service.running)
+        self.assertEqual(self.deployment.state_path.read_bytes(), state)
+        self.assertFalse((self.deployment.shared / "uninstall-state.json").exists())
+        self.assertEqual(index.stat().st_mtime_ns, index_mtime)
+
+    def test_uninstall_rejects_foreign_service_before_stopping_anything(self):
+        (self.deployment.unit_dir / "test.service").write_text("[Service]\nExecStart=/usr/bin/other\n")
+        stops = self.service.stops
+        with self.assertRaisesRegex(DeploymentError, "nepatrí"):
+            self.uninstaller().uninstall()
+        self.assertEqual(self.service.stops, stops)
+        self.assertTrue(self.deployment.releases.exists())
+
+    def test_uninstall_failure_is_recorded_and_retry_is_possible(self):
+        with patch.object(self.service, "disable", side_effect=DeploymentError("fixture disable failed")):
+            with self.assertRaises(DeploymentError):
+                self.uninstaller().uninstall()
+        self.assertEqual(read_json(self.deployment.state_path)["status"], "uninstall_failed")
+        self.assertTrue(self.deployment.releases.exists())
+        self.assertTrue(self.deployment.data.exists())
+        with self.assertRaisesRegex(DeploymentError, "Odinštalovanie sa nedokončilo"):
+            self.deployment.update("v9.0.1")
+        self.uninstaller().uninstall()
+        self.assertEqual(read_json(self.deployment.state_path)["status"], "uninstalled")
+
+    def test_uninstall_shares_update_lock(self):
+        with self.deployment.locked(), self.assertRaisesRegex(DeploymentError, "iná operácia"):
+            self.uninstaller().uninstall()
+        self.assertTrue(self.service.running)
+
+    def test_uninstall_will_not_delete_local_changes_to_release_code(self):
+        code = self.deployment.current() / "server.py"
+        code.write_text("# keep my local changes")
+        stops = self.service.stops
+        with self.assertRaisesRegex(DeploymentError, "lokálne zmeny"):
+            self.uninstaller().uninstall()
+        self.assertEqual(self.service.stops, stops)
+        self.assertEqual(code.read_text(), "# keep my local changes")
+
+    def test_legacy_uninstall_retains_origin_for_reinstallation(self):
+        config = self.deployment.config()
+        for field in ("installation_id", "installation_root", "repository"):
+            config.pop(field)
+        self.deployment.config_path.write_text(json.dumps(config))
+        (self.deployment.unit_dir / "test.service").write_text(self.deployment.unit_text(config))
+        self.uninstaller().uninstall()
+        self.assertEqual(self.deployment.config()["repository"], str(self.source))
+        self.deployment.update("v9.0.0")
+        self.assertTrue(self.service.running)
+
+
+class InstallerControlTest(unittest.TestCase):
+    @unittest.skipIf(os.geteuid() == 0, "Skutočný sprievodca sa spúšťa pod bežným účtom")
+    def test_terminal_user_can_cancel_plan_without_changes(self):
+        project = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(prefix="poznamkovnik-tty-") as temporary:
+            target = Path(temporary) / "trial"
+            answers = f"1\n{target}\nv9.0.0\n19111\n1\nn\nn\nn\nn\n"
+            master, slave = pty.openpty()
+            process = subprocess.Popen(["bash", str(project / "scripts/install.sh")], stdin=slave, stdout=slave, stderr=slave)
+            os.close(slave)
+            output = bytearray()
+            try:
+                os.write(master, answers.encode())
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    if select.select([master], [], [], 0.1)[0]:
+                        try:
+                            chunk = os.read(master, 65536)
+                        except OSError:
+                            break
+                        if not chunk:
+                            break
+                        output.extend(chunk)
+                    elif process.poll() is not None:
+                        break
+                self.assertEqual(process.wait(timeout=2), 0, output.decode(errors="replace"))
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=2)
+                os.close(master)
+            self.assertIn("Súhlasíš s týmto plánom", output.decode())
+            self.assertFalse(target.exists())
+
+    def test_plan_prints_choices_without_creating_installation(self):
+        project = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(prefix="poznamkovnik-plan-") as temporary:
+            target = Path(temporary) / "trial"
+            answers = f"1\n{target}\nv9.0.0\n19111\n2\nn\nn\nn\n"
+            result = subprocess.run(
+                ["bash", str(project / "scripts/install.sh"), "--plan"], input=answers,
+                text=True, capture_output=True, cwd=project,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("Iba plán", result.stdout)
+            self.assertIn("19111", result.stdout)
+            self.assertIn("0.0.0.0", result.stdout)
+            self.assertIn("Automatické spúšťanie: nie", result.stdout)
+            self.assertFalse(target.exists())
+
+    def test_installer_refuses_piped_execution(self):
+        project = Path(__file__).resolve().parents[1]
+        result = subprocess.run(["bash", str(project / "scripts/install.sh")], input="a\n" * 20,
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("interaktívnom termináli", result.stderr)
+
+    def test_cli_requires_terminal_or_explicit_automation(self):
+        project = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(prefix="poznamkovnik-confirm-") as temporary:
+            target = Path(temporary) / "installation"
+            result = subprocess.run(
+                [sys.executable, str(project / "scripts/server_manage.py"), "--root", str(target), "init", "v9.0.0"],
+                input="a\n" * 20, text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("interaktívnom termináli", result.stderr)
+            self.assertFalse(target.exists())
 
 
 class SystemdServiceTest(unittest.TestCase):

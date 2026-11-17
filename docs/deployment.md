@@ -2,6 +2,8 @@
 
 Projekt obsahuje aktualizačný nástroj `scripts/server-update.sh`. Používa Git tagy, samostatné vydania a povinnú novú zálohu dát aj nastavení pred každou aktiváciou. Je určený pre Linux so systemd používateľskou službou. Vývojový postup je v [development.md](development.md).
 
+Pre osobnú inštaláciu je primárny [interaktívny sprievodca](interactive-installation.md): `bash scripts/install.sh --plan` vypíše plán bez zmien a `bash scripts/install.sh` vedie používateľa potvrdeniami. Nasledujúce priame príkazy sú tiež predvolene interaktívne; pri vzdialenom spúšťaní potrebujú `ssh -t`. Pre vedomú automatizáciu sa musí výslovne uviesť `--yes` pred podpríkazom. Povinná záloha zostáva aj v tomto režime.
+
 ## Ako to funguje
 
 ```text
@@ -12,7 +14,7 @@ server: releases/v0.57.0/ ← current
            shared/data/
 ```
 
-Git repozitár existuje na GitHube: `git@github.com:sumichalek/Poznamkovnik.git`. Tag vyberá konkrétny otestovaný commit. Na prvú inštaláciu používaj najmenej `v0.57.2`, ktorá obsahuje opravu generovania systemd služby aj blokovania zakódovaných súkromných URL. Pred použitím musí byť príslušný tag skutočne zverejnený. Táto implementácia sama nevytvára commity ani nič neposiela na GitHub.
+Git repozitár na GitHube je privátny. Server používa vlastný read-only deploy key a SSH alias podľa [úvodného návodu](private-git-access.md), napríklad `git@github-poznamkovnik:sumichalek/Poznamkovnik.git`. Anonymné HTTPS na jeho stiahnutie nestačí. Tag vyberá konkrétny otestovaný commit. Na prvú inštaláciu používaj najmenej `v0.57.2`, ktorá obsahuje opravu generovania systemd služby aj blokovania zakódovaných súkromných URL. Pred použitím musí byť príslušný tag skutočne zverejnený. Táto implementácia sama nevytvára commity ani nič neposiela na GitHub.
 
 ```text
 ~/apps/poznamkovnik/
@@ -26,6 +28,7 @@ Git repozitár existuje na GitHube: `git@github.com:sumichalek/Poznamkovnik.git`
     ├── server.json              nastavenie správy tejto inštalácie
     ├── config.env              voliteľné premenné prostredia služby
     ├── update-state.json        výsledok poslednej operácie
+    ├── uninstall-state.json     priebeh/výsledok prípadného odinštalovania
     ├── update-backups/          nové úplné zálohy pred aktiváciou
     └── recovery-*/              zachovaný stav po obnove
 ```
@@ -51,7 +54,7 @@ Vybrané zmeny ulož do commitu vrátane zostavených `assets/` a aktualizované
 python3 scripts/check-release.py HEAD
 ```
 
-Kontrola vytvorí dočasnú kópiu z Gitu, nainštaluje `requirements.lock` do nového virtuálneho prostredia, overí vygenerovanú službu parserom `systemd-analyze --user verify` a spustí aplikáciu s prázdnymi skúšobnými dátami na dočasnom lokálnom porte. Overí databázu, verziu, HTTP kontrolu aj zostavený frontend; po skončení skúšobnú inštanciu odstráni. Potrebuje `systemd-analyze`, prístup k Python balíkom a možnosť otvoriť lokálny port. Produkčné dáta nepoužíva.
+Kontrola vytvorí dočasnú kópiu z Gitu, overí prítomnosť inštalátora, odinštalátora a návodov aj štart menu v režime plánu. Nainštaluje `requirements.lock` do nového virtuálneho prostredia, overí vygenerovanú službu parserom `systemd-analyze --user verify` a spustí aplikáciu s prázdnymi skúšobnými dátami na dočasnom lokálnom porte. Overí databázu, verziu, HTTP kontrolu aj zostavený frontend; po skončení skúšobnú inštanciu odstráni. Potrebuje `systemd-analyze`, prístup k Python balíkom a možnosť otvoriť lokálny port. Produkčné dáta nepoužíva.
 
 Pred vytvorením tagu musí byť pracovný strom čistý a číslo tagu musí zodpovedať `VERSION`. Príklad pre verziu `0.57.1`:
 
@@ -65,17 +68,18 @@ Zverejnené tagy sa neprepisujú. Oprava dostane nové číslo. Domáci server s
 
 ## Prvá inštalácia servera
 
-Potrebné sú Python 3.11 alebo novší s `venv` a `pip`, Git, systemd používateľská služba a právo čítať Git repozitár, napríklad cez SSH kľúč s právom iba na čítanie. Node.js na serveri netreba, frontend je zostavený v Gite. OCR a ostatné voliteľné funkcie potrebujú aj svoje [systémové nástroje](development.md#voliteľné-systémové-nástroje).
+Potrebné sú Python 3.11 alebo novší s `venv` a `pip`, Git, systemd používateľská služba a právo čítať privátny Git repozitár. Najprv osobne priprav [samostatný deploy key](private-git-access.md); ten nie je prihlasovacím kľúčom agenta na server. Node.js na serveri netreba, frontend je zostavený v Gite. OCR a ostatné voliteľné funkcie potrebujú aj svoje [systémové nástroje](development.md#voliteľné-systémové-nástroje).
 
 Po zverejnení prvého tagu načítaj projekt do samostatného pomocného priečinka na serveri:
 
 ```bash
-git clone --branch v0.57.2 --single-branch git@github.com:sumichalek/Poznamkovnik.git "$HOME/poznamkovnik-bootstrap"
+git clone --branch v0.57.2 --single-branch git@github-poznamkovnik:sumichalek/Poznamkovnik.git "$HOME/poznamkovnik-bootstrap"
 cd "$HOME/poznamkovnik-bootstrap"
-./scripts/server-update.sh init v0.57.2
+bash scripts/install.sh --plan
+bash scripts/install.sh
 ```
 
-Predvolená inštalácia vznikne v `~/apps/poznamkovnik`, služba sa volá `poznamkovnik.service`, adresa je `127.0.0.1` a port `1111`. Pri prvej inštalácii nástroj pripraví aj systemd unit, overí štart a povolí službu pri štarte používateľskej relácie. Pre beh aj bez prihlásenia musí administrátor povoliť `loginctl enable-linger MENO_UCTU`.
+Predvolená inštalácia vznikne v `~/apps/poznamkovnik`, služba sa volá `poznamkovnik.service`, adresa je `127.0.0.1` a port `1111`. Pri prvej inštalácii nástroj pripraví aj systemd unit a overí štart. Sprievodca nechá používateľa vybrať automatické spúšťanie; pri priamom CLI `./scripts/server-update.sh init v0.57.2` ho možno vypnúť pomocou `--no-autostart`. Pre beh aj bez prihlásenia je samostatný krok `loginctl enable-linger MENO_UCTU`.
 
 Nástroj odmietne prevziať už existujúcu službu. Pre ďalšiu inštanciu použi vlastný názov, port a koreň:
 
@@ -109,9 +113,9 @@ Aktualizácia má tieto kroky:
 
 1. Načíta tag cez Git a vytvorí samostatný worktree vydania.
 2. V jeho vlastnom `.venv/` nainštaluje `requirements.lock`, overí závislosti a importy. Pôvodná služba zatiaľ beží.
-3. Zastaví službu a vytvorí novú úplnú zálohu dát, konfigurácie a pôvodného Git commitu.
+3. Po samostatnom potvrdení zastaví službu a vytvorí novú úplnú zálohu dát, konfigurácie a pôvodného Git commitu.
 4. Overí kontrolné súčty všetkých uložených súborov a čitateľnosť celého dátového archívu.
-5. Prepne `current`, spustí službu a overí `/api/health`: správny commit, verziu, dátový adresár aj dostupnosť databázy a súborového úložiska.
+5. Po potvrdení aktivácie prepne `current`, spustí službu a overí `/api/health`: správny commit, verziu, dátový adresár aj dostupnosť databázy a súborového úložiska.
 6. Zapíše výsledok do `shared/update-state.json`.
 
 Pred aktualizáciou nechaj dobehnúť OCR, nahrávanie a ostatné úlohy. Zastavenie služby ukončí aj jej rozpracované procesy. Počas aktivácie a kontroly štartu je krátka odstávka; celkové trvanie závisí najmä od objemu dát na zálohovanie.
@@ -165,3 +169,7 @@ Používaj serverový účet s prístupom k dátam a jeho systemd používateľs
 `GET /api/version` vracia číslo verzie a prípadný Git commit. `GET /api/health` je verejná základná kontrola pripravenosti bez používateľských údajov a bez zobrazenia dátovej cesty. Dostupnosť OCR či konkrétnych kompilátorov sa overuje osobitne v aplikácii.
 
 Staré vydania ani zálohy sa automaticky neprerezávajú. Ponechaj aspoň predchádzajúce overené vydanie a príslušné zálohy. Neodstraňuj vydanie, na ktoré ukazuje `current` alebo ktoré potrebuješ na obnovu. Automatické mazanie a nasadzovanie pri každom pushi nie sú súčasťou tejto verzie nástroja.
+
+Výnimkou je osobitne potvrdené [odinštalovanie](uninstallation.md), ktoré odoberie kód a službu, predvolene však zachová celý `shared/`. Konfigurácia nových inštalácií obsahuje aj zdroj repozitára, stabilný `installation_id` a koreň. Vďaka uloženému zdroju vie príkaz `update` po odinštalovaní znovu pripraviť kód v tom istom koreni, pred aktiváciou však opäť vytvorí novú overenú zálohu. Na obnovu starej zálohy priprav jej pôvodné vydanie; samotný dátový archív neobsahuje všetky Git worktrees.
+
+Návod na samostatnú správu vrátane ručných príkazov a riešenia porúch je v [server-operations.md](server-operations.md). DNS, Pi-hole, jeho upstreamy ani router sa inštalátorom nemenia. Zlyhanie Gitu alebo sťahovania balíkov nie je dôvodom na automatickú náhradu DNS.

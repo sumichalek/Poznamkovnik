@@ -31,6 +31,20 @@ def check_release(reference: str) -> None:
                 raise DeploymentError("Na kontrolu archívu použi Python s tarfile.data_filter (3.11.8+).")
             archive.extractall(source, filter="data")
         version = (source / "VERSION").read_text().strip()
+        required = ("scripts/install.sh", "scripts/uninstall.sh", "scripts/install_support.py",
+                    "scripts/server_uninstall.py", "scripts/system_changes.py", "scripts/server-system.sh",
+                    "docs/private-git-access.md", "docs/uninstallation.md", "docs/server-operations.md")
+        for relative in required:
+            if not (source / relative).is_file():
+                raise DeploymentError(f"V commitnutom vydaní chýba sprievodca alebo návod: {relative}")
+        run("bash", "-n", *(str(source / "scripts" / name) for name in
+                            ("install.sh", "uninstall.sh", "server-system.sh", "server-update.sh")))
+        for name in ("install_support.py", "server_uninstall.py", "system_changes.py"):
+            run(sys.executable, "-B", str(source / "scripts" / name), "--help")
+        menu = subprocess.run(["bash", str(source / "scripts/install.sh"), "--plan"], input="0\n",
+                              text=True, capture_output=True, cwd=source, timeout=15)
+        if menu.returncode:
+            raise DeploymentError("Sprievodca v čistom checkout-e sa nespustil: " + menu.stderr[-1500:])
         write_json(source / ".release.json", {"commit": commit, "tag": f"v{version}"})
         print(f"Overujem commit {commit}, verzia {version}, v čistom prostredí…", flush=True)
         run(sys.executable, "-m", "venv", str(source / ".venv"))
@@ -66,7 +80,7 @@ def check_release(reference: str) -> None:
                             with opener.open(f"http://127.0.0.1:{port}/assets/app.js", timeout=2) as response:
                                 if response.status != 200 or not response.read(1):
                                     raise DeploymentError("Zostavený frontend nie je dostupný.")
-                            print("OK: uzamknuté závislosti, systemd služba, štart, databáza, HTTP zdravie, verzia aj frontend.")
+                            print("OK: balenie sprievodcu a odinštalátora, uzamknuté závislosti, systemd služba, štart, databáza, HTTP zdravie, verzia aj frontend.")
                             return
                     except (OSError, ValueError):
                         pass

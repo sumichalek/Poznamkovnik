@@ -19,16 +19,39 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 from urllib.error import URLError
+from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, build_opener
 
 
 TAG_PATTERN = r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?"
 MARKER = "# Managed by Poznamkovnik Git deployment"
+DEFAULT_REPOSITORY = "git@github-poznamkovnik:sumichalek/Poznamkovnik.git"
 
 
 class DeploymentError(RuntimeError):
     pass
+
+
+class DeploymentCancelled(DeploymentError):
+    pass
+
+
+def validate_repository(value: str, *, allow_local: bool = False) -> str:
+    """Never persist credentials embedded in a Git URL, or interpret URL options."""
+    if not value or any(character.isspace() or ord(character) < 32 for character in value):
+        raise DeploymentError("Adresa Git repozitára nesmie obsahovať medzery ani riadiace znaky.")
+    if re.fullmatch(r"git@[A-Za-z0-9_.-]+:[A-Za-z0-9_./-]+", value):
+        return value
+    parsed = urlsplit(value)
+    if parsed.scheme in {"https", "ssh"} and parsed.hostname and parsed.path not in {"", "/"}:
+        if parsed.password or parsed.query or parsed.fragment or (parsed.username and not (parsed.scheme == "ssh" and parsed.username == "git")):
+            raise DeploymentError("Heslo ani token nevkladaj do Git URL. Použi SSH deploy key alebo správcu poverení.")
+        return value
+    if allow_local and Path(value).is_absolute() and not parsed.scheme:
+        return value
+    raise DeploymentError("Použi SSH adresu git@HOST:VLASTNÍK/REPO.git alebo HTTPS bez hesla a tokenu v URL.")
 
 
 def run(*args: str, cwd: Path | None = None) -> str:
@@ -46,6 +69,7 @@ def digest(path: Path) -> str:
 def write_json(path: Path, value: object) -> None:
     temporary = path.with_name(f".{path.name}-{uuid.uuid4().hex}")
     with temporary.open("x", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o600)
         json.dump(value, stream, ensure_ascii=False, indent=2)
         stream.write("\n")
         stream.flush()
@@ -112,9 +136,13 @@ class UserService:
     def enable(self) -> None:
         self.command("enable")
 
+    def disable(self) -> None:
+        self.command("disable")
+
 
 class Deployment:
-    def __init__(self, root: Path, *, service=None, unit_dir: Path | None = None, health_timeout: float = 45):
+    def __init__(self, root: Path, *, service=None, unit_dir: Path | None = None, health_timeout: float = 45,
+                 approval: Callable[[str, str], bool] | None = None):
         self.root = root.expanduser().absolute()
         if self.root.resolve() in {Path("/"), Path.home().resolve()} or (self.root / ".git").exists():
             raise DeploymentError("Použi samostatný inštalačný priečinok, nie koreň, domov ani pracovný projekt.")
@@ -129,6 +157,11 @@ class Deployment:
         self.unit_dir = unit_dir or config_home / "systemd/user"
         self.service_override = service
         self.health_timeout = health_timeout
+        self.approval = approval
+
+    def approve(self, stage: str, description: str) -> None:
+        if self.approval is not None and not self.approval(stage, description):
+            raise DeploymentCancelled("Operácia bola zrušená pred potvrdeným krokom.")
 
     @contextlib.contextmanager
     def locked(self):
@@ -146,6 +179,8 @@ class Deployment:
     def config(self) -> dict:
         value = read_json(self.config_path)
         self.validate_config(value)
+        if value.get("installation_id") and value.get("installation_root") != str(self.root):
+            raise DeploymentError("Konfigurácia patrí inému inštalačnému koreňu.")
         return value
 
     @staticmethod
@@ -157,6 +192,8 @@ class Deployment:
         host = str(value.get("host", ""))
         if not re.fullmatch(r"[A-Za-z0-9.:_-]+", host):
             raise DeploymentError("Neplatná adresa servera.")
+        if "installation_id" in value and not re.fullmatch(r"[a-f0-9]{32}", str(value["installation_id"])):
+            raise DeploymentError("Neplatný identifikátor inštalácie.")
 
     def service(self, config: dict):
         return self.service_override or UserService(config["service"])
@@ -229,6 +266,9 @@ class Deployment:
     def prepare(self, tag: str) -> Path:
         if not re.fullmatch(TAG_PATTERN, tag):
             raise DeploymentError("Zadaj konkrétny tag vydania, napríklad v0.57.0.")
+        self.ensure_repository(self.config())
+        print("Načítavam Git tagy a overujem vybrané vydanie…", flush=True)
+        validate_repository(run("git", "-C", str(self.repository), "remote", "get-url", "origin"), allow_local=True)
         run("git", "-C", str(self.repository), "fetch", "origin", "--tags")
         commit = run("git", "-C", str(self.repository), "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}")
         release = self.releases / tag
@@ -241,10 +281,24 @@ class Deployment:
         write_json(release / ".release.json", {"commit": commit, "tag": tag})
         return release
 
+    def ensure_repository(self, config: dict) -> None:
+        if exists(self.repository):
+            if self.repository.is_symlink():
+                raise DeploymentError("Priečinok repository nesmie byť odkaz.")
+            return
+        repository = config.get("repository")
+        if not isinstance(repository, str):
+            raise DeploymentError("Chýba repository/ aj jeho uložená adresa. Najprv skontroluj konfiguráciu; dáta nemaž.")
+        validate_repository(repository, allow_local=True)
+        run("git", "clone", "--no-checkout", "--", repository, str(self.repository))
+
     def prepare_environment(self, release: Path) -> None:
+        print(f"Pripravujem Python prostredie v {release / '.venv'}…", flush=True)
         run(sys.executable, "-m", "venv", str(release / ".venv"))
         python = str(release / ".venv/bin/python")
+        print("Inštalujem presné závislosti z requirements.lock…", flush=True)
         run(python, "-m", "pip", "install", "-r", str(release / "requirements.lock"))
+        print("Overujem závislosti a import aplikácie…", flush=True)
         run(python, "-m", "pip", "check")
         run(python, "-c", "from backend.api import AppContext, AppHandler", cwd=release)
 
@@ -264,7 +318,9 @@ class Deployment:
         if "\n" in working_directory or "\r" in working_directory:
             raise DeploymentError("Cesta obsahuje neplatný znak.")
         return (
-            f"{MARKER}\n# Deployment root: {self.root}\n[Unit]\nDescription=Poznamkovnik Git server\nStartLimitIntervalSec=0\n\n"
+            f"{MARKER}\n# Deployment root: {self.root}\n"
+            + (f"# Installation ID: {config['installation_id']}\n" if config.get('installation_id') else "")
+            + "[Unit]\nDescription=Poznamkovnik Git server\nStartLimitIntervalSec=0\n\n"
             f"[Service]\nType=simple\nWorkingDirectory={working_directory}\n"
             f"ExecStart={quote(current / '.venv/bin/python')} {quote(current / 'server.py')} "
             f"--host {quote(config['host'])} --port {config['port']} --data-dir {quote(self.data)}\n"
@@ -273,25 +329,28 @@ class Deployment:
             "[Install]\nWantedBy=default.target\n"
         )
 
-    def initialize(self, repository: str, tag: str, host: str, port: int, name: str, backup_paths: list[str]) -> None:
+    def initialize(self, repository: str, tag: str, host: str, port: int, name: str, backup_paths: list[str],
+                   *, autostart: bool = True) -> None:
+        validate_repository(repository, allow_local=True)
+        self.approve("prepare", f"Vytvoriť inštaláciu {self.root}, načítať Git vydanie {tag} a pripraviť jeho Python prostredie?")
         with self.locked():
             if exists(self.config_path) or self.current() is not None:
                 raise DeploymentError("Inštalácia už existuje; použi príkaz update.")
             if exists(self.unit_dir / name):
                 raise DeploymentError("Systemd služba už existuje. Použi nový názov služby alebo samostatný serverový účet.")
-            config = {"service": name, "host": host, "port": port, "backup_paths": backup_paths}
+            config = {"service": name, "host": host, "port": port, "backup_paths": backup_paths, "autostart": autostart,
+                      "repository": repository, "installation_id": uuid.uuid4().hex, "installation_root": str(self.root)}
             # Validate before creating the persistent configuration or fetching Git code.
             self.validate_config(config)
             if self.service_override is None and UserService(name).active():
                 raise DeploymentError("Služba už beží; prvá inštalácia ju nesmie prevziať.")
             self.settings_paths(config)
-            if not exists(self.repository):
-                run("git", "clone", "--no-checkout", "--", repository, str(self.repository))
             self.data.mkdir(exist_ok=True, mode=0o700)
             write_json(self.config_path, config)
             self._update(tag, first=True)
 
     def update(self, tag: str) -> None:
+        self.approve("prepare", f"Pripraviť vydanie {tag} v inštalácii {self.root}? Bežiaca verzia zostane počas prípravy aktívna.")
         with self.locked():
             self._update(tag)
 
@@ -308,8 +367,12 @@ class Deployment:
             # A failed initial preparation may be retried using update.
             if exists(self.unit_dir / config["service"]):
                 raise DeploymentError("Inštalácia nemá current, ale služba už existuje.")
-        if self.state_path.exists() and read_json(self.state_path).get("status") in {"stopped", "backed_up", "activating", "recovering", "recovery_required"}:
-            raise DeploymentError("Predošlá operácia sa nedokončila. Pozri status a obnov uvedenú zálohu príkazom recover.")
+        if self.state_path.exists():
+            status = read_json(self.state_path).get("status")
+            if status in {"uninstalling", "uninstall_failed"}:
+                raise DeploymentError("Odinštalovanie sa nedokončilo. Skontroluj shared/uninstall-state.json a dokonči odinštalovanie zo zachovaného bootstrap checkoutu.")
+            if status in {"stopped", "backed_up", "activating", "recovering", "recovery_required"}:
+                raise DeploymentError("Predošlá operácia sa nedokončila. Pozri status a obnov uvedenú zálohu príkazom recover.")
         if old is not None and old.name == tag:
             print("Toto vydanie už je aktívne.")
             return
@@ -464,20 +527,24 @@ class Deployment:
             time.sleep(0.2)
         raise DeploymentError(f"Nové vydanie neprešlo kontrolou dostupnosti: {last_error}")
 
-    def activate(self, release: Path, config: dict, *, install: bool = False, restore_from: Path | None = None) -> None:
+    def activate(self, release: Path | None, config: dict, *, install: bool = False, restore_from: Path | None = None) -> None:
         service = self.service(config)
         old = self.current()
         was_active = service.active()
         snapshot = None
         activation_started = False
+        self.approve("stop_backup", f"Zastaviť službu {config['service']} a vytvoriť novú overenú zálohu dát aj nastavení v {self.backups}? Začne sa odstávka.")
         try:
+            print(f"Zastavujem službu {config['service']} a vytváram úplnú zálohu…", flush=True)
             service.stop()
             self.state("stopped", previous=str(old) if old else None)
             snapshot = self.snapshot(config, old)
             self.state("backed_up", snapshot=str(snapshot))
+            target_name = release.name if release else "stav pred prvou inštaláciou (služba bude vypnutá)"
+            self.approve("activate", f"Záloha je overená: {snapshot}. Služba je počas rozhodovania zastavená. Aktivovať {target_name} a overiť výsledok? Odmietnutie obnoví jej pôvodný beh, ak predtým bežala; pri zlyhaní sa obnoví pôvodný stav.")
             # No data, settings or active code changes may precede the verified snapshot.
             activation_started = True
-            self.state("activating", snapshot=str(snapshot), target=str(release))
+            self.state("activating", snapshot=str(snapshot), target=str(release) if release else None)
             if restore_from:
                 self.restore(restore_from, config)
                 config = self.config()
@@ -487,12 +554,15 @@ class Deployment:
                     (self.unit_dir / config["service"]).write_text(self.unit_text(config))
                 self.point_to(release)
             service.reload()
-            service.start()
-            self.health(release, config)
-            if install:
+            if release is not None:
+                service.start()
+                self.health(release, config)
+            if install and config.get("autostart", True):
                 service.enable()
-            self.state("completed", snapshot=str(snapshot), release=str(release))
-            print(f"Aktívne vydanie: {release.name}. Záloha: {snapshot}", flush=True)
+            self.state("completed" if release else "recovered", snapshot=str(snapshot),
+                       release=str(release) if release else None,
+                       restored_from=str(restore_from) if restore_from else None)
+            print(f"Aktívne vydanie: {release.name if release else 'žiadne (stav pred prvou inštaláciou)'}. Záloha: {snapshot}", flush=True)
         except (Exception, KeyboardInterrupt) as error:
             if not activation_started:
                 try:
@@ -501,6 +571,10 @@ class Deployment:
                 except Exception as restart_error:
                     self.state("recovery_required", error=str(error), recovery_error=str(restart_error), previous=str(old) if old else None)
                     raise DeploymentError(f"Aktivácia neprebehla, ale pôvodnú službu sa nepodarilo spustiť: {restart_error}") from restart_error
+                if isinstance(error, (DeploymentCancelled, KeyboardInterrupt)):
+                    self.state("cancelled", snapshot=str(snapshot) if snapshot else None,
+                               previous=str(old) if old else None)
+                    raise DeploymentCancelled("Zrušené pred aktiváciou. Pôvodná služba bola obnovená, ak predtým bežala. Pripravené vydanie a prípadná záloha zostávajú uložené.") from error
                 self.state("backup_failed", error=str(error), previous=str(old) if old else None)
                 raise DeploymentError(f"Aktualizácia bola zastavená pred aktiváciou: {error}") from error
             try:
@@ -517,6 +591,7 @@ class Deployment:
             raise DeploymentError(f"Aktualizácia zlyhala; pôvodný stav bol obnovený. {error}") from error
 
     def rollback(self, snapshot: Path) -> None:
+        self.approve("prepare", f"Pripraviť obnovu zo zálohy {snapshot}? Obnova vráti dáta do okamihu tejto zálohy; najprv sa uloží aktuálny stav.")
         with self.locked():
             config = self.config()
             manifest = self.verify_snapshot(snapshot, config)
@@ -528,26 +603,14 @@ class Deployment:
 
     def recover(self, snapshot: Path) -> None:
         """Restore even a pre-install snapshot, when no previous release exists."""
+        self.approve("prepare", f"Pripraviť obnovu zo zálohy {snapshot}, vrátane prípadného stavu pred prvou inštaláciou?")
         with self.locked():
             config = self.config()
             manifest = self.verify_snapshot(snapshot, config)
-            if manifest["previous"]:
-                previous = Path(manifest["previous"])
+            previous = Path(manifest["previous"]) if manifest["previous"] else None
+            if previous is not None:
                 self.check_release(previous, manifest["commit"])
-                self.activate(previous, config, restore_from=snapshot)
-                return
-            service = self.service(config)
-            service.stop()
-            recovery_snapshot = self.snapshot(config, self.current())
-            self.state("recovering", snapshot=str(recovery_snapshot), restore_from=str(snapshot))
-            try:
-                self.restore(snapshot, config)
-                service.reload()
-            except (Exception, KeyboardInterrupt) as error:
-                self.state("recovery_required", snapshot=str(recovery_snapshot), error=str(error))
-                raise DeploymentError(f"Obnova sa nedokončila; službu nechaj zastavenú. Nová záloha: {recovery_snapshot}") from error
-            self.state("recovered", snapshot=str(recovery_snapshot), restored_from=str(snapshot))
-            print("Stav pred prvou inštaláciou bol obnovený. Novú inštaláciu môžeš zopakovať príkazom update.", flush=True)
+            self.activate(previous, config, restore_from=snapshot)
 
     def status(self) -> dict:
         config = self.config()
@@ -563,14 +626,16 @@ class Deployment:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Git aktualizácie Poznámkovníka s povinnou zálohou dát aj nastavení.")
     parser.add_argument("--root", type=Path, default=Path.home() / "apps/poznamkovnik")
+    parser.add_argument("--yes", action="store_true", help="Vedomá automatizácia bez otázok; povinnú zálohu nevypína")
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init", help="Prvá inštalácia do samostatného serverového priečinka")
     init.add_argument("tag")
-    init.add_argument("--repository", default="git@github.com:sumichalek/Poznamkovnik.git")
+    init.add_argument("--repository", default=DEFAULT_REPOSITORY)
     init.add_argument("--host", default="127.0.0.1")
     init.add_argument("--port", type=int, default=1111)
     init.add_argument("--service", default="poznamkovnik.service")
     init.add_argument("--backup-path", action="append", default=[])
+    init.add_argument("--no-autostart", action="store_true", help="Nepovoliť automatické spúšťanie služby")
     update = commands.add_parser("update", help="Načítaj Git tag, zálohuj a aktivuj vydanie")
     update.add_argument("tag")
     rollback = commands.add_parser("rollback", help="Obnov dáta, nastavenia aj vydanie z technickej zálohy")
@@ -581,14 +646,24 @@ def main() -> int:
     verify.add_argument("snapshot", type=Path)
     commands.add_parser("status", help="Aktívna verzia, posledná operácia a dostupné zálohy")
     args = parser.parse_args()
+    mutating = args.command in {"init", "update", "rollback", "recover"}
+    if mutating and not args.yes and not sys.stdin.isatty():
+        parser.error("Inštaláciu spusti v interaktívnom termináli; pre vedomú automatizáciu je dostupné --yes.")
+    def approval(stage: str, description: str) -> bool:
+        print(f"\n{description}", flush=True)
+        try:
+            return input("Pokračovať? [a/N]: ").strip().casefold() in {"a", "áno", "ano"}
+        except (EOFError, KeyboardInterrupt):
+            return False
     os.umask(0o077)
     def interrupted(_number, _frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        deployment = Deployment(args.root)
+        deployment = Deployment(args.root, approval=approval if mutating and not args.yes else None)
         if args.command == "init":
-            deployment.initialize(args.repository, args.tag, args.host, args.port, args.service, args.backup_path)
+            deployment.initialize(args.repository, args.tag, args.host, args.port, args.service, args.backup_path,
+                                  autostart=not args.no_autostart)
         elif args.command == "update":
             deployment.update(args.tag)
         elif args.command == "rollback":
@@ -601,6 +676,9 @@ def main() -> int:
         else:
             print(json.dumps(deployment.status(), ensure_ascii=False, indent=2))
         return 0
+    except DeploymentCancelled as error:
+        print(str(error), file=sys.stderr)
+        return 130
     except (DeploymentError, OSError, ValueError, tarfile.TarError) as error:
         print(f"Chyba: {error}", file=sys.stderr)
         return 1
