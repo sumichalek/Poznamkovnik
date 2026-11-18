@@ -5,7 +5,7 @@ PN_PLAN_ONLY=0
 case "${1:-}" in
   --help|-h)
     printf '%s\n' 'Použitie: bash scripts/install.sh [--plan]' \
-      'Slovenský sprievodca: inštalácia, aktualizácia, stav/diagnostika, obnova a odinštalovanie Poznámkovníka.' \
+      'Slovenský sprievodca: inštalácia, aktualizácia, stav/diagnostika, obnova, odinštalovanie a zmena spôsobu prístupu.' \
       '--plan: iba otázky a plán; žiadne sťahovanie, sudo ani zmeny služby.'
     exit 0 ;;
   --plan) PN_PLAN_ONLY=1 ;;
@@ -73,6 +73,13 @@ pn_port() {
     printf 'Port musí byť číslo od 1 do 65535.\n'
   done
 }
+pn_cidr() {
+  while true; do
+    pn_ask PN_CIDR 'Zdrojová IPv4 sieť alebo počítač v CIDR, napríklad 192.168.0.0/24 alebo 192.168.0.10/32' ''
+    if python3 -c 'import ipaddress, sys; value=ipaddress.ip_network(sys.argv[1]); sys.exit(0 if value.version == 4 and value.prefixlen > 0 else 1)' "$PN_CIDR" 2>/dev/null; then return 0; fi
+    printf 'Zadaj platnú konkrétnu IPv4 sieť, nie celý internet (0.0.0.0/0).\n'
+  done
+}
 
 PN_DEFAULT_ROOT="$(pn_support default-root "$PN_SCRIPT_DIR")"
 PN_DEFAULT_SERVICE=poznamkovnik.service
@@ -82,8 +89,9 @@ pn_support overview "$PN_DEFAULT_ROOT"
 printf '\n%s\n' '1) Nainštalovať Poznámkovník alebo samostatnú skúšobnú inštanciu' \
   '2) Aktualizovať existujúcu inštaláciu' '3) Zobraziť stav a diagnostiku (bez zmien)' \
   '4) Obnoviť Poznámkovník zo zálohy (dáta, nastavenia a vydanie, nie celý Linux)' \
-  '5) Odinštalovať Poznámkovník (predvolene zachovať dáta a zálohy)' '0) Skončiť'
-pn_choice PN_ACTION 'Voľba' '0' '^[0-5]$'
+  '5) Odinštalovať Poznámkovník (predvolene zachovať dáta a zálohy)' \
+  '6) Zmeniť spôsob prístupu (lokálny/SSH tunel alebo LAN HTTP)' '0) Skončiť'
+pn_choice PN_ACTION 'Voľba' '0' '^[0-6]$'
 [[ "$PN_ACTION" == 0 ]] && exit 0
 if [[ "$PN_ACTION" == 1 && -f "$PN_DEFAULT_ROOT/shared/server.json" ]]; then
   printf 'Inštalácia už existuje. Pre novú skúšku navrhujem iný priečinok, službu a port.\n'
@@ -95,7 +103,7 @@ while true; do
   pn_root "$PN_DEFAULT_ROOT"
   if [[ "$PN_ACTION" == 1 && -e "$PN_ROOT/shared/server.json" ]]; then
     printf 'Tu už je inštalácia. Nič sa neprepíše; zvoľ iný priečinok alebo skonči cez Ctrl+C.\n'
-  elif [[ "$PN_ACTION" == 2 || "$PN_ACTION" == 4 || "$PN_ACTION" == 5 ]] && [[ ! -f "$PN_ROOT/shared/server.json" ]]; then
+  elif [[ "$PN_ACTION" == 2 || "$PN_ACTION" == 4 || "$PN_ACTION" == 5 || "$PN_ACTION" == 6 ]] && [[ ! -f "$PN_ROOT/shared/server.json" ]]; then
     printf 'Tu nie je konfigurácia inštalácie. Vyber jej skutočný priečinok.\n'
   else
     break
@@ -125,15 +133,41 @@ PN_AUTOSTART=0
 PN_HOST=127.0.0.1
 PN_PORT="$PN_DEFAULT_PORT"
 PN_SERVICE="$PN_DEFAULT_SERVICE"
+PN_FIREWALL=none
+PN_CIDR=''
 PN_REPOSITORY="$(pn_support default-repository "$PN_SCRIPT_DIR/..")"
-if [[ "$PN_ACTION" == 2 || "$PN_ACTION" == 4 ]]; then
+if [[ "$PN_ACTION" == 2 || "$PN_ACTION" == 4 || "$PN_ACTION" == 6 ]]; then
   PN_CONFIG="$(pn_support config "$PN_ROOT")"
   mapfile -t PN_EXISTING <<< "$PN_CONFIG"
   PN_HOST="${PN_EXISTING[0]}"; PN_PORT="${PN_EXISTING[1]}"; PN_SERVICE="${PN_EXISTING[2]}"
   if [[ "$PN_ACTION" == 2 ]]; then PN_REPOSITORY="$(pn_support repository "$PN_ROOT/repository")"; fi
 fi
 
-if [[ "$PN_ACTION" == 4 ]]; then
+if [[ "$PN_ACTION" == 6 ]]; then
+  PN_PREVIOUS_HOST="$PN_HOST"
+  PN_NETWORK_DEFAULT=2
+  [[ "$PN_HOST" != 127.0.0.1 ]] || PN_NETWORK_DEFAULT=1
+  printf 'Súčasná adresa: %s, port %s, služba %s\n' "$PN_HOST" "$PN_PORT" "$PN_SERVICE"
+  printf '%s\n' '1) Lokálny prístup / SSH tunel (iba 127.0.0.1; bez priameho LAN prístupu)' \
+    '2) LAN cez HTTP (všetky IPv4 rozhrania; prístup vo firewalle je samostatný krok)'
+  pn_choice PN_NETWORK 'Nový spôsob prístupu' "$PN_NETWORK_DEFAULT" '^[12]$'
+  PN_HOST=127.0.0.1; PN_MODE=local
+  if [[ "$PN_NETWORK" == 2 ]]; then PN_HOST=0.0.0.0; PN_MODE=lan; fi
+  pn_support access-plan "$PN_ROOT" --mode "$PN_MODE"
+  PN_ACTION_LABEL='Zmena spôsobu prístupu'
+  PN_TARGET="$PN_PREVIOUS_HOST → $PN_HOST (bez zmeny vydania)"
+  PN_COMMAND+=(configure-access "$PN_MODE")
+  if [[ "$PN_MODE" == local ]]; then
+    printf 'Samotné vynechanie firewallu neobmedzí adresu aplikácie. Tento režim ju viaže na loopback.\n'
+    if pn_confirm 'Po prestavení ponúknuť odobratie iba vlastnej nezmenenej výnimky UFW? Cudzie pravidlá a linger zostávajú.'; then PN_FIREWALL=remove; fi
+  else
+    printf 'LAN HTTP nie je šifrované. Bez nového pravidla môže prístup povoľovať už existujúce pravidlo alebo neaktívny firewall.\n'
+    if pn_confirm 'Po prestavení pripraviť výnimku UFW pre vybranú IPv4 sieť/počítač?'; then
+      PN_FIREWALL=add
+      pn_cidr
+    fi
+  fi
+elif [[ "$PN_ACTION" == 4 ]]; then
   PN_ROWS="$(pn_support backups "$PN_ROOT")"
   if [[ -z "$PN_ROWS" ]]; then
     printf 'V tejto inštalácii nie sú zálohy so značkou overenia. Nič sa nezmenilo.\n'; exit 0
@@ -163,9 +197,10 @@ else
   if [[ "$PN_ACTION" == 1 ]]; then
     PN_ACTION_LABEL='Nová inštalácia'
     pn_port "$PN_PORT"
-    printf '%s\n' '1) Prístup iba z tohto počítača (aj pre proxy alebo SSH tunel)' '2) Prístup z domácej siete (všetky IPv4 rozhrania; firewall nastavíme samostatne)'
+    printf '%s\n' '1) Lokálny prístup / SSH tunel (iba 127.0.0.1; aj pre lokálny proxy)' '2) Prístup z domácej siete cez HTTP (všetky IPv4 rozhrania; firewall nastavíme samostatne)'
     pn_choice PN_NETWORK 'Sieťový prístup' '1' '^[12]$'
     [[ "$PN_NETWORK" == 1 ]] || PN_HOST=0.0.0.0
+    if [[ "$PN_NETWORK" == 2 ]]; then printf 'LAN HTTP nie je šifrované. Preskočenie UFW neobmedzí aplikáciu na loopback ani nezruší staršie pravidlá.\n'; fi
     if pn_confirm 'Povoliť automatické spúšťanie? Pre beh bez prihlásenia potom samostatne potvrdíš linger.'; then PN_AUTOSTART=1; fi
     if pn_confirm 'Pripraviť aj OCRmyPDF, slovenské/anglické OCR a PDF náhľady?'; then PN_OCR=1; fi
     if pn_confirm 'Otvoriť rozšírené nastavenia (Git adresa a názov služby)?'; then
@@ -189,9 +224,17 @@ fi
 
 printf '\nPlán\n  Počítač: %s\n  Operácia: %s\n  Cieľový stav: %s\n  Kód a vydania: %s/releases\n  Dáta a účty: %s/shared/data\n  Zálohy: %s/shared/update-backups\n  Služba: %s\n  Adresa: %s, port %s\n' \
   "$(hostname)" "$PN_ACTION_LABEL" "$PN_TARGET" "$PN_ROOT" "$PN_ROOT" "$PN_ROOT" "$PN_SERVICE" "$PN_HOST" "$PN_PORT"
-if [[ "$PN_ACTION" != 4 ]]; then
+if [[ "$PN_ACTION" != 4 && "$PN_ACTION" != 6 ]]; then
   printf '  Git repozitár: %s\n' "$PN_REPOSITORY"
   printf '  Privátny Git vyžaduje tvoje oprávnenie na čítanie; nenastavuje sa prístup agenta na server.\n'
+fi
+if [[ "$PN_ACTION" == 6 ]]; then
+  printf '  Predošlá adresa: %s\n  Git, vydanie, Python prostredie, port, názov služby a identita: bez zmeny\n' "$PN_PREVIOUS_HOST"
+  case "$PN_FIREWALL" in
+    add) printf '  Samostatný UFW krok po prestavení: ponúknuť TCP %s zo siete %s\n' "$PN_PORT" "$PN_CIDR" ;;
+    remove) printf '  Samostatný UFW krok po prestavení: ponúknuť odobratie iba vlastnej výnimky; pri neistote ju ponechať\n' ;;
+    none) printf '  UFW: bez zmien (existujúce pravidlá zostanú zachované)\n' ;;
+  esac
 fi
 if [[ "$PN_ACTION" == 1 ]]; then
   PN_AUTOSTART_LABEL=nie; PN_OCR_LABEL=nie
@@ -205,7 +248,13 @@ printf '%s\n' '  Pred aktiváciou vždy vznikne nová overená záloha dát aj n
   '  DNS, Pi-hole ani nastavenia routera sa nemenia. Dáta sa neposielajú do Gitu.' 'Príkaz správy aplikácie:'
 pn_command "${PN_COMMAND[@]}"
 if (( PN_PLAN_ONLY == 1 )); then
-  printf '\nIba plán: nič sa nesťahovalo, služba ani systémové nastavenia sa nezmenili. Dostupnosť Gitu, miesto a port sa overia pred vykonaním.\n'; exit 0
+  printf '\nIba plán: nič sa nesťahovalo, služba ani systémové nastavenia sa nezmenili.\n'
+  if [[ "$PN_ACTION" == 6 ]]; then
+    printf 'Prestavenie nevyžaduje sieťové čítanie Gitu; miestne kontroly sa pred vykonaním zopakujú.\n'
+  else
+    printf 'Dostupnosť Gitu, miesto a port sa overia pred vykonaním.\n'
+  fi
+  exit 0
 fi
 pn_confirm 'Súhlasíš s týmto plánom a chceš pokračovať ku kontrolám a potvrdzovaným krokom?' || exit 0
 
@@ -216,19 +265,21 @@ command -v systemctl >/dev/null && systemctl --user show --property=Version >/de
   printf 'Používateľský systemd nie je dostupný. Spusti sprievodcu v riadnej SSH relácii, nie cez sudo. Aplikácia sa nemenila.\n' >&2; exit 1;
 }
 PN_MISSING=()
-command -v git >/dev/null || PN_MISSING+=(git)
-python3 -c 'import venv, ensurepip' >/dev/null 2>&1 || PN_MISSING+=(python3-venv)
-if (( PN_OCR == 1 )); then
-  command -v ocrmypdf >/dev/null || PN_MISSING+=(ocrmypdf)
-  command -v pdftoppm >/dev/null || PN_MISSING+=(poppler-utils)
-  if command -v tesseract >/dev/null; then
-    tesseract --list-langs 2>/dev/null | grep -qx slk || PN_MISSING+=(tesseract-ocr-slk)
-    tesseract --list-langs 2>/dev/null | grep -qx eng || PN_MISSING+=(tesseract-ocr-eng)
-  else
-    PN_MISSING+=(tesseract-ocr-slk tesseract-ocr-eng)
+if [[ "$PN_ACTION" != 6 ]]; then
+  command -v git >/dev/null || PN_MISSING+=(git)
+  python3 -c 'import venv, ensurepip' >/dev/null 2>&1 || PN_MISSING+=(python3-venv)
+  if (( PN_OCR == 1 )); then
+    command -v ocrmypdf >/dev/null || PN_MISSING+=(ocrmypdf)
+    command -v pdftoppm >/dev/null || PN_MISSING+=(poppler-utils)
+    if command -v tesseract >/dev/null; then
+      tesseract --list-langs 2>/dev/null | grep -qx slk || PN_MISSING+=(tesseract-ocr-slk)
+      tesseract --list-langs 2>/dev/null | grep -qx eng || PN_MISSING+=(tesseract-ocr-eng)
+    else
+      PN_MISSING+=(tesseract-ocr-slk tesseract-ocr-eng)
+    fi
   fi
 fi
-if [[ "$PN_ACTION" != 4 ]] && command -v git >/dev/null; then pn_support check-git "$PN_REPOSITORY" --tag "$PN_TAG"; fi
+if [[ "$PN_ACTION" != 4 && "$PN_ACTION" != 6 ]] && command -v git >/dev/null; then pn_support check-git "$PN_REPOSITORY" --tag "$PN_TAG"; fi
 if (( ${#PN_MISSING[@]} > 0 )); then
   if [[ "$PN_ACTION" != 1 ]]; then
     printf 'Chýbajú systémové predpoklady: %s. Priprav ich osobitne; služba sa nemenila.\n' "${PN_MISSING[*]}" >&2; exit 1
@@ -242,12 +293,36 @@ if (( ${#PN_MISSING[@]} > 0 )); then
   "${PN_SYSTEM[@]}"
   [[ "$PN_ACTION" == 4 ]] || pn_support check-git "$PN_REPOSITORY" --tag "$PN_TAG"
 fi
+if [[ "$PN_ACTION" == 6 && "$PN_FIREWALL" == add ]]; then
+  if [[ ! -x /usr/sbin/ufw ]] || ! systemctl is-active --quiet ufw; then
+    printf 'Vybraná výnimka vyžaduje aktívne UFW. Firewall sa nepovoľuje automaticky; aplikácia sa zatiaľ neprestavila. Vyber plán bez zmeny UFW alebo najprv osobne priprav firewall.\n' >&2
+    exit 1
+  fi
+fi
 PN_RESULT=0
 "${PN_COMMAND[@]}" || PN_RESULT=$?
 if (( PN_RESULT == 130 )); then
   printf '\nOperácia bola zrušená. Ďalšie systémové kroky sa nespustia. Pripravené súbory alebo schválené balíky môžu zostať.\n'; exit 0
 elif (( PN_RESULT != 0 )); then
   printf 'Správa aplikácie zlyhala. Pozri posledný výpis a docs/server-operations.md; nič nemaž ani neopakuj naslepo.\n' >&2; exit "$PN_RESULT"
+fi
+
+if [[ "$PN_ACTION" == 6 && "$PN_FIREWALL" != none ]]; then
+  if [[ "$PN_FIREWALL" == add ]]; then
+    PN_ACCESS_SYSTEM=(sudo bash "$PN_SCRIPT_DIR/server-system.sh" firewall "$PN_ROOT" "$PN_CIDR")
+  else
+    PN_ACCESS_SYSTEM=(sudo bash "$PN_SCRIPT_DIR/server-system.sh" firewall-remove "$PN_ROOT")
+  fi
+  printf '\nAplikačný krok skončil úspešne. Nasleduje samostatné rozhodnutie o UFW; pred zásahom vznikne nová systémová záloha.\n'
+  pn_command "${PN_ACCESS_SYSTEM[@]}"
+  if pn_confirm 'Spustiť iba tento UFW krok cez sudo? SSH, Pi-hole a linger sa nemenia.'; then
+    if ! "${PN_ACCESS_SYSTEM[@]}"; then
+      printf 'Spôsob prístupu aplikácie bol spracovaný, ale samostatný krok UFW sa nedokončil. Skontroluj posledný výpis a pravidlá; aplikáciu nepreinštalovávaj. Už overená záloha zostala zachovaná.\n' >&2
+      exit 1
+    fi
+  else
+    printf 'UFW krok bol vynechaný. Adresa aplikácie zostáva podľa úspešného aplikačného kroku; staršie pravidlá sa neodobrali ani nezmenili.\n'
+  fi
 fi
 
 if [[ "$PN_ACTION" == 1 ]] && (( PN_AUTOSTART == 1 )); then
@@ -266,11 +341,7 @@ if [[ "$PN_ACTION" == 1 && "$PN_HOST" == 0.0.0.0 ]] && [[ -x /usr/sbin/ufw ]]; t
   if systemctl is-active --quiet ufw; then
     printf 'UFW je aktívny. Pravidlo sa môže pridať samostatne iba pre vybranú IPv4 sieť.\n'
     if pn_confirm 'Chceš pripraviť pravidlo pre túto aplikáciu?'; then
-      while true; do
-        pn_ask PN_CIDR 'Zdrojová sieť v CIDR, napríklad 192.168.0.0/24' ''
-        if python3 -c 'import ipaddress, sys; value=ipaddress.ip_network(sys.argv[1]); sys.exit(0 if value.version == 4 and value.prefixlen > 0 else 1)' "$PN_CIDR" 2>/dev/null; then break; fi
-        printf 'Zadaj platnú konkrétnu IPv4 sieť, nie celý internet (0.0.0.0/0).\n'
-      done
+      pn_cidr
       pn_command sudo bash "$PN_SCRIPT_DIR/server-system.sh" firewall "$PN_ROOT" "$PN_CIDR"
       printf 'Pred zmenou sa zálohuje UFW. Ostatné pravidlá vrátane Pi-hole sa nemenia.\n'
       if pn_confirm 'Pridať toto pravidlo cez sudo?'; then sudo bash "$PN_SCRIPT_DIR/server-system.sh" firewall "$PN_ROOT" "$PN_CIDR"; fi
@@ -283,6 +354,11 @@ PN_NEXT="$PN_SCRIPT_DIR/install.sh"
 [[ ! -f "$PN_ROOT/current/scripts/install.sh" ]] || PN_NEXT="$PN_ROOT/current/scripts/install.sh"
 printf '\nSprievodcu znovu otvoríš:\n'
 pn_command bash "$PN_NEXT"
+if [[ "$PN_ACTION" != 4 && "$PN_HOST" == 127.0.0.1 ]] && [[ -f "$PN_ROOT/current/server.py" ]]; then
+  printf '\nPrístup z iného počítača: tento príkaz spusti na svojom klientskom počítači, nie na serveri. Použi svoje bežné SSH prihlásenie:\n'
+  pn_command ssh -N -o ExitOnForwardFailure=yes -o ForwardAgent=no -L "127.0.0.1:18112:127.0.0.1:$PN_PORT" "$(id -un)@$(hostname)"
+  printf 'V prehliadači na klientovi otvor http://127.0.0.1:18112. Lokálny port 18112 môžeš zmeniť, ak je obsadený. Terminál ponechaj otvorený; Ctrl+C ukončí iba tunel.\n'
+fi
 if [[ -f "$PN_ROOT/current/server.py" ]]; then
   printf 'Účet vytváraš v prehliadači; predvolené prihlasovacie heslo sa nevytvára. Ak už účty existujú, zostávajú zachované.\n'
 else

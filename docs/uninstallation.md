@@ -63,6 +63,8 @@ Nové inštalácie majú stabilný `installation_id` a koreň v `shared/server.j
 
 Keď chýba doklad, pochádza zo starej inštalácie, nesúhlasí jeho identifikátor, vlastníctvo alebo aktuálny stav, príslušné systémové nastavenie sa automaticky nemení. Toto je zámerné bezpečné obmedzenie, nie prísľub úplného návratu celého Linuxu do pôvodného stavu.
 
+Ak chceš len prejsť z LAN HTTP na lokálny prístup/SSH tunel, neodinštalovávaj aplikáciu. Použi [voľbu 6 sprievodcu](network-access.md); ponúkne odobratie iba vlastnej výnimky UFW, pričom dáta, účty, kód aj linger zostanú zachované.
+
 Pri viacerých inštanciách môže linger dočasne zostať kvôli druhej aplikácii. Doklad pôvodnej inštancie sa zachová aj po vymazaní jej dát. Keď už iná aplikácia linger nepotrebuje, vieš ho samostatne znovu skontrolovať z bootstrap checkoutu. Použi ID z predchádzajúceho výpisu:
 
 ```bash

@@ -17,7 +17,7 @@ import unittest
 from unittest.mock import patch
 
 from scripts import install_support as support
-from scripts.server_manage import DEFAULT_REPOSITORY, DeploymentError, validate_repository
+from scripts.server_manage import DEFAULT_REPOSITORY, Deployment, DeploymentError, validate_repository
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -139,6 +139,19 @@ class InstallerSupportTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertEqual(before, {str(path) for path in project.rglob("*")})
 
+    def test_access_plan_helper_is_readonly_and_reports_unchanged_or_inactive_service(self):
+        for changed, active, expected in [(False, True, "netreba odstávku"), (True, False, "potom znova vypne")]:
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw) / "installation"
+                plan = {"release": "/example/releases/v9.0.0", "changed": changed, "active": active}
+                output = io.StringIO()
+                with patch.object(sys, "argv", ["install_support.py", "access-plan", str(root), "--mode", "local"]), patch.object(Deployment, "access_plan", return_value=plan) as access, contextlib.redirect_stdout(output):
+                    support.main()
+                access.assert_called_once_with("local")
+                self.assertIn("v9.0.0", output.getvalue())
+                self.assertIn(expected, output.getvalue())
+                self.assertFalse(root.exists())
+
 
 @unittest.skipIf(os.geteuid() == 0, "Používateľský sprievodca odmieta root")
 class InstallerTerminalFlowTest(unittest.TestCase):
@@ -175,16 +188,17 @@ else: print('Simulovaná kontrola: OK')
             target.write_text("#!/bin/sh\nexit 0\n")
             target.chmod(0o755)
         python = binaries / "python3"
-        python.write_text(f'#!/bin/sh\nif [ "$1" = -c ]; then exit 0; fi\nexec "{sys.executable}" "$@"\n')
+        python.write_text(f'#!/bin/sh\nif [ "$1" = -c ] && [ "$2" = "import venv, ensurepip" ]; then exit 0; fi\nexec "{sys.executable}" "$@"\n')
         python.chmod(0o755)
         sudo = binaries / "sudo"
         sudo.write_text("#!/bin/sh\nexit 99\n")
         sudo.chmod(0o755)
         self.environment = {**os.environ, "PATH": str(binaries) + os.pathsep + os.environ.get("PATH", "")}
 
-    def terminal(self, answers):
+    def terminal(self, answers, *, plan=False, expected_code=0):
         master, slave = pty.openpty()
-        process = subprocess.Popen(["bash", str(self.scripts / "install.sh")], stdin=slave, stdout=slave, stderr=slave, env=self.environment)
+        arguments = ["bash", str(self.scripts / "install.sh")] + (["--plan"] if plan else [])
+        process = subprocess.Popen(arguments, stdin=slave, stdout=slave, stderr=slave, env=self.environment)
         os.close(slave)
         output = bytearray()
         try:
@@ -201,7 +215,7 @@ else: print('Simulovaná kontrola: OK')
                     output.extend(chunk)
                 elif process.poll() is not None:
                     break
-            self.assertEqual(process.wait(timeout=2), 0, output.decode(errors="replace"))
+            self.assertEqual(process.wait(timeout=2), expected_code, output.decode(errors="replace"))
         finally:
             if process.poll() is None:
                 process.kill()
@@ -213,6 +227,25 @@ else: print('Simulovaná kontrola: OK')
         shared = self.target / "shared"
         shared.mkdir(parents=True)
         (shared / "server.json").write_text("fixture")
+
+    def manager_result(self, code):
+        manager = self.scripts / "server_manage.py"
+        manager.write_text(manager.read_text().replace("SystemExit(130)", f"SystemExit({code})"))
+
+    def system_recorder(self, code=0):
+        self.system_calls = self.base / "system.json"
+        sudo = self.base / "bin/sudo"
+        sudo.write_text(f'''#!{sys.executable}
+import json, sys
+from pathlib import Path
+assert Path({str(self.manager_calls)!r}).exists(), 'system changes before application step'
+Path({str(self.system_calls)!r}).write_text(json.dumps(sys.argv[1:]))
+raise SystemExit({code})
+''')
+        sudo.chmod(0o755)
+
+    def helper_calls(self):
+        return [json.loads(line) for line in self.calls.read_text().splitlines()]
 
     def test_install_reaches_manager_without_automation_or_sudo(self):
         output = self.terminal(f"1\n{self.target}\nv9.0.0\n19111\n1\nn\nn\nn\na\n")
@@ -253,6 +286,120 @@ else: print('Simulovaná kontrola: OK')
         calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
         self.assertTrue(any(call[0] == "diagnose" for call in calls))
         self.assertFalse(any(call[0] == "check-git" for call in calls))
+
+    def test_access_local_plan_does_not_run_manager_sudo_or_network_checks(self):
+        self.existing_installation()
+        before = (self.target / "shared/server.json").read_bytes()
+        output = self.terminal(f"6\n{self.target}\n1\na\n", plan=True)
+        self.assertIn("Zmena spôsobu prístupu", output)
+        self.assertIn("configure-access local", output)
+        self.assertIn("ponúknuť odobratie iba vlastnej výnimky", output)
+        self.assertIn("Iba plán", output)
+        self.assertFalse(self.manager_calls.exists())
+        self.assertEqual((self.target / "shared/server.json").read_bytes(), before)
+        calls = self.helper_calls()
+        self.assertIn(["access-plan", str(self.target), "--mode", "local"], calls)
+        self.assertFalse(any(call[0] in ("check-git", "preflight") for call in calls))
+
+    def test_access_lan_plan_reprompts_invalid_or_unrestricted_cidr(self):
+        self.existing_installation()
+        output = self.terminal(f"6\n{self.target}\n2\na\nwrong\n0.0.0.0/0\n::/64\n192.168.0.17/24\n192.168.0.0/24\n", plan=True)
+        self.assertEqual(output.count("Zadaj platnú konkrétnu IPv4 sieť"), 4)
+        self.assertIn("ponúknuť TCP 19111 zo siete 192.168.0.0/24", output)
+        self.assertIn("configure-access lan", output)
+        self.assertIn("LAN HTTP nie je šifrované", output)
+        self.assertFalse(self.manager_calls.exists())
+
+    def test_access_reaches_manager_without_tag_git_network_or_automation(self):
+        self.existing_installation()
+        output = self.terminal(f"6\n{self.target}\n2\nn\na\n")
+        self.assertEqual(json.loads(self.manager_calls.read_text()), ["--root", str(self.target), "configure-access", "lan"])
+        self.assertNotIn("Git tag vydania", output)
+        self.assertNotIn("Port aplikácie [", output)
+        self.assertIn("Operácia bola zrušená", output)
+        self.assertFalse(any(call[0] == "check-git" for call in self.helper_calls()))
+
+    def test_access_declining_overall_plan_does_not_reach_manager(self):
+        self.existing_installation()
+        self.terminal(f"6\n{self.target}\n1\na\nn\n")
+        self.assertFalse(self.manager_calls.exists())
+        self.assertFalse(any(call[0] == "preflight" for call in self.helper_calls()))
+
+    def test_access_manager_cancellation_does_not_start_firewall_step(self):
+        self.existing_installation()
+        self.system_recorder()
+        output = self.terminal(f"6\n{self.target}\n1\na\na\na\n")
+        self.assertIn("Ďalšie systémové kroky sa nespustia", output)
+        self.assertFalse(self.system_calls.exists())
+
+    def test_access_manager_failure_does_not_start_firewall_step(self):
+        self.existing_installation()
+        self.manager_result(1)
+        self.system_recorder()
+        output = self.terminal(f"6\n{self.target}\n1\na\na\na\n", expected_code=1)
+        self.assertIn("Správa aplikácie zlyhala", output)
+        self.assertFalse(self.system_calls.exists())
+
+    def test_access_firewall_removal_has_separate_confirmation_after_manager(self):
+        self.existing_installation()
+        self.manager_result(0)
+        self.system_recorder()
+        output = self.terminal(f"6\n{self.target}\n1\na\na\na\n")
+        self.assertEqual(json.loads(self.system_calls.read_text()), ["bash", str(self.scripts / "server-system.sh"), "firewall-remove", str(self.target)])
+        self.assertIn("Spustiť iba tento UFW krok cez sudo?", output)
+        self.assertIn("Hotovo. Výsledok", output)
+        self.assertFalse(any(call[0] == "check-git" for call in self.helper_calls()))
+
+    def test_access_firewall_removal_can_be_declined_after_successful_manager(self):
+        self.existing_installation()
+        self.manager_result(0)
+        self.system_recorder()
+        output = self.terminal(f"6\n{self.target}\n1\na\na\nn\n")
+        self.assertFalse(self.system_calls.exists())
+        self.assertIn("UFW krok bol vynechaný", output)
+        self.assertIn("Hotovo. Výsledok", output)
+
+    @unittest.skipUnless(os.access("/usr/sbin/ufw", os.X_OK), "LAN krok vyžaduje prítomnosť UFW; zmeny simuluje sudo fixture")
+    def test_access_lan_firewall_addition_is_separate_and_uses_existing_port(self):
+        self.existing_installation()
+        self.manager_result(0)
+        self.system_recorder()
+        output = self.terminal(f"6\n{self.target}\n2\na\n192.168.0.9/32\na\na\n")
+        self.assertEqual(json.loads(self.manager_calls.read_text()), ["--root", str(self.target), "configure-access", "lan"])
+        self.assertEqual(json.loads(self.system_calls.read_text()), ["bash", str(self.scripts / "server-system.sh"), "firewall", str(self.target), "192.168.0.9/32"])
+        self.assertIn("Spustiť iba tento UFW krok cez sudo?", output)
+
+    def test_access_lan_with_unavailable_firewall_aborts_before_manager(self):
+        self.existing_installation()
+        self.manager_result(0)
+        self.system_recorder()
+        systemctl = self.base / "bin/systemctl"
+        systemctl.write_text('#!/bin/sh\nif [ "$1" = is-active ]; then exit 3; fi\nexit 0\n')
+        output = self.terminal(f"6\n{self.target}\n2\na\n192.168.0.0/24\na\n", expected_code=1)
+        self.assertIn("aplikácia sa zatiaľ neprestavila", output)
+        self.assertFalse(self.manager_calls.exists())
+        self.assertFalse(self.system_calls.exists())
+        self.assertNotIn("Hotovo. Výsledok", output)
+
+    def test_access_firewall_failure_reports_partial_success_not_reinstallation(self):
+        self.existing_installation()
+        self.manager_result(0)
+        self.system_recorder(1)
+        output = self.terminal(f"6\n{self.target}\n1\na\na\na\n", expected_code=1)
+        self.assertTrue(self.system_calls.exists())
+        self.assertIn("samostatný krok UFW sa nedokončil", output)
+        self.assertIn("aplikáciu nepreinštalovávaj", output)
+        self.assertNotIn("Hotovo. Výsledok", output)
+
+    def test_access_local_summary_prints_client_tunnel_without_executing_ssh(self):
+        self.existing_installation()
+        self.manager_result(0)
+        (self.target / "current").mkdir()
+        (self.target / "current/server.py").write_text("fixture")
+        output = self.terminal(f"6\n{self.target}\n1\nn\na\n")
+        self.assertIn("ssh -N -o ExitOnForwardFailure=yes -o ForwardAgent=no -L 127.0.0.1:18112:127.0.0.1:19111", output)
+        self.assertIn("nie na serveri", output)
+        self.assertIn("http://127.0.0.1:18112", output)
 
 
 if __name__ == "__main__":

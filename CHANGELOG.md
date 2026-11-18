@@ -1,5 +1,12 @@
 # Zmeny vo vydaniach
 
+## Nezverejnené
+
+- Voľba 6 inštalátora prepína existujúcu inštaláciu medzi lokálnym/SSH prístupom na `127.0.0.1` a LAN HTTP na `0.0.0.0`, bez nového sťahovania vydania alebo preinštalovania. Port, služba, identita, účty, dáta a autostart zostávajú zachované.
+- Pred zmenou adresy a systemd jednotky vznikne nová overená záloha pôvodných dát a nastavení. Aktivácia má vlastné potvrdenie a pri zlyhaní obnovuje pôvodný stav; cudzie jednotky, drop-ins a nedokončené operácie blokujú prestavenie.
+- Samostatný potvrdený krok pridá úzku výnimku UFW alebo odoberie iba vlastnú nezmenenú výnimku podľa root dokladu. Odobratie firewallu nemení linger, SSH, Pi-hole ani cudzie pravidlá. Čiastočné zlyhanie je odlíšené od zlyhania aplikácie.
+- Plán nemení súbory, služby ani Git index. Sprievodca vysvetľuje rozdiel medzi loopback adresou a vynechaním firewallu a vypíše klientsky SSH tunel. Nový návod obsahuje aj krátky voliteľný SSH alias a ručné overenie prístupu.
+
 ## 0.57.5
 
 - Spoločné generovanie UUID funguje aj cez LAN HTTP, kde prehliadač neposkytuje `crypto.randomUUID()`. Kompatibilná vetva používa kryptografické `getRandomValues()` a zachováva formát UUID v4; bez bezpečného zdroja náhody sa nevytvárajú slabé náhradné ID.

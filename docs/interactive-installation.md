@@ -27,7 +27,9 @@ Spúšťaj ho pod bežným používateľským účtom. Najprv uvidíš názov po
 3. Stav a lokálnu diagnostiku bez zmien; sieťová kontrola čítania Gitu má vlastné potvrdenie.
 4. Obnovu Poznámkovníka zo zálohy, nie obnovu celého operačného systému.
 5. Odinštalovanie s predvoleným zachovaním dát aj záloh.
-0. Skončenie bez zmien (predvolená voľba).
+6. Zmenu lokálneho/SSH alebo LAN HTTP prístupu existujúcej inštalácie.
+
+Voľba **0** skončí bez zmien (predvolená voľba).
 
 Chybná voľba, tag, port alebo odpoveď na otázku sa nevykoná; sprievodca otázku zopakuje. Spustenie zo spravovaného vydania predvyberie jeho vlastný koreň inštalácie, aj keď nejde o predvolenú cestu.
 
@@ -45,6 +47,12 @@ Prázdna odpoveď na potvrdenie znamená nie. Ak aktiváciu odmietneš po záloh
 Zrušenie neskoršieho kroku neodinštaluje systémové balíky, ktoré si predtým samostatne schválil, a neodstraňuje už pripravené súbory. Sprievodca ukazuje, ktorá časť bola dokončená; nevykonáva automatické upratovanie používateľských dát.
 
 Záloha je povinná. Používateľ môže zastaviť celý postup, ale nemôže potvrdiť aktiváciu s vynechanou alebo neoverenou zálohou.
+
+## Lokálny/SSH alebo LAN HTTP prístup
+
+Predvolená inštalácia počúva iba na `127.0.0.1`; z iného počítača môžeš použiť vlastný SSH tunel. LAN HTTP je výslovná voľba a nie je šifrované. Samotné preskočenie výnimky UFW neobmedzí aplikáciu na loopback ani nezruší staré pravidlá.
+
+Voľba 6 umožňuje oba režimy prepnúť bez preinštalovania, s portom, službou, identitou, dátami a účtami zachovanými. Pred novou aktiváciou vznikne záloha pôvodných nastavení aj dát; UFW sa rieši až potom samostatne. Ak už zvolená adresa platí, možno dokončiť iba firewall bez novej aktivácie. Nová funkcia vyžaduje novšieho sprievodcu; v 0.57.5 ešte nie je. Úplný postup vrátane krátkeho SSH aliasu je v [návode na sieťový prístup](network-access.md).
 
 ## Samostatné systémové kroky
 
@@ -72,7 +80,7 @@ Po dokončení sa zobrazí stav, cesty, adresa a príkaz na ďalšie otvorenie s
 
 ## Priame príkazy a automatizácia
 
-Aj priame príkazy `server-update.sh init`, `update`, `rollback` a `recover` majú predvolene potvrdenia. Bez interaktívneho terminálu zmeny odmietnu. Pri SSH preto používaj terminál cez `ssh -t`.
+Aj priame príkazy `server-update.sh init`, `update`, `configure-access local|lan`, `rollback` a `recover` majú predvolene potvrdenia. Bez interaktívneho terminálu zmeny odmietnu. `configure-access local|lan --plan` je kontrola bez zmien. Pri SSH preto používaj terminál cez `ssh -t`.
 
 Pre vedomú automatizáciu existuje explicitné `--yes` pred podpríkazom, napríklad `server-update.sh --yes update v0.57.5`. Toto vypína otázky, nikdy nie zálohu. Sprievodca `install.sh` tento prepínač nepoužíva a neumožňuje ho obísť posielaním odpovedí cez pipe.
 

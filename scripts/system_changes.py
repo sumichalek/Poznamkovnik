@@ -244,7 +244,7 @@ class SystemChanges:
             self.save(receipt)
             print("Pravidlo UFW pridané s jedinečným označením inštalácie.")
 
-    def cleanup(self, identity: str, uid: int, *, approval, plan_only: bool = False) -> None:
+    def cleanup(self, identity: str, uid: int, *, approval, plan_only: bool = False, firewall_only: bool = False) -> None:
         receipt = self.load(identity, uid)
         if receipt is None:
             print("Chýba koreňový doklad. Systémové nastavenia zostávajú bez zmeny.")
@@ -252,6 +252,8 @@ class SystemChanges:
         print(f"Systémový doklad: {identity}\nInštalácia: {receipt['root']}\nPoužívateľ: {receipt['user']}")
         if plan_only:
             for name, change in receipt["changes"].items():
+                if firewall_only and name != "firewall":
+                    continue
                 print(f"  {name}: {change.get('status')}, vytvorené touto inštaláciou: {change.get('changed')}")
             print("Iba plán. Aktuálny stav a vlastníctvo sa znovu overia pred prípadným zásahom.")
             return
@@ -284,6 +286,18 @@ class SystemChanges:
                         self.save(receipt)
                 else:
                     print("Pravidlo bolo upravené alebo je nejednoznačné; zostáva bez zmeny.")
+            if firewall_only:
+                if firewall.get("status") == "pending":
+                    print("Predošlý zásah do UFW zostal neurčitý; pravidlo sa automaticky neodoberie.")
+                elif not firewall.get("changed"):
+                    print("Vlastníctvo výnimky nebolo preukázané; pravidlá UFW zostávajú bez zmeny.")
+                elif firewall.get("status") == "removed":
+                    print("Vlastná výnimka UFW je odobratá. Ostatné pravidlá zostávajú zachované.")
+                else:
+                    print("Odobratie výnimky nebolo potvrdené alebo bezpečne overiteľné; existujúce pravidlo zostáva zachované.")
+                    print("Skontroluj vyššie uvedený dôvod. Doklad zostáva zachovaný.")
+                print("Linger ani iné systémové nastavenia sa týmto krokom nemenia.")
+                return
             linger = receipt["changes"].get("linger", {})
             if linger.get("changed") and linger.get("status") == "applied":
                 if not self.operations.linger(receipt["user"]):
@@ -316,7 +330,7 @@ def confirm(prompt: str) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["apply-linger", "apply-firewall", "cleanup"])
+    parser.add_argument("action", choices=["apply-linger", "apply-firewall", "remove-firewall", "cleanup"])
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--root", type=Path)
     target.add_argument("--receipt")
@@ -327,7 +341,7 @@ def main() -> int:
         parser.error("Tento samostatný krok spusti cez sudo z bežného používateľského účtu.")
     if not args.plan and (not sys.stdin.isatty() or not sys.stdout.isatty()):
         parser.error("Systémové zmeny vyžadujú osobný interaktívny terminál.")
-    if args.action != "cleanup" and args.receipt:
+    if args.action not in {"cleanup", "remove-firewall"} and args.receipt:
         parser.error("Príprava systémového kroku potrebuje --root.")
     if args.action == "apply-firewall" and not args.network:
         parser.error("Chýba --network.")
@@ -335,7 +349,7 @@ def main() -> int:
     os.environ["LC_ALL"] = "C"
     uid = int(os.environ["SUDO_UID"])
     changes = SystemChanges()
-    if args.action == "cleanup":
+    if args.action in {"cleanup", "remove-firewall"}:
         if args.receipt:
             identity = args.receipt
         else:
@@ -348,7 +362,7 @@ def main() -> int:
             receipt = changes.load(identity, uid)
             if receipt and any(profile[key] != receipt[key] for key in ("root", "service", "port")):
                 raise DeploymentError("Systémový doklad nezodpovedá aktuálnej konfigurácii.")
-        changes.cleanup(identity, uid, approval=confirm, plan_only=args.plan)
+        changes.cleanup(identity, uid, approval=confirm, plan_only=args.plan, firewall_only=args.action == "remove-firewall")
     else:
         profile = changes.profile(args.root, uid)
         print(f"Samostatný systémový krok: {args.action}\nInštalácia: {profile['root']}\nIdentifikátor: {profile['id']}")

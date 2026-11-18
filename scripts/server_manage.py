@@ -256,7 +256,7 @@ class Deployment:
         actual = run("git", "-C", str(release), "rev-parse", "HEAD")
         if commit and actual != commit:
             raise DeploymentError("Existujúce vydanie má iný Git commit.")
-        if run("git", "-C", str(release), "status", "--porcelain", "--untracked-files=all"):
+        if run("git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", str(release), "status", "--porcelain", "--untracked-files=all"):
             raise DeploymentError(f"Vydanie má lokálne zmeny: {release}")
         for relative in ("server.py", "VERSION", "requirements.lock", "assets/app.js", "assets/app.css", "index.html"):
             if not (release / relative).is_file():
@@ -354,6 +354,64 @@ class Deployment:
         with self.locked():
             self._update(tag)
 
+    def check_operation_state(self) -> None:
+        if self.state_path.exists():
+            status = read_json(self.state_path).get("status")
+            if status in {"uninstalling", "uninstall_failed"}:
+                raise DeploymentError("Odinštalovanie sa nedokončilo. Skontroluj shared/uninstall-state.json a dokonči odinštalovanie zo zachovaného bootstrap checkoutu.")
+            if status in {"stopped", "backed_up", "activating", "recovering", "recovery_required"}:
+                raise DeploymentError("Predošlá operácia sa nedokončila. Pozri status a obnov uvedenú zálohu príkazom recover.")
+
+    def check_access_unit(self, config: dict) -> None:
+        unit = self.unit_dir / config["service"]
+        if unit.is_symlink() or unit.resolve() != unit or not unit.is_file():
+            raise DeploymentError("Chýba samostatná jednotka tejto inštalácie. Spôsob prístupu sa nemení.")
+        if exists(unit.with_name(config["service"] + ".d")):
+            raise DeploymentError("Služba má doplnky (drop-ins). Najprv ich osobne skontroluj; neprepisujú sa.")
+        if unit.read_text() != self.unit_text(config):
+            raise DeploymentError("Jednotka služby je cudzia alebo ručne upravená. Spôsob prístupu sa nemení.")
+        if self.service_override is None:
+            service = self.service(config)
+            fragment = service.command("show", "--property=FragmentPath", "--value")
+            if not fragment or Path(fragment) != unit:
+                raise DeploymentError("Systemd má pod týmto názvom inú alebo nenačítanú jednotku.")
+            if service.command("show", "--property=DropInPaths", "--value"):
+                raise DeploymentError("Systemd používa doplnky služby. Najprv ich osobne skontroluj.")
+            if service.command("show", "--property=NeedDaemonReload", "--value") != "no":
+                raise DeploymentError("Načítaná jednotka nezodpovedá súborom na disku alebo jej stav nie je overiteľný. Najprv osobne skontroluj službu.")
+
+    def access_plan(self, mode: str) -> dict:
+        """Read-only checks; never create directories, fetch Git or refresh its index."""
+        if mode not in {"local", "lan"}:
+            raise DeploymentError("Vyber local (lokálny prístup/SSH tunel) alebo lan (LAN HTTP).")
+        for path in (self.root, self.shared, self.config_path):
+            if path.is_symlink() or path.resolve() != path:
+                raise DeploymentError("Inštalačná cesta ani konfigurácia nesmú byť symbolické odkazy.")
+        config = self.config()
+        self.check_operation_state()
+        self.settings_paths(config)
+        release = self.current()
+        if release is None:
+            raise DeploymentError("Prestavenie potrebuje aktívne vydanie v current. Najprv dokonči inštaláciu alebo obnovu.")
+        commit = self.check_release(release)
+        self.check_access_unit(config)
+        host = "127.0.0.1" if mode == "local" else "0.0.0.0"
+        return {"root": str(self.root), "service": config["service"], "port": config["port"],
+                "release": str(release), "commit": commit, "mode": mode, "previousHost": config["host"],
+                "host": host, "changed": config["host"] != host, "active": self.service(config).active(),
+                "configDigest": digest(self.config_path)}
+
+    def configure_access(self, mode: str) -> None:
+        plan = self.access_plan(mode)
+        self.approve("prepare", f"Zmeniť prístup v {self.root}: {plan['previousHost']} → {plan['host']}, port {plan['port']}? Vydanie, účty a dáta sa zachovajú. Git ani Python prostredie sa nepripravujú znova.")
+        with self.locked():
+            if self.access_plan(mode) != plan:
+                raise DeploymentError("Počas rozhodovania sa zmenila konfigurácia alebo služba. Skontroluj nový plán; nič sa neprestavilo.")
+            if not plan["changed"]:
+                print("Aplikácia už používa zvolenú adresu. Služba ani dáta sa nemenia; firewall možno riešiť samostatne.")
+                return
+            self.activate(Path(plan["release"]), self.config(), access_host=plan["host"])
+
     def _update(self, tag: str, *, first: bool = False) -> None:
         config = self.config()
         self.settings_paths(config)
@@ -367,12 +425,7 @@ class Deployment:
             # A failed initial preparation may be retried using update.
             if exists(self.unit_dir / config["service"]):
                 raise DeploymentError("Inštalácia nemá current, ale služba už existuje.")
-        if self.state_path.exists():
-            status = read_json(self.state_path).get("status")
-            if status in {"uninstalling", "uninstall_failed"}:
-                raise DeploymentError("Odinštalovanie sa nedokončilo. Skontroluj shared/uninstall-state.json a dokonči odinštalovanie zo zachovaného bootstrap checkoutu.")
-            if status in {"stopped", "backed_up", "activating", "recovering", "recovery_required"}:
-                raise DeploymentError("Predošlá operácia sa nedokončila. Pozri status a obnov uvedenú zálohu príkazom recover.")
+        self.check_operation_state()
         if old is not None and old.name == tag:
             print("Toto vydanie už je aktívne.")
             return
@@ -527,13 +580,24 @@ class Deployment:
             time.sleep(0.2)
         raise DeploymentError(f"Nové vydanie neprešlo kontrolou dostupnosti: {last_error}")
 
-    def activate(self, release: Path | None, config: dict, *, install: bool = False, restore_from: Path | None = None) -> None:
+    def activate(self, release: Path | None, config: dict, *, install: bool = False, restore_from: Path | None = None,
+                 access_host: str | None = None) -> None:
         service = self.service(config)
         old = self.current()
+        if access_host is not None:
+            if access_host not in {"127.0.0.1", "0.0.0.0"} or install or restore_from or release != old:
+                raise DeploymentError("Prestavenie smie zmeniť iba lokálny/LAN prístup existujúceho vydania.")
+            self.check_access_unit(config)
         was_active = service.active()
         snapshot = None
         activation_started = False
         self.approve("stop_backup", f"Zastaviť službu {config['service']} a vytvoriť novú overenú zálohu dát aj nastavení v {self.backups}? Začne sa odstávka.")
+        if access_host is not None:
+            self.check_access_unit(config)
+            if self.config() != config:
+                raise DeploymentError("Konfigurácia sa počas rozhodovania zmenila; nič sa nezastavilo.")
+            if service.active() != was_active:
+                raise DeploymentError("Služba počas rozhodovania zmenila stav; nič sa nezastavilo. Zopakuj plán.")
         try:
             print(f"Zastavujem službu {config['service']} a vytváram úplnú zálohu…", flush=True)
             service.stop()
@@ -541,7 +605,13 @@ class Deployment:
             snapshot = self.snapshot(config, old)
             self.state("backed_up", snapshot=str(snapshot))
             target_name = release.name if release else "stav pred prvou inštaláciou (služba bude vypnutá)"
+            if access_host is not None:
+                target_name = f"prístup {config['host']} → {access_host} pri nezmenenom vydaní {release.name}"
             self.approve("activate", f"Záloha je overená: {snapshot}. Služba je počas rozhodovania zastavená. Aktivovať {target_name} a overiť výsledok? Odmietnutie obnoví jej pôvodný beh, ak predtým bežala; pri zlyhaní sa obnoví pôvodný stav.")
+            if access_host is not None:
+                self.check_access_unit(config)
+                if self.config() != config:
+                    raise DeploymentError("Konfigurácia sa po zálohe zmenila; nové nastavenia sa neprepíšu.")
             # No data, settings or active code changes may precede the verified snapshot.
             activation_started = True
             self.state("activating", snapshot=str(snapshot), target=str(release) if release else None)
@@ -549,6 +619,10 @@ class Deployment:
                 self.restore(restore_from, config)
                 config = self.config()
             else:
+                if access_host is not None:
+                    config = {**config, "host": access_host}
+                    write_json(self.config_path, config)
+                    (self.unit_dir / config["service"]).write_text(self.unit_text(config))
                 if install:
                     self.unit_dir.mkdir(parents=True, exist_ok=True)
                     (self.unit_dir / config["service"]).write_text(self.unit_text(config))
@@ -557,16 +631,21 @@ class Deployment:
             if release is not None:
                 service.start()
                 self.health(release, config)
+                if access_host is not None and not was_active:
+                    service.stop()
             if install and config.get("autostart", True):
                 service.enable()
             self.state("completed" if release else "recovered", snapshot=str(snapshot),
                        release=str(release) if release else None,
-                       restored_from=str(restore_from) if restore_from else None)
+                       restored_from=str(restore_from) if restore_from else None,
+                       accessHost=access_host)
             print(f"Aktívne vydanie: {release.name if release else 'žiadne (stav pred prvou inštaláciou)'}. Záloha: {snapshot}", flush=True)
         except (Exception, KeyboardInterrupt) as error:
             if not activation_started:
                 try:
                     if was_active:
+                        if access_host is not None:
+                            self.check_access_unit(self.config())
                         service.start()
                 except Exception as restart_error:
                     self.state("recovery_required", error=str(error), recovery_error=str(restart_error), previous=str(old) if old else None)
@@ -638,6 +717,9 @@ def main() -> int:
     init.add_argument("--no-autostart", action="store_true", help="Nepovoliť automatické spúšťanie služby")
     update = commands.add_parser("update", help="Načítaj Git tag, zálohuj a aktivuj vydanie")
     update.add_argument("tag")
+    access = commands.add_parser("configure-access", help="Zálohuj a zmeň lokálny/SSH alebo LAN HTTP prístup bez preinštalovania")
+    access.add_argument("mode", choices=["local", "lan"])
+    access.add_argument("--plan", action="store_true", help="Iba overiť a vypísať plán bez zmien")
     rollback = commands.add_parser("rollback", help="Obnov dáta, nastavenia aj vydanie z technickej zálohy")
     rollback.add_argument("snapshot", type=Path)
     recover = commands.add_parser("recover", help="Obnov aj zálohu spred neúspešnej prvej inštalácie")
@@ -646,7 +728,7 @@ def main() -> int:
     verify.add_argument("snapshot", type=Path)
     commands.add_parser("status", help="Aktívna verzia, posledná operácia a dostupné zálohy")
     args = parser.parse_args()
-    mutating = args.command in {"init", "update", "rollback", "recover"}
+    mutating = args.command in {"init", "update", "rollback", "recover"} or (args.command == "configure-access" and not args.plan)
     if mutating and not args.yes and not sys.stdin.isatty():
         parser.error("Inštaláciu spusti v interaktívnom termináli; pre vedomú automatizáciu je dostupné --yes.")
     def approval(stage: str, description: str) -> bool:
@@ -666,6 +748,11 @@ def main() -> int:
                                   autostart=not args.no_autostart)
         elif args.command == "update":
             deployment.update(args.tag)
+        elif args.command == "configure-access":
+            if args.plan:
+                print(json.dumps(deployment.access_plan(args.mode), ensure_ascii=False, indent=2))
+            else:
+                deployment.configure_access(args.mode)
         elif args.command == "rollback":
             deployment.rollback(args.snapshot)
         elif args.command == "recover":

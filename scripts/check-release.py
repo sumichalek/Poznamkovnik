@@ -33,7 +33,8 @@ def check_release(reference: str) -> None:
         version = (source / "VERSION").read_text().strip()
         required = ("scripts/install.sh", "scripts/uninstall.sh", "scripts/install_support.py",
                     "scripts/server_uninstall.py", "scripts/system_changes.py", "scripts/server-system.sh",
-                    "docs/private-git-access.md", "docs/uninstallation.md", "docs/server-operations.md")
+                    "docs/private-git-access.md", "docs/uninstallation.md", "docs/server-operations.md",
+                    "docs/interactive-installation.md", "docs/network-access.md")
         for relative in required:
             if not (source / relative).is_file():
                 raise DeploymentError(f"V commitnutom vydaní chýba sprievodca alebo návod: {relative}")

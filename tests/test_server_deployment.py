@@ -416,6 +416,251 @@ class ServerDeploymentTest(unittest.TestCase):
         self.deployment.update("v9.0.0")
         self.assertTrue(self.service.running)
 
+    def test_access_plan_is_readonly_including_git_indexes(self):
+        def inventory():
+            return {str(path): (path.lstat().st_mtime_ns, path.read_bytes() if path.is_file() and not path.is_symlink() else None)
+                    for root in (self.deployment.root, self.deployment.unit_dir) for path in root.rglob("*")}
+        before = inventory()
+        stops = self.service.stops
+        with patch.object(self.deployment, "prepare") as prepare:
+            plan = self.deployment.access_plan("lan")
+        self.assertEqual(plan["previousHost"], "127.0.0.1")
+        self.assertEqual(plan["host"], "0.0.0.0")
+        self.assertEqual(plan["port"], self.server.server_port)
+        self.assertEqual(inventory(), before)
+        self.assertEqual(self.service.stops, stops)
+        prepare.assert_not_called()
+
+    def test_real_access_plan_wizard_and_cli_are_readonly_with_simulated_systemd(self):
+        project = Path(__file__).resolve().parents[1]
+        # The real read-only helpers discover this isolated user-unit directory.
+        units = self.base / "config/systemd/user"
+        units.mkdir(parents=True)
+        unit = units / "test.service"
+        shutil.copyfile(self.deployment.unit_dir / "test.service", unit)
+        binaries = self.base / "bin"
+        binaries.mkdir()
+        systemctl = binaries / "systemctl"
+        systemctl.write_text(f'''#!{sys.executable}
+import sys
+properties = {{'FragmentPath': {str(unit)!r}, 'DropInPaths': '', 'NeedDaemonReload': 'no', 'ActiveState': 'active'}}
+for name, value in properties.items():
+    if '--property=' + name in sys.argv:
+        print(value)
+        raise SystemExit(0)
+raise SystemExit('Unexpected or mutating systemctl command')
+''')
+        systemctl.chmod(0o755)
+        environment = {**os.environ, "XDG_CONFIG_HOME": str(self.base / "config"),
+                       "PATH": str(binaries) + os.pathsep + os.environ.get("PATH", "")}
+        def inventory():
+            return {str(path): (path.lstat().st_mtime_ns, path.read_bytes() if path.is_file() and not path.is_symlink() else None)
+                    for path in self.base.rglob("*")}
+        before = inventory()
+        for choice, mode in ((1, "local"), (2, "lan")):
+            with self.subTest(mode=mode):
+                result = subprocess.run(["bash", str(project / "scripts/install.sh"), "--plan"],
+                                        input=f"6\n{self.deployment.root}\n{choice}\nn\n", env=environment, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                self.assertIn("Iba plán", result.stdout)
+                self.assertIn(f"configure-access {mode}", result.stdout)
+                result = subprocess.run([sys.executable, "-B", str(project / "scripts/server_manage.py"), "--root", str(self.deployment.root),
+                                         "configure-access", mode, "--plan"], env=environment, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["mode"], mode)
+                self.assertEqual(inventory(), before)
+
+    def test_access_round_trip_keeps_release_accounts_data_and_identity(self):
+        deployment = self.deployment
+        with closing(sqlite3.connect(deployment.data / "poznamkovnik.sqlite3")) as connection, connection:
+            connection.execute("CREATE TABLE users (name TEXT)")
+            connection.execute("INSERT INTO users VALUES ('existing-account')")
+        original_config = deployment.config()
+        original_unit = (deployment.unit_dir / "test.service").read_bytes()
+        database = (deployment.data / "poznamkovnik.sqlite3").read_bytes()
+        count = len(list(deployment.backups.iterdir()))
+
+        def approve(stage, description):
+            if stage == "activate":
+                snapshot = Path(read_json(deployment.state_path)["snapshot"])
+                deployment.verify_snapshot(snapshot, deployment.config())
+                self.assertFalse(self.service.running)
+                self.assertEqual(read_json(snapshot / "settings/server.json"), deployment.config())
+                self.assertEqual((snapshot / "settings/service").read_bytes(), (deployment.unit_dir / "test.service").read_bytes())
+            return True
+
+        deployment.approval = approve
+        with patch.object(deployment, "prepare", side_effect=AssertionError("must not fetch/install a release")):
+            deployment.configure_access("lan")
+            self.assertEqual(deployment.config(), {**original_config, "host": "0.0.0.0"})
+            self.assertIn('--host "0.0.0.0"', (deployment.unit_dir / "test.service").read_text())
+            deployment.configure_access("local")
+        self.assertEqual(deployment.config(), original_config)
+        self.assertEqual((deployment.unit_dir / "test.service").read_bytes(), original_unit)
+        self.assertEqual((deployment.data / "poznamkovnik.sqlite3").read_bytes(), database)
+        self.assertEqual((deployment.data / "preferences.json").read_text(), '{"font": "large"}')
+        self.assertEqual(deployment.current().name, "v9.0.0")
+        self.assertEqual(len(list(deployment.backups.iterdir())), count + 2)
+        self.assertTrue(self.service.running)
+
+    def test_access_change_backup_failure_preserves_original_settings(self):
+        config = self.deployment.config_path.read_bytes()
+        unit = (self.deployment.unit_dir / "test.service").read_bytes()
+        with patch.object(self.deployment, "snapshot", side_effect=OSError("fixture disk full")):
+            with self.assertRaisesRegex(DeploymentError, "pred aktiváciou"):
+                self.deployment.configure_access("lan")
+        self.assertEqual(self.deployment.config_path.read_bytes(), config)
+        self.assertEqual((self.deployment.unit_dir / "test.service").read_bytes(), unit)
+        self.assertTrue(self.service.running)
+
+    def test_access_change_failed_health_restores_old_config_and_unit(self):
+        config = self.deployment.config_path.read_bytes()
+        unit = (self.deployment.unit_dir / "test.service").read_bytes()
+        health = self.deployment.health
+        def probe(release, settings):
+            if settings["host"] == "0.0.0.0":
+                raise DeploymentError("fixture health failure")
+            return health(release, settings)
+        with patch.object(self.deployment, "health", side_effect=probe):
+            with self.assertRaisesRegex(DeploymentError, "pôvodný stav bol obnovený"):
+                self.deployment.configure_access("lan")
+        self.assertEqual(self.deployment.config_path.read_bytes(), config)
+        self.assertEqual((self.deployment.unit_dir / "test.service").read_bytes(), unit)
+        self.assertEqual(read_json(self.deployment.state_path)["status"], "rolled_back")
+        self.assertTrue(self.service.running)
+
+    def test_access_change_unit_write_failure_rolls_back_already_written_config(self):
+        config = self.deployment.config_path.read_bytes()
+        unit_text = self.deployment.unit_text
+        def text(settings):
+            if settings["host"] == "0.0.0.0":
+                raise OSError("fixture unit write failure")
+            return unit_text(settings)
+        with patch.object(self.deployment, "unit_text", side_effect=text):
+            with self.assertRaisesRegex(DeploymentError, "pôvodný stav bol obnovený"):
+                self.deployment.configure_access("lan")
+        self.assertEqual(self.deployment.config_path.read_bytes(), config)
+        self.assertTrue(self.service.running)
+
+    def test_access_change_preserves_originally_inactive_service_and_autostart(self):
+        self.service.stop()
+        enabled = self.deployment.unit_dir / "default.target.wants/test.service"
+        target = os.readlink(enabled)
+        self.deployment.configure_access("lan")
+        self.assertFalse(self.service.running)
+        self.assertEqual(os.readlink(enabled), target)
+        self.assertEqual(self.deployment.config()["host"], "0.0.0.0")
+
+    def test_access_change_can_cancel_before_stop_or_after_verified_backup(self):
+        for rejected in ("prepare", "stop_backup", "activate"):
+            with self.subTest(stage=rejected):
+                stops = self.service.stops
+                count = len(list(self.deployment.backups.iterdir()))
+                config = self.deployment.config_path.read_bytes()
+                self.deployment.approval = lambda stage, description: stage != rejected
+                with self.assertRaises(DeploymentCancelled):
+                    self.deployment.configure_access("lan")
+                self.assertEqual(self.deployment.config_path.read_bytes(), config)
+                self.assertTrue(self.service.running)
+                self.assertEqual(self.service.stops, stops + (rejected == "activate"))
+                self.assertEqual(len(list(self.deployment.backups.iterdir())), count + (rejected == "activate"))
+
+    def test_access_same_mode_does_not_stop_service_or_backup(self):
+        stops = self.service.stops
+        count = len(list(self.deployment.backups.iterdir()))
+        self.deployment.configure_access("local")
+        self.assertEqual(self.service.stops, stops)
+        self.assertEqual(len(list(self.deployment.backups.iterdir())), count)
+
+    def test_access_change_rejects_foreign_or_dropin_units_without_stopping(self):
+        unit = self.deployment.unit_dir / "test.service"
+        original = unit.read_text()
+        stops = self.service.stops
+        unit.write_text("[Service]\nExecStart=/usr/bin/other\n")
+        with self.assertRaisesRegex(DeploymentError, "cudzia alebo ručne"):
+            self.deployment.configure_access("lan")
+        unit.write_text(original)
+        dropins = unit.with_name("test.service.d")
+        dropins.mkdir()
+        (dropins / "override.conf").write_text("[Service]\nExecStart=/usr/bin/other\n")
+        with self.assertRaisesRegex(DeploymentError, "drop-ins"):
+            self.deployment.configure_access("lan")
+        self.assertEqual(self.service.stops, stops)
+
+    def test_access_change_rejects_dirty_release_and_pending_operations(self):
+        stops = self.service.stops
+        code = self.deployment.current() / "server.py"
+        original = code.read_text()
+        code.write_text("# changed\n")
+        with self.assertRaisesRegex(DeploymentError, "lokálne zmeny"):
+            self.deployment.configure_access("lan")
+        code.write_text(original)
+        for status in ("recovery_required", "backed_up", "uninstall_failed"):
+            self.deployment.state(status)
+            with self.subTest(status=status), self.assertRaises(DeploymentError):
+                self.deployment.configure_access("lan")
+        self.assertEqual(self.service.stops, stops)
+
+    def test_access_checks_effective_systemd_unit_not_only_local_file(self):
+        config = self.deployment.config()
+        unit = str(self.deployment.unit_dir / config["service"])
+        with patch.object(self.deployment, "service_override", None), patch.object(UserService, "command", side_effect=[unit, "", "no"]):
+            self.deployment.check_access_unit(config)
+        for responses in (["/other/unit.service"], [unit, "/etc/systemd/user/service.d/override.conf"], [unit, "", "yes"], [unit, "", ""]):
+            with self.subTest(responses=responses), patch.object(self.deployment, "service_override", None), patch.object(UserService, "command", side_effect=responses), self.assertRaises(DeploymentError):
+                self.deployment.check_access_unit(config)
+
+    def test_access_service_state_changed_during_stop_approval_is_preserved(self):
+        stops = self.service.stops
+        config = self.deployment.config_path.read_bytes()
+        def approve(stage, description):
+            if stage == "stop_backup":
+                self.service.running = False  # Another operator stopped it during the prompt.
+            return True
+        self.deployment.approval = approve
+        with self.assertRaisesRegex(DeploymentError, "zmenila stav"):
+            self.deployment.configure_access("lan")
+        self.assertEqual(self.service.stops, stops)
+        self.assertFalse(self.service.running)
+        self.assertEqual(self.deployment.config_path.read_bytes(), config)
+
+    def test_access_foreign_unit_created_after_backup_is_not_overwritten_or_started(self):
+        unit = self.deployment.unit_dir / "test.service"
+        foreign = "[Service]\nExecStart=/usr/bin/other\n"
+        config = self.deployment.config_path.read_bytes()
+        def approve(stage, description):
+            if stage == "activate":
+                unit.write_text(foreign)
+            return True
+        self.deployment.approval = approve
+        with self.assertRaisesRegex(DeploymentError, "nepodarilo spustiť"):
+            self.deployment.configure_access("lan")
+        self.assertEqual(unit.read_text(), foreign)
+        self.assertEqual(self.deployment.config_path.read_bytes(), config)
+        self.assertFalse(self.service.running)
+        self.assertEqual(read_json(self.deployment.state_path)["status"], "recovery_required")
+
+    def test_access_settings_changed_during_approval_are_not_overwritten(self):
+        stops = self.service.stops
+        def approve(stage, description):
+            if stage == "prepare":
+                config = self.deployment.config()
+                config["autostart"] = False
+                self.deployment.config_path.write_text(json.dumps(config))
+            return True
+        self.deployment.approval = approve
+        with self.assertRaisesRegex(DeploymentError, "Počas rozhodovania"):
+            self.deployment.configure_access("lan")
+        self.assertFalse(self.deployment.config()["autostart"])
+        self.assertEqual(self.service.stops, stops)
+
+    def test_access_change_failed_rollback_leaves_service_stopped(self):
+        with patch.object(self.deployment, "health", side_effect=DeploymentError("fixture health")), patch.object(self.deployment, "restore", side_effect=OSError("fixture restore")):
+            with self.assertRaisesRegex(DeploymentError, "Obnova vyžaduje zásah"):
+                self.deployment.configure_access("lan")
+        self.assertFalse(self.service.running)
+        self.assertEqual(read_json(self.deployment.state_path)["status"], "recovery_required")
+
 
 class InstallerControlTest(unittest.TestCase):
     @unittest.skipIf(os.geteuid() == 0, "Skutočný sprievodca sa spúšťa pod bežným účtom")
@@ -484,6 +729,19 @@ class InstallerControlTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 2)
             self.assertIn("interaktívnom termináli", result.stderr)
+            self.assertFalse(target.exists())
+
+    def test_access_cli_requires_terminal_but_readonly_plan_does_not(self):
+        project = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(prefix="poznamkovnik-access-cli-") as temporary:
+            target = Path(temporary) / "missing"
+            args = [sys.executable, "-B", str(project / "scripts/server_manage.py"), "--root", str(target), "configure-access", "local"]
+            result = subprocess.run(args, input="a\n" * 20, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("interaktívnom termináli", result.stderr)
+            result = subprocess.run([*args, "--plan"], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 1)  # Missing installation, not a TTY error.
+            self.assertNotIn("interaktívnom termináli", result.stderr)
             self.assertFalse(target.exists())
 
 

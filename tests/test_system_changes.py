@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from scripts.server_manage import DeploymentError
+from scripts import system_changes as system_module
 from scripts.system_changes import SystemChanges, SystemOperations
 
 
@@ -338,6 +339,101 @@ class SystemChangesTest(unittest.TestCase):
             self.changes.apply_firewall(self.profile, "192.168.0.0/24")
         self.assertEqual(self.ops.actions, [])
         self.assertEqual(self.ops.backups, [])
+
+    def test_firewall_only_cleanup_never_queries_or_changes_owned_linger(self):
+        self.changes.apply_linger(self.profile)
+        other = {"port": 53, "network": "192.168.0.0/24", "comment": "Pi-hole"}
+        self.ops.rules = [other]
+        self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        linger = copy.deepcopy(self.changes.load(self.identity, self.uid)["changes"]["linger"])
+        with patch.object(self.ops, "linger", side_effect=AssertionError("must not query linger")), patch.object(self.ops, "dependent_units", side_effect=AssertionError("must not query units")), patch.object(self.ops, "set_linger", side_effect=AssertionError("must not change linger")):
+            self.cleanup(firewall_only=True)
+        self.assertEqual(self.ops.rules, [other])
+        self.assertTrue(self.ops.linger_value)
+        receipt = self.changes.load(self.identity, self.uid)
+        self.assertEqual(receipt["changes"]["linger"], linger)
+        self.assertEqual(receipt["changes"]["firewall"]["status"], "removed")
+        self.assertEqual(len(self.ops.backups), 3)
+        self.assertEqual(self.ops.actions[-1][0], "firewall")
+        self.assertTrue(self.ops.actions[-1][2])
+
+    def test_firewall_can_be_removed_and_readded_for_a_different_network_without_linger_change(self):
+        self.changes.apply_linger(self.profile)
+        original = self.parse_rules(KORUNKA_UFW_STATUS)
+        self.ops.rules = copy.deepcopy(original)
+        self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        with self.assertRaisesRegex(DeploymentError, "iný alebo nedokončený"):
+            self.changes.apply_firewall(self.profile, "192.168.0.9/32")
+        self.cleanup(firewall_only=True)
+        self.assertEqual(self.ops.rules, original)
+        self.changes.apply_firewall(self.profile, "192.168.0.9/32")
+        rule = self.changes.firewall_rule(self.profile, "192.168.0.9/32")
+        self.assertEqual(self.ops.rules, original + [rule])
+        self.assertEqual(self.changes.load(self.identity, self.uid)["changes"]["firewall"]["rule"], rule)
+        self.assertTrue(self.ops.linger_value)
+        self.assertEqual([action for action in self.ops.actions if action[0] == "linger"], [("linger", self.profile["user"], True)])
+
+    def test_firewall_only_cleanup_keeps_preexisting_rule_and_linger(self):
+        self.changes.apply_linger(self.profile)
+        original = {"port": 19111, "network": "192.168.0.0/24", "comment": "shared application rule"}
+        self.ops.rules = [original]
+        self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        actions = copy.deepcopy(self.ops.actions)
+        backups = list(self.ops.backups)
+        self.cleanup(firewall_only=True)
+        self.assertEqual(self.ops.rules, [original])
+        self.assertEqual(self.ops.actions, actions)
+        self.assertEqual(self.ops.backups, backups)
+        self.assertTrue(self.ops.linger_value)
+
+    def test_firewall_only_cleanup_leaves_modified_rule_untouched(self):
+        self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        self.ops.rules[0]["comment"] = "modified by owner " + self.ops.rules[0]["comment"]
+        original = copy.deepcopy(self.ops.rules)
+        self.cleanup(firewall_only=True)
+        self.assertEqual(self.ops.rules, original)
+        self.assertEqual(len(self.ops.actions), 1)
+        self.assertEqual(len(self.ops.backups), 1)
+
+    def test_firewall_only_plan_reads_no_live_system_state_and_preserves_receipt(self):
+        self.changes.apply_linger(self.profile)
+        self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        receipt = self.registry / f"{self.identity}.json"
+        before = receipt.read_bytes()
+        with patch.object(self.ops, "firewall_rules", side_effect=AssertionError("plan must not query firewall")), patch.object(self.ops, "linger", side_effect=AssertionError("plan must not query linger")), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.cleanup(firewall_only=True, plan_only=True)
+        self.assertIn("firewall:", output.getvalue())
+        self.assertNotIn("linger:", output.getvalue())
+        self.assertEqual(receipt.read_bytes(), before)
+        self.assertEqual(len(self.ops.actions), 2)
+        self.assertEqual(len(self.ops.backups), 2)
+
+    def test_firewall_only_decline_keeps_rule_and_receipt(self):
+        self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        receipt = self.registry / f"{self.identity}.json"
+        before = receipt.read_bytes()
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.changes.cleanup(self.identity, self.uid, approval=lambda prompt: False, firewall_only=True)
+        self.assertIn("existujúce pravidlo zostáva zachované", output.getvalue())
+        self.assertEqual(receipt.read_bytes(), before)
+        self.assertEqual(len(self.ops.actions), 1)
+        self.assertEqual(len(self.ops.backups), 1)
+
+    def test_firewall_only_without_root_receipt_changes_nothing(self):
+        self.cleanup(firewall_only=True)
+        self.assertFalse(self.registry.exists())
+        self.assertEqual(self.ops.actions, [])
+        self.assertEqual(self.ops.backups, [])
+
+    def test_remove_firewall_cli_routes_only_firewall_plan(self):
+        uid = self.uid or 1
+        profile = {key: self.profile[key] for key in ("root", "service", "port")}
+        with patch.object(sys, "argv", ["system_changes.py", "remove-firewall", "--root", str(self.root), "--plan"]), patch.object(os, "geteuid", return_value=0), patch.dict(os.environ, {"SUDO_UID": str(uid)}), patch.object(system_module, "SystemChanges") as factory:
+            changes = factory.return_value
+            changes.profile.return_value = profile
+            changes.load.return_value = profile
+            self.assertEqual(system_module.main(), 0)
+            changes.cleanup.assert_called_once_with(self.identity, uid, approval=system_module.confirm, plan_only=True, firewall_only=True)
 
 
 if __name__ == "__main__":

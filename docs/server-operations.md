@@ -35,6 +35,12 @@ python3 -B "$HOME/apps/poznamkovnik/current/scripts/install_support.py" diagnose
 
 Skontroluj aj aplikáciu v prehliadači. Adresa `127.0.0.1` znamená počítač, na ktorom prehliadač beží, nie automaticky Korunku. Pre LAN používaj názov alebo IP servera a zvolený port. Úspešná lokálna kontrola nepotvrdzuje prechod firewallom z iného počítača. Pri zvolenom lokálnom prístupe môžeš použiť vlastný SSH tunel; nevypínaj kvôli tomu firewall.
 
+## Zmena prístupu bez preinštalovania
+
+Novší sprievodca ponúka **6 – Zmeniť spôsob prístupu**: iba `127.0.0.1` pre lokálny prístup/SSH tunel alebo `0.0.0.0` pre LAN HTTP. Port, služba, vydanie, účty a dáta sa zachovajú; pred zmenou vznikne nová overená záloha. Firewall sa pridáva alebo odoberá iba samostatne, s ďalším potvrdením a systémovou zálohou. Preskočenie výnimky UFW samo osebe nie je lokálny režim. Postup, overenie listenera aj krátky alias na otvorenie tunela opisuje [sieťový prístup](network-access.md).
+
+Ak zlyhá iba UFW po úspešnej zmene adresy, adresa zostáva zmenená. Skontroluj stav a dokonči len firewall, nie prvú inštaláciu. Pre odobratie iba vlastnej výnimky existuje `server-system.sh firewall-remove KOREŇ [--plan]`; tento krok sa nikdy nedotkne linger. Obnova aplikačnej zálohy môže vrátiť aj starú adresu, ale neobnovuje globálny UFW. Po každej obnove preto over adresu, firewall a spôsob pripojenia.
+
 ## Aktualizácia
 
 V sprievodcovi vyber **2 – Aktualizácia**, skontroluj inštalačný priečinok a zadaj konkrétny zverejnený tag. Existujúci port, dáta a služba sa zachovajú. Sprievodca nepovažuje `main` za vydanie a nesťahuje zmeny automaticky pri každom pushi.

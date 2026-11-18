@@ -97,6 +97,8 @@ Nástroj odmietne prevziať už existujúcu službu. Pre ďalšiu inštanciu pou
 
 Adresa `127.0.0.1` je vhodná pre SSH tunel alebo reverzný proxy. Pre priamy prístup v domácej sieti nastav pri inštalácii `--host` na LAN adresu servera a povoľ zvolený port. Pri vzdialenom prístupe používaj HTTPS na proxy serveri.
 
+Existujúcu inštaláciu možno prepnúť medzi lokálnym/SSH a LAN HTTP prístupom voľbou 6 novšieho sprievodcu. Rovnaké jadro poskytuje `server-update.sh --root KOREŇ configure-access local|lan [--plan]`, bez sieťového fetch alebo obnovy Python prostredia. Plán je iba čítací; skutočná zmena vyžaduje potvrdenia a novú overenú zálohu pôvodných dát aj nastavení. Priamy príkaz nemení UFW. Jeho samostatné pridanie/odobratie, obmedzenia a klientsky tunel sú opísané v [návode na sieťový prístup](network-access.md).
+
 Ak máš ďalšie konfiguračné súbory, môžeš ich pridať pri inštalácii opakovaným `--backup-path /absolutna/cesta`. Serverový účet musí mať právo ich čítať aj obnoviť. Tento parameter je určený pre konkrétne nastavenia, napríklad konfiguračný súbor proxy; celý domovský alebo systémový priečinok sa ako záloha nastavení nepoužíva. Zoznam je uložený v `shared/server.json`.
 
 ### Prenos existujúcich dát

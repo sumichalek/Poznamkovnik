@@ -3,7 +3,7 @@
 set -euo pipefail
 PN_SYSTEM_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 if [[ "${1:-}" == --help ]]; then
-  printf '%s\n' 'Systémové kroky: packages [--ocr], linger INSTALACNY_KOREN, firewall INSTALACNY_KOREN CIDR.' \
+  printf '%s\n' 'Systémové kroky: packages [--ocr], linger INSTALACNY_KOREN, firewall INSTALACNY_KOREN CIDR, firewall-remove INSTALACNY_KOREN [--plan].' \
     'Pred zmenami vznikne súkromná záloha v /var/backups/. Linger/UFW majú root doklad vlastníctva. DNS sa nemení.'
   exit 0
 fi
@@ -24,6 +24,11 @@ case "$PN_ACTION" in
   firewall)
     [[ $# == 3 ]] || exit 2
     exec python3 -B "$PN_SYSTEM_DIR/system_changes.py" apply-firewall --root "$2" --network "$3" ;;
+  firewall-remove)
+    [[ $# == 2 || ( $# == 3 && "$3" == --plan ) ]] || exit 2
+    PN_REMOVE=(python3 -B "$PN_SYSTEM_DIR/system_changes.py" remove-firewall --root "$2")
+    [[ $# == 2 ]] || PN_REMOVE+=(--plan)
+    exec "${PN_REMOVE[@]}" ;;
   *) printf 'Neplatný systémový krok.\n' >&2; exit 2 ;;
 esac
 umask 077

@@ -197,6 +197,9 @@ def main() -> None:
     git = sub.add_parser("check-git")
     git.add_argument("value")
     git.add_argument("--tag")
+    access = sub.add_parser("access-plan")
+    access.add_argument("value")
+    access.add_argument("--mode", choices=["local", "lan"], required=True)
     args = parser.parse_args()
     if args.action == "default-root":
         print(default_root(Path(args.value)))
@@ -221,6 +224,13 @@ def main() -> None:
         elif args.action == "backups":
             for row in backup_rows(root):
                 print("\t".join(row))
+        elif args.action == "access-plan":
+            plan = Deployment(root).access_plan(args.mode)
+            print(f"Zachované vydanie: {Path(plan['release']).name}. Port, účty, dáta a identita sa nemenia.")
+            if not plan["changed"]:
+                print("Zvolená adresa už platí; netreba odstávku ani novú aktiváciu. Firewall sa rieši samostatne.")
+            elif not plan["active"]:
+                print("Služba je vypnutá. Pri overení sa krátko spustí a potom znova vypne; autostart sa nemení.")
         elif args.action == "preflight":
             Deployment.validate_config({"host": args.host, "port": args.port, "service": args.service})
             preflight(root, args.host, args.port, args.service, new=args.new)
