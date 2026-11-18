@@ -79,7 +79,7 @@ git switch --detach "refs/tags/$PN_RELEASE_TAG"
 bash scripts/install.sh --plan
 ```
 
-Vyber otestované vydanie s novým sprievodcom, nie ľubovoľný vývojový commit. Verzie 0.57.0 a 0.57.1 tento sprievodca neobsahujú; pre opravené prihlásenie po vytvorení prvého účtu aj kontrolu existujúcich pravidiel UFW vyber aspoň `v0.57.4`. Lokálna príprava vydania sama osebe neznamená, že tag už existuje na GitHube; musí byť osobitne schválený a zverejnený. Ak `git switch` zlyhá, ďalší krok nespúšťaj z nesprávneho checkoutu.
+Vyber otestované vydanie s novým sprievodcom, nie ľubovoľný vývojový commit. Verzie 0.57.0 a 0.57.1 tento sprievodca neobsahujú; pre opravené vytváranie položiek cez LAN HTTP aj predchádzajúce opravy prihlásenia a UFW vyber aspoň `v0.57.5`. Lokálna príprava vydania sama osebe neznamená, že tag už existuje na GitHube; musí byť osobitne schválený a zverejnený. Ak `git switch` zlyhá, ďalší krok nespúšťaj z nesprávneho checkoutu.
 
 Po prečítaní plánu spusti:
 

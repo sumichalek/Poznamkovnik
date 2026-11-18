@@ -43,10 +43,10 @@ Prepnutie pomocného Git checkoutu cez `git switch` mení iba pomocné súbory, 
 
 Pred odstávkou nechaj dobehnúť OCR, nahrávanie a ostatné úlohy. Príprava kódu a Python prostredia ešte nechá starú verziu bežať. Až po samostatnom potvrdení zastaví službu a vytvorí novú overenú zálohu dát aj nastavení. Potom uvidíš cestu k zálohe a osobitne potvrdíš aktiváciu.
 
-Priama alternatíva, napríklad po zverejnení `v0.57.4`:
+Priama alternatíva, napríklad po zverejnení `v0.57.5`:
 
 ```bash
-"$HOME/apps/poznamkovnik/current/scripts/server-update.sh" --root "$HOME/apps/poznamkovnik" update v0.57.4
+"$HOME/apps/poznamkovnik/current/scripts/server-update.sh" --root "$HOME/apps/poznamkovnik" update v0.57.5
 ```
 
 Aj tento príkaz má potvrdenia. Pri SSH potrebuje terminál, teda `ssh -t`, ak ho spúšťaš priamo zo svojho počítača. Na bežnú obsluhu nepoužívaj `--yes`.
@@ -72,6 +72,7 @@ Ak overenie zlyhá, obnovu nespúšťaj. Obnova potrebuje zachované príslušn�
 
 ## Ak sa niečo pokazí
 
+- **Cez LAN HTTP sa po potvrdení nevytvorí knižnica alebo iná položka:** vo vydaniach do 0.57.4 vrátane mohlo zlyhať volanie `crypto.randomUUID()`, ktoré nie je dostupné na bežnej HTTP adrese servera. Oprava v 0.57.5 používa spoločné generovanie UUID aj pre tento prístup; účet a dáta netreba meniť. Pre jej nasadenie aktualizuj bežiacu aplikáciu a obnov stránku. Samotná kompatibilita ID nepridáva šifrovanie prenosu; na to slúži HTTPS alebo SSH tunel. Bezpečnostné obmedzenia iných API (napríklad šifrovaného exportu) zostávajú zachované.
 - **Po vytvorení účtu a odhlásení zostalo tlačidlo „Vytvoriť pracovnú plochu“:** vo vydaniach do 0.57.3 vrátane mohol formulár zostať v režime prvého vytvorenia účtu. Obnov stránku v prehliadači cez F5; po načítaní existujúceho účtu má ponúknuť „Prihlásiť“. Účet, heslo ani dáta kvôli tomuto hláseniu nemaž a nevytváraj nanovo. Trvalú opravu obsahuje 0.57.4; na server ju prenesie aktualizácia aplikácie, nie iba prepnutie pomocného checkoutu.
 - **Git alebo príprava zlyhala pred odstávkou:** stará služba zostáva bežať. Over správny tag, read-only prístup, heslovú frázu kľúča, spojenie a DNS. Nevymazávaj dáta ani konfiguráciu.
 - **Zrušenie po zálohe, pred aktiváciou:** pôvodná služba sa znovu spustí, ak predtým bežala. Záloha a pripravené vydanie zostanú.

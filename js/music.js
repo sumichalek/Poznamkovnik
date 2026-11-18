@@ -1,3 +1,4 @@
+import { createId } from './ids.js';
 import { apiRequest, uploadMusicTrack } from './api.js';
 import { createAppIcon, setAppIcon } from './app-icons.js';
 import { storageKeys } from './config.js';
@@ -1514,7 +1515,7 @@ async function savePlaylist() {
   try {
     const result = playlistEditingId
       ? await apiRequest(`/music/playlists/${encodeURIComponent(playlistEditingId)}`, { method: 'PATCH', body: { title } })
-      : await apiRequest('/music/playlists', { method: 'POST', body: { id: crypto.randomUUID(), title } });
+      : await apiRequest('/music/playlists', { method: 'POST', body: { id: createId(), title } });
     hidePlaylistForm();
     applyLibrary(result);
     setStatus('Playlist je uložený.');
@@ -2134,7 +2135,7 @@ async function saveRadioStationDialog() {
   try {
     const result = editing
       ? await apiRequest(`/music/stations/${encodeURIComponent(dialogRadioStationId)}`, { method: 'PATCH', body })
-      : await apiRequest('/music/stations', { method: 'POST', body: { id: crypto.randomUUID(), ...body } });
+      : await apiRequest('/music/stations', { method: 'POST', body: { id: createId(), ...body } });
     applyLibrary(result);
     setMediaView('radio');
     closeRadioStationDialog();

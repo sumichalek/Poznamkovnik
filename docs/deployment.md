@@ -14,7 +14,7 @@ server: releases/v0.57.0/ ← current
            shared/data/
 ```
 
-Git repozitár na GitHube je privátny. Server používa vlastný read-only deploy key a SSH alias podľa [úvodného návodu](private-git-access.md), napríklad `git@github-poznamkovnik:sumichalek/Poznamkovnik.git`. Anonymné HTTPS na jeho stiahnutie nestačí. Tag vyberá konkrétny otestovaný commit. Na prvú inštaláciu používaj najmenej `v0.57.4`, ktorá obsahuje opravu opätovného prihlásenia po vytvorení prvého účtu aj kontroly existujúcich pravidiel UFW na serveroch s Pi-hole. Pred použitím musí byť príslušný tag skutočne zverejnený. Táto implementácia sama nevytvára commity ani nič neposiela na GitHub.
+Git repozitár na GitHube je privátny. Server používa vlastný read-only deploy key a SSH alias podľa [úvodného návodu](private-git-access.md), napríklad `git@github-poznamkovnik:sumichalek/Poznamkovnik.git`. Anonymné HTTPS na jeho stiahnutie nestačí. Tag vyberá konkrétny otestovaný commit. Na prvú inštaláciu používaj najmenej `v0.57.5`, ktorá opravuje aj vytváranie položiek cez LAN HTTP a obsahuje predchádzajúce opravy prihlásenia a UFW. Pred použitím musí byť príslušný tag skutočne zverejnený. Táto implementácia sama nevytvára commity ani nič neposiela na GitHub.
 
 ```text
 ~/apps/poznamkovnik/
@@ -48,6 +48,14 @@ git diff --check
 git status --short
 ```
 
+Pri zmenách súvisiacich s LAN HTTP over aj skutočný prehliadač. Ak je nainštalované Chromium, nasledujúci voliteľný test spustí aplikáciu na dočasnom loopback porte s vlastnými dátami a profilom prehliadača. Iba pre túto inštanciu Chromium namapuje skúšobný názov `poznamkovnik.test` na loopback, aby stránka naozaj nemala bezpečný kontext ani `randomUUID()`. Systémové DNS, Pi-hole a domáci server nemení:
+
+```bash
+env POZNAMKOVNIK_BROWSER_TESTS=1 python3 -B -m unittest tests.test_lan_http_browser -v
+```
+
+Test cez skutočný formulár vytvorí knižnicu so štítkom a overí jej uloženie v API. Vyžaduje aktuálne zostavený frontend (`npm run build`), právo otvoriť lokálny port a spustiť sandbox Chromium. Všetky jeho dáta sú dočasné.
+
 Vybrané zmeny ulož do commitu vrátane zostavených `assets/` a aktualizovaného HTML. Potom over samotný obsah commitu v čistom prostredí:
 
 ```bash
@@ -73,18 +81,18 @@ Potrebné sú Python 3.11 alebo novší s `venv` a `pip`, Git, systemd používa
 Po zverejnení prvého tagu načítaj projekt do samostatného pomocného priečinka na serveri:
 
 ```bash
-git clone --branch v0.57.4 --single-branch git@github-poznamkovnik:sumichalek/Poznamkovnik.git "$HOME/poznamkovnik-bootstrap"
+git clone --branch v0.57.5 --single-branch git@github-poznamkovnik:sumichalek/Poznamkovnik.git "$HOME/poznamkovnik-bootstrap"
 cd "$HOME/poznamkovnik-bootstrap"
 bash scripts/install.sh --plan
 bash scripts/install.sh
 ```
 
-Predvolená inštalácia vznikne v `~/apps/poznamkovnik`, služba sa volá `poznamkovnik.service`, adresa je `127.0.0.1` a port `1111`. Pri prvej inštalácii nástroj pripraví aj systemd unit a overí štart. Sprievodca nechá používateľa vybrať automatické spúšťanie; pri priamom CLI `./scripts/server-update.sh init v0.57.4` ho možno vypnúť pomocou `--no-autostart`. Pre beh aj bez prihlásenia je samostatný krok `loginctl enable-linger MENO_UCTU`.
+Predvolená inštalácia vznikne v `~/apps/poznamkovnik`, služba sa volá `poznamkovnik.service`, adresa je `127.0.0.1` a port `1111`. Pri prvej inštalácii nástroj pripraví aj systemd unit a overí štart. Sprievodca nechá používateľa vybrať automatické spúšťanie; pri priamom CLI `./scripts/server-update.sh init v0.57.5` ho možno vypnúť pomocou `--no-autostart`. Pre beh aj bez prihlásenia je samostatný krok `loginctl enable-linger MENO_UCTU`.
 
 Nástroj odmietne prevziať už existujúcu službu. Pre ďalšiu inštanciu použi vlastný názov, port a koreň:
 
 ```bash
-./scripts/server-update.sh --root "$HOME/apps/poznamkovnik-test" init v0.57.4 --service poznamkovnik-test.service --port 1112
+./scripts/server-update.sh --root "$HOME/apps/poznamkovnik-test" init v0.57.5 --service poznamkovnik-test.service --port 1112
 ```
 
 Adresa `127.0.0.1` je vhodná pre SSH tunel alebo reverzný proxy. Pre priamy prístup v domácej sieti nastav pri inštalácii `--host` na LAN adresu servera a povoľ zvolený port. Pri vzdialenom prístupe používaj HTTPS na proxy serveri.
@@ -104,7 +112,7 @@ Pri zlyhaní úplne prvej inštalácie sa obnovia dáta a nastavenia, ale v nove
 Na serveri:
 
 ```bash
-"$HOME/apps/poznamkovnik/current/scripts/server-update.sh" update v0.57.4
+"$HOME/apps/poznamkovnik/current/scripts/server-update.sh" update v0.57.5
 ```
 
 Pri vlastnej inštalačnej ceste pridaj `--root` pred podpríkaz. Prepínače a pomoc sa zobrazia cez `--help`.

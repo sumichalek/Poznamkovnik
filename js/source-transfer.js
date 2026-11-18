@@ -1,3 +1,4 @@
+import { createId } from './ids.js';
 import { apiRequest } from './api.js';
 import { bibliographyBibtex, bibliographyCslJson, bibliographyRis } from './bibliography.js';
 import { dom } from './dom.js';
@@ -313,7 +314,7 @@ async function prepareSourceImport(file) {
   const fallback = entry.path.split('/').at(-1).replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ');
   const title = text(metadata.title || documentTitle(body, fallback), 240) || 'Importovaný zdroj';
   const source = importedSourceSnapshot({
-    id: crypto.randomUUID(),
+    id: createId(),
     title,
     kind: sourceKinds.has(metadata.kind) ? metadata.kind : 'source',
     description: withoutTitle(body, title),
@@ -412,7 +413,7 @@ export async function restoreImportedSourceRelations(sourceId, preview, copyResu
     try {
       await apiRequest(`/sources/${encodeURIComponent(sourceId)}/element-links`, {
         method: 'POST',
-        body: { id: crypto.randomUUID(), elementId: element.id, sourceFileId, relationType: element.relationType, locator: element.locator, label: element.label, note: element.note }
+        body: { id: createId(), elementId: element.id, sourceFileId, relationType: element.relationType, locator: element.locator, label: element.label, note: element.note }
       });
     } catch {
       warnings.push(relationWarning('textu', element.title));
@@ -424,7 +425,7 @@ export async function restoreImportedSourceRelations(sourceId, preview, copyResu
       warnings.push('Anotácia sa neobnovila, pretože jej príloha sa nepodarilo preniesť.');
       continue;
     }
-    const body = { id: crypto.randomUUID(), quote: annotation.quote, locator: annotation.locator, note: annotation.note };
+    const body = { id: createId(), quote: annotation.quote, locator: annotation.locator, note: annotation.note };
     if (annotation.elementId) body.elementId = annotation.elementId;
     try {
       await apiRequest(`/sources/${encodeURIComponent(sourceId)}/files/${encodeURIComponent(sourceFileId)}/annotations`, { method: 'POST', body });
@@ -436,7 +437,7 @@ export async function restoreImportedSourceRelations(sourceId, preview, copyResu
       try {
         await apiRequest(`/sources/${encodeURIComponent(sourceId)}/files/${encodeURIComponent(sourceFileId)}/annotations`, {
           method: 'POST',
-          body: { id: crypto.randomUUID(), quote: annotation.quote, locator: annotation.locator, note: annotation.note }
+          body: { id: createId(), quote: annotation.quote, locator: annotation.locator, note: annotation.note }
         });
         warnings.push(`Anotácia sa obnovila bez väzby na chýbajúci text „${annotation.elementTitle || 'bez názvu'}“.`);
       } catch {
@@ -446,14 +447,14 @@ export async function restoreImportedSourceRelations(sourceId, preview, copyResu
   }
   for (const task of relations.tasks) {
     try {
-      await apiRequest(`/tasks/${encodeURIComponent(task.id)}/links`, { method: 'POST', body: { id: crypto.randomUUID(), targetType: 'source', targetId: sourceId } });
+      await apiRequest(`/tasks/${encodeURIComponent(task.id)}/links`, { method: 'POST', body: { id: createId(), targetType: 'source', targetId: sourceId } });
     } catch {
       warnings.push(relationWarning('úlohy', task.title));
     }
   }
   for (const event of relations.calendarEvents) {
     try {
-      await apiRequest(`/calendar-events/${encodeURIComponent(event.id)}/links`, { method: 'POST', body: { id: crypto.randomUUID(), targetType: 'source', targetId: sourceId } });
+      await apiRequest(`/calendar-events/${encodeURIComponent(event.id)}/links`, { method: 'POST', body: { id: createId(), targetType: 'source', targetId: sourceId } });
     } catch {
       warnings.push(relationWarning('udalosti', event.title));
     }

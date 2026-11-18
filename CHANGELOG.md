@@ -1,5 +1,11 @@
 # Zmeny vo vydaniach
 
+## 0.57.5
+
+- Spoločné generovanie UUID funguje aj cez LAN HTTP, kde prehliadač neposkytuje `crypto.randomUUID()`. Kompatibilná vetva používa kryptografické `getRandomValues()` a zachováva formát UUID v4; bez bezpečného zdroja náhody sa nevytvárajú slabé náhradné ID.
+- Vytváranie knižníc, poznámok, zdrojov, úloh, kalendára, hudobných položiek a importov používa spoločnú funkciu. Existujúce identifikátory, dáta a väzby sa nemenia.
+- Testy pokrývajú UUID v4, vytvorenie a uloženie knižnice so štítkom bez `randomUUID()`, zachovanie ID pri úprave a voliteľnú skúšku skutočného prehliadača v nezabezpečenom HTTP kontexte.
+
 ## 0.57.4
 
 - Po vytvorení prvého účtu sa prihlasovací formulár prepne do režimu existujúceho účtu. Odhlásenie a zamknutie už pri ďalšom prihlásení neopakujú vytvorenie pracovnej plochy a nevyžadujú obnovenie stránky.

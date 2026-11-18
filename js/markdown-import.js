@@ -1,3 +1,4 @@
+import { createId } from './ids.js';
 import { dom } from './dom.js';
 import { fitDialogResizableSection, installDialogBackdropClose } from './dialogs.js';
 import { apiRequest } from './api.js';
@@ -930,7 +931,7 @@ export function importedLibraryPlan(preview, parentId = '') {
   const timestamp = new Date().toISOString();
   if (Array.isArray(preview?.nativeElements)) {
     const rawElements = preview.nativeElements.filter((item) => item?.id && ['folder', 'note', 'article'].includes(item.type));
-    const ids = new Map(rawElements.map((item) => [item.id, crypto.randomUUID()]));
+    const ids = new Map(rawElements.map((item) => [item.id, createId()]));
     const items = rawElements.map((item) => ({
       id: ids.get(item.id),
       type: item.type,
@@ -961,13 +962,13 @@ export function importedLibraryPlan(preview, parentId = '') {
   const elementSourceLinks = [];
   folders.forEach((folder) => {
     const parentPath = folder.path.split('/').slice(0, -1).join('/');
-    const id = crypto.randomUUID();
+    const id = createId();
     folderIds.set(folder.path, id);
     items.push({ id, type: 'folder', parentId: folderIds.get(parentPath) || parentId, title: folder.title, content: '', tags: [], createdAt: timestamp, updatedAt: timestamp });
   });
   (preview?.documents || []).forEach((document) => {
     const directory = document.directory.join('/');
-    const id = crypto.randomUUID();
+    const id = createId();
     items.push({
       id,
       type: document.type,

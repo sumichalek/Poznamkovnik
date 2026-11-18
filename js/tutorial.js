@@ -1,3 +1,4 @@
+import { createId } from './ids.js';
 import { apiRequest } from './api.js';
 import { createAppIcon, setAppIcon } from './app-icons.js';
 import { installDialogBackdropClose } from './dialogs.js';
@@ -1330,7 +1331,7 @@ async function importTutorialMarkdown() {
     onConfirm: async (preview) => {
       const plan = tutorialMarkdownImportPlan(preview);
       if (!plan.pages.length) throw new Error('Nenašli sa žiadne časti vhodné na import do učebnice.');
-      const idsByKey = new Map(plan.pages.map((page) => [page.key, crypto.randomUUID()]));
+      const idsByKey = new Map(plan.pages.map((page) => [page.key, createId()]));
       const pages = plan.pages.map((page) => ({
         id: idsByKey.get(page.key),
         parentId: page.parentKey ? idsByKey.get(page.parentKey) || '' : '',

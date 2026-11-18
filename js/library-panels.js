@@ -1,3 +1,4 @@
+import { createId } from './ids.js';
 import { dom } from './dom.js';
 import { state } from './state.js';
 import {
@@ -152,7 +153,7 @@ export function upsertLibrary(name, tags = []) {
     );
   } else {
     const library = {
-      id: crypto.randomUUID(),
+      id: createId(),
       name: cleanName,
       tags,
       createdAt: new Date().toISOString()
@@ -183,7 +184,7 @@ function importedLibraryName(preview) {
     if (!names.has(candidate.toLocaleLowerCase('sk'))) return candidate;
     index += 1;
   }
-  return `Import ${crypto.randomUUID().slice(0, 8)}`;
+  return `Import ${createId().slice(0, 8)}`;
 }
 
 export function importMarkdownAsNewLibrary() {
@@ -201,7 +202,7 @@ export function importMarkdownAsNewLibrary() {
       }
 
       const library = {
-        id: crypto.randomUUID(),
+        id: createId(),
         name: importedLibraryName(preview),
         tags: Array.isArray(preview.libraryTags) ? preview.libraryTags : [],
         createdAt: new Date().toISOString()

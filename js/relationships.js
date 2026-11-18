@@ -1,3 +1,4 @@
+import { createId } from './ids.js';
 import { apiRequest } from './api.js';
 import { createAppIcon } from './app-icons.js';
 import { installDialogBackdropClose } from './dialogs.js';
@@ -411,7 +412,7 @@ async function saveSemanticLink(event) {
       await apiRequest(`/semantic-links/${encodeURIComponent(activeTarget.targetType)}/${encodeURIComponent(activeTarget.targetId)}`, {
         method: 'POST',
         body: {
-          id: crypto.randomUUID(),
+          id: createId(),
           targetType: dom.relationshipTargetType.value,
           targetId: dom.relationshipTarget.value,
           relationType: dom.relationshipRelationType.value,

@@ -1,3 +1,4 @@
+import { createId } from './ids.js';
 import { apiRequest } from './api.js';
 import { dom } from './dom.js';
 import { fitDialogResizableSection, installDialogBackdropClose } from './dialogs.js';
@@ -349,7 +350,7 @@ async function confirmImport() {
       const parentId = collection.parentId ? collectionIds.get(collection.parentId) || '' : '';
       const result = await apiRequest('/source-collections', {
         method: 'POST',
-        body: { id: crypto.randomUUID(), title: collection.title, parentId }
+        body: { id: createId(), title: collection.title, parentId }
       });
       collectionIds.set(collection.id, result.collection.id);
     }

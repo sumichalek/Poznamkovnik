@@ -1,3 +1,4 @@
+import { createId } from './ids.js';
 import { apiRequest } from './api.js';
 import { createAppIcon } from './app-icons.js';
 import { initializeCalendarTransfer } from './calendar-transfer.js';
@@ -820,7 +821,7 @@ export async function saveCalendarEventDraft() {
       };
       const result = selectedEvent
         ? await apiRequest(`/calendar-events/${encodeURIComponent(selectedEvent.id)}`, { method: 'PATCH', body: data })
-        : await apiRequest('/calendar-events', { method: 'POST', body: { ...data, id: crypto.randomUUID() } });
+        : await apiRequest('/calendar-events', { method: 'POST', body: { ...data, id: createId() } });
       selectedEvent = result.event;
       if (selectedEventScope === 'series') selectedEventOccurrenceDate = '';
       targetSources = null;
@@ -844,7 +845,7 @@ async function addCalendarEventLink() {
       const result = await apiRequest(`/calendar-events/${encodeURIComponent(selectedEvent.id)}/links`, {
         method: 'POST',
         body: {
-          id: crypto.randomUUID(),
+          id: createId(),
           targetType: dom.calendarEventLinkTargetType.value,
           targetId: dom.calendarEventLinkTarget.value
         }

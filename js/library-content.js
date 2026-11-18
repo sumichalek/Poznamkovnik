@@ -1,3 +1,4 @@
+import { createId } from './ids.js';
 import {
   elementTypeLabels,
   elementTypes,
@@ -555,7 +556,7 @@ export function createLibraryElement(type) {
   state.libraryDetailPanelPinned = true;
   window.dispatchEvent(new CustomEvent('workspace-activate', { detail: { section: 'libraries' } }));
   const item = {
-    id: crypto.randomUUID(),
+    id: createId(),
     type,
     parentId: currentFolderId(),
     title: nextElementTitle(type),
@@ -826,7 +827,7 @@ export async function restoreImportedSourceLinks(libraryId, plan) {
         await apiRequest(`/sources/${encodeURIComponent(sourceId)}/files/${encodeURIComponent(sourceFileId)}/annotations`, {
           method: 'POST',
           body: {
-            id: crypto.randomUUID(),
+            id: createId(),
             elementId: link.elementId,
             quote: link.label || '',
             locator: link.locator || '',
@@ -837,7 +838,7 @@ export async function restoreImportedSourceLinks(libraryId, plan) {
         await apiRequest(`/sources/${encodeURIComponent(sourceId)}/element-links`, {
           method: 'POST',
           body: {
-            id: crypto.randomUUID(),
+            id: createId(),
             elementId: link.elementId,
             sourceFileId,
             relationType: link.relationType,

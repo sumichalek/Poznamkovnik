@@ -1,3 +1,4 @@
+import { createId } from './ids.js';
 import { apiRequest } from './api.js';
 import { dom } from './dom.js';
 import { fitDialogResizableSection, installDialogBackdropClose } from './dialogs.js';
@@ -509,7 +510,7 @@ async function confirmImport() {
   const warnings = [];
   try {
     for (const entry of entries) {
-      const result = await apiRequest('/calendar-events', { method: 'POST', body: { ...entry.event, id: crypto.randomUUID() } });
+      const result = await apiRequest('/calendar-events', { method: 'POST', body: { ...entry.event, id: createId() } });
       for (const override of entry.event.occurrenceOverrides || []) {
         try {
           const query = `?scope=occurrence&occurrenceDate=${encodeURIComponent(override.occurrenceDate)}`;
@@ -529,7 +530,7 @@ async function confirmImport() {
         try {
           await apiRequest(`/calendar-events/${encodeURIComponent(result.event.id)}/links`, {
             method: 'POST',
-            body: { id: crypto.randomUUID(), targetType: link.targetType, targetId: link.targetId }
+            body: { id: createId(), targetType: link.targetType, targetId: link.targetId }
           });
         } catch {
           warnings.push(`${entry.event.title}: väzba na „${link.title || 'pôvodný prvok'}“ sa nedala obnoviť.`);

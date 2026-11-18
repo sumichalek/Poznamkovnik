@@ -1,3 +1,4 @@
+import { createId } from './ids.js';
 import { APP_VERSION, LEFT_PANEL_REVEAL_DISTANCE, TOPBAR_REVEAL_DISTANCE, storageKeys } from './config.js';
 import { hydrateAppIcons } from './app-icons.js';
 import { bibliographicReference, shortCitation } from './bibliography.js';
@@ -516,7 +517,7 @@ dom.citationForm.addEventListener('submit', (event) => {
           await apiRequest(`/sources/${encodeURIComponent(sourceId)}/element-links`, {
             method: 'POST',
             body: {
-              id: crypto.randomUUID(),
+              id: createId(),
               elementId,
               relationType: 'citation',
               locator,

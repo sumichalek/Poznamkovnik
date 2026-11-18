@@ -1,3 +1,4 @@
+import { createId } from './ids.js';
 import { elementTypes, storageKeys, themes } from './config.js';
 import { apiRequest } from './api.js';
 import { dom } from './dom.js';
@@ -15,7 +16,7 @@ export function normalizeLibraries(value) {
   const seenIds = new Set();
   return value
     .map((library) => ({
-      id: library?.id || crypto.randomUUID(),
+      id: library?.id || createId(),
       name: String(library?.name || '').trim(),
       tags: normalizeTags(library?.tags),
       createdAt: library?.createdAt || new Date().toISOString()
@@ -33,7 +34,7 @@ export function normalizeLibraryElementList(value) {
   const seenIds = new Set();
   const normalizedItems = value
     .map((item) => ({
-      id: item?.id || crypto.randomUUID(),
+      id: item?.id || createId(),
       type: elementTypes.has(item?.type) ? item.type : 'note',
       parentId: typeof item?.parentId === 'string' ? item.parentId : '',
       title: String(item?.title || '').trim(),

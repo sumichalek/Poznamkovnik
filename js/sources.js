@@ -1,3 +1,4 @@
+import { createId } from './ids.js';
 import { apiRequest, uploadSourceFile } from './api.js';
 import { createAppIcon, setAppIcon, sourceFileIcon, sourceKindIcon } from './app-icons.js';
 import { bibliographicReference } from './bibliography.js';
@@ -757,7 +758,7 @@ async function saveSourceAnnotation() {
     const result = await apiRequest(sourceAnnotationUrl(), {
       method: 'POST',
       body: {
-        id: crypto.randomUUID(),
+        id: createId(),
         quote,
         locator: dom.sourcePreviewAnnotationLocator.value.trim(),
         note,
@@ -1945,7 +1946,7 @@ async function saveSourceCollectionForm() {
     } else {
       await apiRequest('/source-collections', {
         method: 'POST',
-        body: { id: crypto.randomUUID(), title, parentId: activeSourceCollectionId }
+        body: { id: createId(), title, parentId: activeSourceCollectionId }
       });
     }
     hideSourceCollectionForm();
@@ -2121,7 +2122,7 @@ export async function saveSourceDraft() {
       };
       const result = selectedSource
         ? await apiRequest(`/sources/${selectedSource.id}`, { method: 'PATCH', body: data })
-        : await apiRequest('/sources', { method: 'POST', body: { ...data, id: crypto.randomUUID() } });
+        : await apiRequest('/sources', { method: 'POST', body: { ...data, id: createId() } });
       selectedSource = result.source;
       pendingBibliographicProvenance = null;
       if (isNewSource && sourceDraftCollectionId) {
@@ -2335,7 +2336,7 @@ async function attachSourceContentResult(result) {
       const response = await apiRequest(`/sources/${encodeURIComponent(sourceId)}/files/${encodeURIComponent(result.fileId)}/annotations`, {
         method: 'POST',
         body: {
-          id: crypto.randomUUID(),
+          id: createId(),
           elementId: state.activeLibraryElementId,
           quote: result.quote,
           locator: result.locator
@@ -3007,7 +3008,7 @@ export function initializeSources() {
     const result = await apiRequest(`/sources/${selectedSource.id}/element-links`, {
       method: 'POST',
       body: {
-        id: crypto.randomUUID(),
+        id: createId(),
         elementId: state.activeLibraryElementId,
         sourceFileId: dom.sourceFileSelect.value,
         relationType: dom.sourceRelationType.value,

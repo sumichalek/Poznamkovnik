@@ -1,3 +1,4 @@
+import { createId } from './ids.js';
 import { apiRequest } from './api.js';
 import { createAppIcon } from './app-icons.js';
 import { dom } from './dom.js';
@@ -723,7 +724,7 @@ export async function saveTaskDraft() {
         ? await apiRequest(`/tasks/${encodeURIComponent(selectedTask.id)}`, { method: 'PATCH', body: data })
         : await apiRequest('/tasks', {
           method: 'POST',
-          body: { ...data, id: crypto.randomUUID(), listIds: draftTaskListIds }
+          body: { ...data, id: createId(), listIds: draftTaskListIds }
         });
       selectedTask = result.task;
       draftTaskListIds = [];
@@ -749,7 +750,7 @@ async function addTaskLink() {
       const result = await apiRequest(`/tasks/${encodeURIComponent(selectedTask.id)}/links`, {
         method: 'POST',
         body: {
-          id: crypto.randomUUID(),
+          id: createId(),
           targetType: dom.taskLinkTargetType.value,
           targetId: dom.taskLinkTarget.value
         }
@@ -849,7 +850,7 @@ async function importTaskFromMarkdown(preview) {
   return runTaskOperation(async () => {
     const created = await apiRequest('/tasks', {
       method: 'POST',
-      body: { ...preview.task, id: crypto.randomUUID() }
+      body: { ...preview.task, id: createId() }
     });
     let importedTask = created.task;
     const warnings = [];
@@ -881,7 +882,7 @@ async function importTaskFromMarkdown(preview) {
       try {
         const result = await apiRequest(`/tasks/${encodeURIComponent(importedTask.id)}/links`, {
           method: 'POST',
-          body: { id: crypto.randomUUID(), targetType: link.targetType, targetId }
+          body: { id: createId(), targetType: link.targetType, targetId }
         });
         importedTask = result.task;
       } catch {
@@ -970,7 +971,7 @@ async function saveTaskList() {
     };
     const result = editingTaskListId
       ? await apiRequest(`/task-lists/${encodeURIComponent(editingTaskListId)}`, { method: 'PATCH', body: data })
-      : await apiRequest('/task-lists', { method: 'POST', body: { ...data, id: crypto.randomUUID() } });
+      : await apiRequest('/task-lists', { method: 'POST', body: { ...data, id: createId() } });
     activeTaskListId = result.list.id;
     closeTaskListDialog();
     await loadTaskLists();
