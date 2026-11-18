@@ -200,13 +200,20 @@ class SystemChanges:
                 if "unknown" not in item:
                     continue
                 row = item["unknown"].split("#", 1)[0]
-                match = re.search(r"\s+(ALLOW|DENY|REJECT|LIMIT)\s+(IN|OUT|FWD)\s+(.+?)\s*$", row)
-                if match and (match[1] != "ALLOW" or match[2] != "IN"):
+                match = re.fullmatch(r"\[\s*\d+\]\s+(.+?)\s+(ALLOW|DENY|REJECT|LIMIT)\s+(IN|OUT|FWD)\s+(.+?)\s*", row)
+                if match and (match[2] != "ALLOW" or match[3] != "IN"):
                     continue
                 if match:
-                    source = match[3].strip()
+                    source = match[4].strip()
                     if source.endswith("(v6)"):
                         continue
+                    destination = re.fullmatch(r"([0-9]{1,5})(?:/(tcp|udp))?(?:\s+on\s+\S+)?", match[1])
+                    if destination and 1 <= int(destination[1]) <= 65535:
+                        # A different numeric port or UDP cannot be the same TCP rule.
+                        # This is only a non-collision check: keep the original row opaque
+                        # so neither its comment nor its ownership can be changed/removed.
+                        if int(destination[1]) != rule["port"] or destination[2] == "udp":
+                            continue
                     if source == "Anywhere":
                         source = "0.0.0.0/0"
                     try:
@@ -214,7 +221,8 @@ class SystemChanges:
                             continue
                     except ValueError:
                         pass
-                raise DeploymentError("UFW obsahuje neoveriteľné pravidlo pre túto sieť. Aby sa nepreznačilo cudzie pravidlo, zmenu najprv priprav ručne.")
+                raise DeploymentError("UFW obsahuje neoveriteľné pravidlo pre túto sieť. Aby sa nepreznačilo cudzie pravidlo, zmenu najprv priprav ručne. "
+                                      f"Konfliktný riadok: {row.strip()}")
             existing = [item for item in rules if item.get("port") == rule["port"] and item.get("network") == rule["network"]]
             if existing:
                 if "firewall" not in receipt["changes"]:

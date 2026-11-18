@@ -1,6 +1,6 @@
 # Inštalácia pod kontrolou používateľa
 
-Sprievodcu spúšťa používateľ osobne v termináli počítača, na ktorom chce aplikáciu nainštalovať. Agent ani vzdialený automat nespúšťa nasadenie za neho. Staršie vydania 0.57.0 a 0.57.1 tohto sprievodcu ešte neobsahujú; zatiaľ je pripravený v pracovnom strome projektu.
+Sprievodcu spúšťa používateľ osobne v termináli počítača, na ktorom chce aplikáciu nainštalovať. Agent ani vzdialený automat nespúšťa nasadenie za neho. Staršie vydania 0.57.0 a 0.57.1 tohto sprievodcu ešte neobsahujú. Použi vydanie aspoň 0.57.3, ktoré zahŕňa aj opravu kontroly UFW pre existujúce pravidlá DNS a DHCP.
 
 Pred prvým stiahnutím z privátneho repozitára prejdi [read-only prístup ku Gitu](private-git-access.md). Pre každodennú správu aj výpadok je pripravená [samostatná obsluha servera](server-operations.md). Ani jeden postup nevyžaduje prihlasovací kľúč agenta na server.
 
@@ -74,7 +74,7 @@ Po dokončení sa zobrazí stav, cesty, adresa a príkaz na ďalšie otvorenie s
 
 Aj priame príkazy `server-update.sh init`, `update`, `rollback` a `recover` majú predvolene potvrdenia. Bez interaktívneho terminálu zmeny odmietnu. Pri SSH preto používaj terminál cez `ssh -t`.
 
-Pre vedomú automatizáciu existuje explicitné `--yes` pred podpríkazom, napríklad `server-update.sh --yes update v0.57.2`. Toto vypína otázky, nikdy nie zálohu. Sprievodca `install.sh` tento prepínač nepoužíva a neumožňuje ho obísť posielaním odpovedí cez pipe.
+Pre vedomú automatizáciu existuje explicitné `--yes` pred podpríkazom, napríklad `server-update.sh --yes update v0.57.3`. Toto vypína otázky, nikdy nie zálohu. Sprievodca `install.sh` tento prepínač nepoužíva a neumožňuje ho obísť posielaním odpovedí cez pipe.
 
 ## Odinštalovanie
 

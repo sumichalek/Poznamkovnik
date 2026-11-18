@@ -17,6 +17,18 @@ from scripts.server_manage import DeploymentError
 from scripts.system_changes import SystemChanges, SystemOperations
 
 
+KORUNKA_UFW_STATUS = """Status: active
+
+     To                         Action      From
+     --                         ------      ----
+[ 1] 22/tcp                     ALLOW IN    192.168.0.0/24
+[ 2] 53                         ALLOW IN    192.168.0.0/24
+[ 3] 80/tcp                     ALLOW IN    192.168.0.0/24
+[ 4] 67/udp on enp1s0           ALLOW IN    Anywhere
+[ 5] 67/udp (v6) on enp1s0      ALLOW IN    Anywhere (v6)
+"""
+
+
 class FakeOperations:
     def __init__(self):
         self.linger_value = False
@@ -71,6 +83,11 @@ class SystemChangesTest(unittest.TestCase):
 
     def cleanup(self, **kwargs):
         self.changes.cleanup(self.identity, self.uid, approval=lambda prompt: True, **kwargs)
+
+    @staticmethod
+    def parse_rules(status):
+        with patch("scripts.system_changes.Path.is_file", return_value=True), patch("scripts.system_changes.run", return_value=status):
+            return SystemOperations().firewall_rules()
 
     def test_missing_receipt_plan_and_cleanup_change_nothing(self):
         self.cleanup(plan_only=True)
@@ -246,6 +263,81 @@ class SystemChangesTest(unittest.TestCase):
         self.changes.apply_firewall(self.profile, "192.168.0.0/24")
         self.cleanup()
         self.assertEqual(self.ops.rules, [unknown])
+
+    def test_korunka_status_allows_app_rule_and_preserves_dns_dhcp_and_ssh(self):
+        self.config["port"] = 1112
+        self.config_path.write_text(json.dumps(self.config))
+        self.profile = self.changes.profile(self.root, self.uid)
+        original = self.parse_rules(KORUNKA_UFW_STATUS)
+        self.ops.rules = copy.deepcopy(original)
+
+        self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+
+        expected = {"port": 1112, "network": "192.168.0.0/24", "comment": "Poznamkovnik " + self.identity}
+        self.assertEqual(self.ops.rules, original + [expected])
+        self.assertEqual(self.ops.actions, [("firewall", expected, False)])
+        receipt = self.changes.load(self.identity, self.uid)["changes"]["firewall"]
+        self.assertTrue(receipt["changed"])
+        self.assertEqual(receipt["status"], "applied")
+
+        self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        self.assertEqual(len(self.ops.actions), 1)
+        self.assertEqual(len(self.ops.backups), 1)
+        self.cleanup()
+        self.assertEqual(self.ops.rules, original)
+        self.assertEqual(self.ops.actions, [("firewall", expected, False), ("firewall", expected, True)])
+        self.assertEqual(len(self.ops.backups), 2)
+
+    def test_unrelated_numeric_ports_and_udp_are_left_opaque_and_untouched(self):
+        for destination in ("53", "53/udp", "53 on enp1s0", "53/tcp on enp1s0",
+                            "19111/udp", "19111/udp on enp1s0"):
+            with self.subTest(destination=destination):
+                original = self.parse_rules(f"Status: active\n[ 1] {destination} ALLOW IN 192.168.0.0/24 # foreign rule\n")
+                self.assertIn("unknown", original[0])
+                self.ops.rules = copy.deepcopy(original)
+                self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+                self.assertEqual(self.ops.rules[:-1], original)
+                self.cleanup()
+                self.assertEqual(self.ops.rules, original)
+
+    def test_same_port_ambiguous_protocol_interface_and_ranges_are_not_adopted(self):
+        for destination in ("19111", "19111 on enp1s0", "19111/tcp on enp1s0",
+                            "19111,19112/tcp", "19110:19112/tcp", "CustomApp"):
+            with self.subTest(destination=destination):
+                self.ops.rules = self.parse_rules(f"Status: active\n[ 1] {destination} ALLOW IN 192.168.0.0/24 # foreign rule\n")
+                original = copy.deepcopy(self.ops.rules)
+                with self.assertRaisesRegex(DeploymentError, "nepreznačilo"):
+                    self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+                self.assertEqual(self.ops.rules, original)
+                self.assertEqual(self.ops.actions, [])
+                self.assertEqual(self.ops.backups, [])
+                self.assertIsNone(self.changes.load(self.identity, self.uid))
+
+    def test_ambiguous_rule_error_identifies_the_blocking_row_without_comment(self):
+        self.ops.rules = self.parse_rules("Status: active\n[ 7] CustomApp ALLOW IN 192.168.0.0/24 # foreign comment\n")
+        with self.assertRaises(DeploymentError) as error:
+            self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        self.assertIn("[ 7] CustomApp ALLOW IN 192.168.0.0/24", str(error.exception))
+        self.assertNotIn("foreign comment", str(error.exception))
+        self.assertEqual(self.ops.actions, [])
+
+    def test_opaque_owned_marker_cannot_authorize_removing_other_rule_formats(self):
+        self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        for destination in ("19111", "19111/udp", "19111/tcp on enp1s0"):
+            with self.subTest(destination=destination):
+                self.ops.rules = self.parse_rules(f"Status: active\n[ 1] {destination} ALLOW IN 192.168.0.0/24 # Poznamkovnik {self.identity}\n")
+                original = copy.deepcopy(self.ops.rules)
+                self.cleanup()
+                self.assertEqual(self.ops.rules, original)
+                self.assertEqual(len(self.ops.actions), 1)
+                self.assertEqual(len(self.ops.backups), 1)
+
+    def test_unparseable_rule_still_blocks_without_any_firewall_mutation(self):
+        self.ops.rules = [{"unknown": "[ 8] unrecognized firewall output"}]
+        with self.assertRaisesRegex(DeploymentError, "nepreznačilo"):
+            self.changes.apply_firewall(self.profile, "192.168.0.0/24")
+        self.assertEqual(self.ops.actions, [])
+        self.assertEqual(self.ops.backups, [])
 
 
 if __name__ == "__main__":

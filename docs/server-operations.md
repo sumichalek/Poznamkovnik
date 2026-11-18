@@ -41,10 +41,10 @@ V sprievodcovi vyber **2 – Aktualizácia**, skontroluj inštalačný priečino
 
 Pred odstávkou nechaj dobehnúť OCR, nahrávanie a ostatné úlohy. Príprava kódu a Python prostredia ešte nechá starú verziu bežať. Až po samostatnom potvrdení zastaví službu a vytvorí novú overenú zálohu dát aj nastavení. Potom uvidíš cestu k zálohe a osobitne potvrdíš aktiváciu.
 
-Priama alternatíva, napríklad po zverejnení `v0.57.2`:
+Priama alternatíva, napríklad po zverejnení `v0.57.3`:
 
 ```bash
-"$HOME/apps/poznamkovnik/current/scripts/server-update.sh" --root "$HOME/apps/poznamkovnik" update v0.57.2
+"$HOME/apps/poznamkovnik/current/scripts/server-update.sh" --root "$HOME/apps/poznamkovnik" update v0.57.3
 ```
 
 Aj tento príkaz má potvrdenia. Pri SSH potrebuje terminál, teda `ssh -t`, ak ho spúšťaš priamo zo svojho počítača. Na bežnú obsluhu nepoužívaj `--yes`.
@@ -77,6 +77,37 @@ Ak overenie zlyhá, obnovu nespúšťaj. Obnova potrebuje zachované príslušn�
 - **Chýba `current` po neúspešnej prvej inštalácii:** použi sprievodcu z ponechaného pomocného checkoutu: `bash "$HOME/poznamkovnik-bootstrap/scripts/install.sh"`. Vyber skutočný koreň inštalácie. Ak už existuje `server.json`, použiješ aktualizáciu na dokončenie prípravy alebo obnovu, nie novú inštaláciu cez existujúcu konfiguráciu.
 - **Chyba samotnej obnovy:** nič nemaž, nespúšťaj službu nad čiastočne obnovenými dátami. Zachovaj zálohy a `recovery-*` a postupuj podľa chybového hlásenia.
 - **`uninstalling` alebo `uninstall_failed`:** odinštalovanie sa nedokončilo. Prečítaj `shared/uninstall-state.json`, vyrieš príčinu a dokonči odinštalovanie z pomocného checkoutu. Aktualizácia tento stav zámerne blokuje. Po úspešnom odinštalovaní so zachovanými dátami použiješ Aktualizáciu do rovnakého koreňa na opätovnú inštaláciu.
+
+### Zlyhal iba krok firewallu po aktivácii
+
+Ak už výpis potvrdil aktívne vydanie a až potom zlyhal pomocník UFW, neznamená to neúspešnú inštaláciu aplikácie. Over jej skutočný stav a firewall bez zmien (názov služby nahraď vlastným):
+
+```bash
+systemctl --user is-active poznamkovnik.service
+sudo env LC_ALL=C /usr/sbin/ufw status numbered
+```
+
+Neopakuj prvú inštaláciu, nevypínaj firewall ani nemaž cudzie pravidlá. Vydanie 0.57.2 mohlo chybne odmietnuť už existujúce pravidlo pre iný port, napríklad DNS `53` bez uvedeného protokolu. Opravený pomocník vie odlíšiť samostatný číselný port alebo UDP; pôvodné pravidlá ponecháva nedotknuté. Nejednoznačné profily, rozhrania a rozsahy, pri ktorých nemožno vylúčiť konflikt s portom aplikácie, naďalej vyžadujú osobnú kontrolu. Blokujúci riadok sa vypíše bez jeho komentára.
+
+Po kontrole príčiny môžeš dokončiť iba firewall pomocou samostatného `server-system.sh` z overeného checkoutu zverejneného vydania `v0.57.3` alebo novšieho. Súbory v aktívnom `releases/` neupravuj. V ponechanom pomocnom checkout-e najprv over stav:
+
+```bash
+git status --short
+```
+
+Ak ukáže lokálne zmeny, zastav sa a najprv ich osobne skontroluj; nič neprepisuj ani neresetuj. Pri čistom checkout-e stiahni presný tag a prepni iba tento pomocný checkout:
+
+```bash
+git fetch origin tag v0.57.3 && git switch --detach refs/tags/v0.57.3
+```
+
+Nasledujúci príklad predpokladá, že si už v tomto opravenom pomocnom checkout-e; použi skutočný koreň existujúcej inštalácie a vlastnú IPv4 sieť, príklad `192.168.0.0/24` nie je automatická voľba:
+
+```bash
+sudo bash scripts/server-system.sh firewall "$HOME/apps/poznamkovnik" 192.168.0.0/24
+```
+
+Port sa načíta z existujúceho `shared/server.json`. Pomocník ukáže port, zdrojovú sieť a identifikátor inštalácie, vyžiada si potvrdenie a pred zmenou vytvorí novú zálohu UFW. Zásah zaznamená do koreňového dokladu tejto inštalácie, takže odinštalátor môže neskôr odobrať iba jej vlastnú nezmenenú výnimku. Aplikačné vydanie, jeho dáta ani službu tento samostatný krok neaktivuje znova; lokálnu HTTP kontrolu a prístup z druhého počítača over osobitne.
 
 ## Ručné ovládanie služby a logy
 

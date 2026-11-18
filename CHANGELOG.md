@@ -1,5 +1,11 @@
 # Zmeny vo vydaniach
 
+## 0.57.3
+
+- Opravené falošné odmietnutie UFW pravidiel pre iné porty bez uvedeného protokolu alebo s UDP, napríklad DNS `53` na serveri s Pi-hole. Nejednoznačné pravidlá pre port aplikácie zostávajú chránené a cudzie pravidlá sa nepreberajú ani nemažú.
+- Regresný test používa skutočný formát výpisu z Korunky a overuje pridanie, opakovanie aj odobratie iba vlastnej TCP výnimky pri zachovaní DNS, DHCP, SSH a webového portu.
+- Pri skutočne nejednoznačnom pravidle sa zobrazí konkrétny blokujúci riadok; návod vysvetľuje samostatné dokončenie firewallu bez opakovania inštalácie.
+
 ## 0.57.2
 
 - Lokálne pripravený interaktívny Bash sprievodca s režimom plánovania bez zmien a samostatnými potvrdeniami prípravy, zálohy a aktivácie.
