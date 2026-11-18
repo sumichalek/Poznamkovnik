@@ -39,12 +39,14 @@ Skontroluj aj aplikáciu v prehliadači. Adresa `127.0.0.1` znamená počítač,
 
 V sprievodcovi vyber **2 – Aktualizácia**, skontroluj inštalačný priečinok a zadaj konkrétny zverejnený tag. Existujúci port, dáta a služba sa zachovajú. Sprievodca nepovažuje `main` za vydanie a nesťahuje zmeny automaticky pri každom pushi.
 
+Prepnutie pomocného Git checkoutu cez `git switch` mení iba pomocné súbory, nie aplikáciu bežiacu zo samostatného `current`. Preto samotné stiahnutie nového pomocníka na dokončenie UFW neaktualizuje prihlasovanie ani zvyšok aplikácie. Opravu aplikácie na server prenesie až táto potvrdená aktualizácia so zálohou. Po úspešnej aktivácii obnov stránku v prehliadači, aby sa načítal nový frontend.
+
 Pred odstávkou nechaj dobehnúť OCR, nahrávanie a ostatné úlohy. Príprava kódu a Python prostredia ešte nechá starú verziu bežať. Až po samostatnom potvrdení zastaví službu a vytvorí novú overenú zálohu dát aj nastavení. Potom uvidíš cestu k zálohe a osobitne potvrdíš aktiváciu.
 
-Priama alternatíva, napríklad po zverejnení `v0.57.3`:
+Priama alternatíva, napríklad po zverejnení `v0.57.4`:
 
 ```bash
-"$HOME/apps/poznamkovnik/current/scripts/server-update.sh" --root "$HOME/apps/poznamkovnik" update v0.57.3
+"$HOME/apps/poznamkovnik/current/scripts/server-update.sh" --root "$HOME/apps/poznamkovnik" update v0.57.4
 ```
 
 Aj tento príkaz má potvrdenia. Pri SSH potrebuje terminál, teda `ssh -t`, ak ho spúšťaš priamo zo svojho počítača. Na bežnú obsluhu nepoužívaj `--yes`.
@@ -70,6 +72,7 @@ Ak overenie zlyhá, obnovu nespúšťaj. Obnova potrebuje zachované príslušn�
 
 ## Ak sa niečo pokazí
 
+- **Po vytvorení účtu a odhlásení zostalo tlačidlo „Vytvoriť pracovnú plochu“:** vo vydaniach do 0.57.3 vrátane mohol formulár zostať v režime prvého vytvorenia účtu. Obnov stránku v prehliadači cez F5; po načítaní existujúceho účtu má ponúknuť „Prihlásiť“. Účet, heslo ani dáta kvôli tomuto hláseniu nemaž a nevytváraj nanovo. Trvalú opravu obsahuje 0.57.4; na server ju prenesie aktualizácia aplikácie, nie iba prepnutie pomocného checkoutu.
 - **Git alebo príprava zlyhala pred odstávkou:** stará služba zostáva bežať. Over správny tag, read-only prístup, heslovú frázu kľúča, spojenie a DNS. Nevymazávaj dáta ani konfiguráciu.
 - **Zrušenie po zálohe, pred aktiváciou:** pôvodná služba sa znovu spustí, ak predtým bežala. Záloha a pripravené vydanie zostanú.
 - **Nové vydanie nenabehlo:** nástroj sa pokúsi automaticky obnoviť predchádzajúce dáta, nastavenia a vydanie. Výpis musí potvrdiť výsledok; nespoliehaj sa iba na návrat do shellu.

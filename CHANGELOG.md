@@ -1,5 +1,10 @@
 # Zmeny vo vydaniach
 
+## 0.57.4
+
+- Po vytvorení prvého účtu sa prihlasovací formulár prepne do režimu existujúceho účtu. Odhlásenie a zamknutie už pri ďalšom prihlásení neopakujú vytvorenie pracovnej plochy a nevyžadujú obnovenie stránky.
+- Regresné frontendové testy pokrývajú vytvorenie účtu, odhlásenie, opätovné prihlásenie, zamknutie, chybné heslo aj chybu načítania pracovnej plochy; uložené účty a heslá sa nemenia.
+
 ## 0.57.3
 
 - Opravené falošné odmietnutie UFW pravidiel pre iné porty bez uvedeného protokolu alebo s UDP, napríklad DNS `53` na serveri s Pi-hole. Nejednoznačné pravidlá pre port aplikácie zostávajú chránené a cudzie pravidlá sa nepreberajú ani nemažú.

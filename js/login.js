@@ -21,6 +21,8 @@ function updateLoginMode() {
 }
 
 async function activate(user, onAuthenticated) {
+  needsSetup = false;
+  updateLoginMode();
   authenticated = true;
   dom.topbarUsername.textContent = user.username;
   dom.loginPassword.value = '';
